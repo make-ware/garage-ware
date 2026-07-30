@@ -1,0 +1,74 @@
+{
+  "name": "@garage-ware/shared",
+  "version": "0.0.0",
+  "description": "Shared zod schemas for the project",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./schema": {
+      "import": "./dist/schema.js",
+      "types": "./dist/schema.d.ts"
+    },
+    "./enums": {
+      "import": "./dist/enums.js",
+      "types": "./dist/enums.d.ts"
+    },
+    "./types": {
+      "import": "./dist/types.js",
+      "types": "./dist/types.d.ts"
+    },
+    "./mutator": {
+      "import": "./dist/mutator.js",
+      "types": "./dist/mutator.d.ts"
+    },
+    "./mutators": {
+      "import": "./dist/mutators.js",
+      "types": "./dist/mutators.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "nodemon",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .prettierignore",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .prettierignore",
+    "migrate:generate": "npx pocketbase-migrate generate",
+    "migrate:status": "npx pocketbase-migrate status",
+    "test": "echo 'No tests yet'",
+    "test:watch": "echo 'No tests yet'",
+    "test:coverage": "echo 'No tests yet'",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typegen": "pocketbase-typegen --url http://localhost:8090 --out src/types/pocketbase.ts"
+  },
+  "dependencies": {
+    "pocketbase": "^0.26.8",
+    "pocketbase-zod-schema": "^1.0.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^20.19.39",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "eslint": "^9.39.4",
+    "nodemon": "^3.1.14",
+    "pocketbase-typegen": "^1.5.0",
+    "prettier": "^3.8.3",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "packageManager": "yarn@4.12.0"
+}

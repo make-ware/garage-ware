@@ -1,0 +1,110 @@
+# Yarn v4
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Swap the comments on the following lines if you wish to use zero-installs
+# In that case, don't forget to run `yarn config set enableGlobalCache false`!
+# Documentation here: https://yarnpkg.com/features/caching#zero-installs
+
+#!.yarn/cache
+.pnp.*
+
+# PocketBase — the binary and its sidecar files are downloaded by
+# scripts/setup-pocketbase.js, and pb_data/ is local runtime state.
+pocketbase/pocketbase*
+pocketbase/pb_data/
+pocketbase/*.zip
+pocketbase/*.tar.gz
+/pocketbase/CHANGELOG.md
+/pocketbase/LICENSE.md
+
+# Self-host /data mount (when bind-mounted as ./data alongside the repo,
+# which is what docker/README.md's `-v $PWD/data:/data` produces)
+/data/
+
+# Next.js — unanchored so the build output of any workspace is covered.
+# webapp/.gitignore repeats these; this is the root-level backstop.
+.next/
+out/
+
+# Dependencies
+node_modules/
+
+# Environment variables — ignore every .env variant, then re-allow the committed
+# templates. Listing individual names (.env.local, .env.production.local, ...)
+# left holes: `.env.production` and `.env.staging` were committable.
+.env*
+!.env.example
+!.env.*.example
+
+# Secrets and credential material — belt and braces, so a stray key or export
+# in the tree can't be committed by a careless `git add -A`.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*.kubeconfig
+kubeconfig
+.netrc
+.npmrc
+secrets.json
+secrets.yaml
+secrets.yml
+*.secret
+credentials.json
+service-account*.json
+
+# Logs — the specific patterns keep rotated files (npm-debug.log.1) out too.
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build output — dist/ covers shared/dist/, which webapp needs but never commits.
+# tsbuildinfo is emitted by tsc in both shared/ and webapp/.
+dist/
+*.tsbuildinfo
+
+# AI tooling — settings.local.json is per-developer; .claude/settings.json is
+# shared config and stays committable.
+.kiro/
+.cursor/
+.claude/settings.local.json

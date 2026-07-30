@@ -1,0 +1,234 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this app is
+
+`garage-ware` is the management/control plane for a self-hosted [Garage HQ](https://garagehq.deuxfleurs.fr/) S3-compatible storage cluster. Four features:
+
+1. **Cluster administration** — admins view live cluster status/health/layout/nodes.
+2. **Storage claims with replication factor** — admins grant users storage per cluster node as an append-only ledger of signed adjustments; a user's total claim is the sum of their entries, and they allocate slices of it as per-bucket quotas. Replication factor is read live from Garage's layout.
+3. **Storage transfers** — a user (or an admin on their behalf) hands part of their *unallocated* claim to another user, found by email. Also append-only; "returning" a transfer means deleting the row.
+4. **Storage user self-service** — users manage their own S3 access keys, buckets, per-key bucket permissions, and live usage.
+
+The one formula to keep in your head — a user's **net granted GB**:
+
+```
+netGranted = sum(claims on nodes still in the layout) + sum(transfers received) − sum(transfers sent)
+available  = netGranted − sum(bucket.quota_gb)              # what they may still allocate
+```
+
+Never hand-roll it. Server-side, read it from `getUserGrantedGb()` (a single number) or `getUserStorageSummary()` (the full position) — see [Storage accounting](#storage-accounting).
+
+**Source-of-truth split.** Garage owns buckets, keys, layout, and usage data. PocketBase owns identity (Users, Admins), the Garage↔user mappings (`AccessKeys.user`, `Buckets.user`), and the two claim ledgers (StorageClaims, StorageTransfers) — which have no Garage counterpart at all, since Garage has no concept of a user. PocketBase intentionally does **not** duplicate Garage state — anything Garage knows authoritatively is proxied live, never mirrored. Cluster metrics live in InfluxDB + Grafana, not here.
+
+The one narrow exception: `Buckets.bytes`, `Buckets.objects`, `Buckets.max_size`, `Buckets.max_objects`, and `Buckets.usage_updated_at` are a cache, refreshed by the webapp's `/next-api/garage/buckets/*` handlers when a user views the dashboard, and consumed by the daily `bucket-usage-alerts` cron in [pocketbase/pb_hooks/main.pb.js](pocketbase/pb_hooks/main.pb.js). The cron is intentionally DB-only (no Garage call); stale data is acceptable because the alert nudges users back to the dashboard, which refreshes the cache. (These mirror Garage's reported usage and quotas in raw Garage units: `max_size`/`max_objects` are the byte/object caps — `max_objects` derives from `GARAGE_AVG_OBJECT_SIZE_MB`. `quota_gb` stays the authoritative size quota and drives the cron's byte-fill check; `max_size` is the convenience byte mirror, while `max_objects` lets the cron alert on object-count fill.)
+
+## Workspace layout
+
+Yarn v4 monorepo (`packageManager: "yarn@4.12.0"`) with three workspaces:
+
+- `webapp/` (`@garage-ware/webapp`) — Next.js 16 + React 19 + Tailwind v4 + shadcn/ui frontend. Mostly client-side; server-side code is confined to `webapp/src/app/next-api/*` (Route Handlers) and the `import 'server-only'` libraries they call — `webapp/src/lib/garage/`, `lib/auth/server.ts`, and most of `lib/storage/`.
+- `shared/` (`@garage-ware/shared`) — ESM TypeScript package: zod schemas, collection definitions, mutators, types, error utilities. Built with tsup. Subpath exports: `./schema`, `./mutators`, `./mutator`, `./types`, `./enums` — see [shared/package.json](shared/package.json).
+- `pocketbase/` (`@garage-ware/pb`) — PocketBase binary, hooks ([pocketbase/pb_hooks/main.pb.js](pocketbase/pb_hooks/main.pb.js)), migrations ([pocketbase/pb_migrations/](pocketbase/pb_migrations/)), and the [seed-admin script](pocketbase/scripts/seed-admin.mjs). The folder is `pocketbase/` for local-dev clarity; the production Docker image keeps the in-image path at `/app/pb/`.
+
+`shared/dist/` must exist for `webapp` to compile — run `yarn workspace @garage-ware/shared build` after pulling or after editing anything under `shared/src/`.
+
+## Common commands
+
+```bash
+# Initial setup (downloads PocketBase binary)
+yarn install && yarn setup
+
+# Run everything: webapp + shared (watch) + pb
+yarn dev
+
+# Per-workspace dev
+yarn workspace @garage-ware/webapp dev     # Next.js on :3000
+yarn workspace @garage-ware/pb dev         # ./pocketbase/pocketbase serve on :8090
+yarn workspace @garage-ware/shared dev     # tsup watch
+
+# Build / quality (all run via `yarn workspaces foreach`)
+yarn build         # all workspaces
+yarn lint          # lint:fix everywhere
+yarn lint:check    # lint without fix (CI uses this)
+yarn typecheck
+yarn format        # prettier write
+yarn format:check
+yarn test          # every test actually lives in webapp — shared's `test` is a stub echo
+yarn precommit     # build:shared + lint + typecheck + format + test
+
+# Single test (vitest) — example: just the Garage client tests
+yarn workspace @garage-ware/webapp test src/lib/garage/garage-client.test.ts
+yarn workspace @garage-ware/webapp test -t 'assertClaimDeltaAllowed'   # by test/describe name
+
+# Migrations (generated from shared/src/schema/ collection definitions)
+yarn db:migrate    # alias for: yarn workspace @garage-ware/shared migrate:generate
+yarn db:status
+
+# PocketBase admin (create the superuser via the binary)
+yarn workspace @garage-ware/pb admin
+
+# Promote an existing user to app-admin (requires POCKETBASE_ADMIN_EMAIL/PASSWORD env)
+yarn workspace @garage-ware/pb seed-admin <user-email>
+```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs: `yarn install --immutable` → `build` → `format:check` → `lint:check` → `typecheck` → `test`. Match this order locally before pushing.
+
+## Repo location and release pipeline
+
+The canonical remote is **`github.com/make-ware/garage-ware`** (private; moved from `dastron/garage-ware`). Container images publish to **`ghcr.io/make-ware/garage-ware`**.
+
+Three workflows, none of which hardcode the owner — the image name comes from `${{ github.repository }}` and auth from the built-in `GITHUB_TOKEN`, so another move needs no workflow edits:
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| [ci.yml](.github/workflows/ci.yml) | push/PR on `main` | the quality gate above |
+| [release-please.yml](.github/workflows/release-please.yml) | push on `main` | maintains a release PR (bumps [package.json](package.json) + [.release-please-manifest.json](.release-please-manifest.json), writes [CHANGELOG.md](CHANGELOG.md)); on merge tags `vX.Y.Z`, cuts a release, then calls docker-build |
+| [docker-build.yml](.github/workflows/docker-build.yml) | `workflow_call` from release-please, a `v*.*.*` tag push, a published release, or manual dispatch | builds `linux/amd64` + `linux/arm64` in parallel, pushes by digest, then merges one multi-arch manifest tagged `vX.Y.Z` + `latest` |
+
+Notes when touching these:
+
+- **Conventional commits are load-bearing.** release-please derives the version bump and changelog from `feat:` / `fix:` / `feat!:` prefixes. A non-conventional commit message produces no release entry.
+- **Version lives in three places** — [package.json](package.json), [.release-please-manifest.json](.release-please-manifest.json), and the `v*` git tag. release-please owns all three; never bump by hand.
+- **`org.opencontainers.image.source`** is set on both the per-arch images and the merged manifest. That label is what links the GHCR package to this repo (and so makes the package inherit repo access) — keep it if you rewrite the labels block.
+- The repo is private, so the GHCR package is too: pulling needs `docker login ghcr.io` with a PAT carrying `read:packages`.
+- Tags and releases that release-please itself creates do **not** re-trigger workflows (`GITHUB_TOKEN`-authored events never do) — that's why release-please invokes docker-build via `workflow_call` rather than relying on the tag-push trigger. The `push: tags` / `release: published` triggers are for human-created tags and releases.
+
+## Required env vars
+
+See [.env.example](.env.example) — [webapp/.env.example](webapp/.env.example) is a byte-identical copy, so edit both or neither. The split matters:
+
+- `NEXT_PUBLIC_POCKETBASE_URL` — browser-visible; the webapp's PB client uses this.
+- `POCKETBASE_URL` / `POCKETBASE_ADMIN_EMAIL` / `POCKETBASE_ADMIN_PASSWORD` — server-only; used by the migration tool, the `seed-admin` script, and the `getPbAsSuperuser()` helper for trusted admin operations. The email and password are **required** by [shared/pocketbase-migrate.config.js](shared/pocketbase-migrate.config.js), which throws a named error rather than falling back to a default credential.
+- `GARAGE_ADMIN_URL` / `GARAGE_ADMIN_TOKEN` — **server-only**; consumed only by [webapp/src/lib/garage/](webapp/src/lib/garage/). The bearer token must never appear in any `NEXT_PUBLIC_*` var or anywhere a client bundle could see it.
+- `GARAGE_S3_ENDPOINT` / `GARAGE_S3_REGION` — the S3 gateway URL (**required, no default** — an unset value makes `/next-api/config` return a 500 rather than silently falling back to some other cluster's gateway) and region (default `us-east-1`) used by the in-app file browser ([webapp/src/lib/s3/browser.ts](webapp/src/lib/s3/browser.ts)) and the bucket "connect" page. These are **non-secret public values** but are intentionally **runtime** server-side env (no `NEXT_PUBLIC_` prefix), served to the browser at request time by the [`/next-api/config`](webapp/src/app/next-api/config/route.ts) route and fetched client-side via [webapp/src/lib/s3/config.ts](webapp/src/lib/s3/config.ts) (`useS3Config()`). The point is deployability: a `NEXT_PUBLIC_*` var is inlined into the client bundle at build time, so one image could only ever target one gateway; reading them at runtime lets the same image be pointed at any cluster via plain env (e.g. a k8s pod `env:`) with no rebuild. The file browser still runs **entirely client-side**: it signs S3 requests in the browser with **user-supplied credentials** (the secret is typed into the credential gate, kept only in `sessionStorage` for the tab, and never sent to our server or persisted by PB) — no token lives in env, only the endpoint + region. Because the browser talks to the gateway directly, **each bucket must allow CORS** from the app's origin (methods GET/PUT/HEAD, the `authorization`/`x-amz-*`/`content-type` request headers, `ETag` exposed) or the browser blocks the requests.
+- `GARAGE_AVG_OBJECT_SIZE_MB` — **optional, server-only**. Average object size in MB. When set, the `/next-api/garage/buckets` handlers derive each bucket's Garage `maxObjects` quota from its byte quota (`maxObjects = floor(quota_bytes / (this × 1MB))`, at least 1) whenever a quota is created or changed; the bucket details page surfaces the resulting object cap, and the daily `bucket-usage-alerts` cron emails when a bucket's object-count fill crosses the user's threshold (it reads the cached `Buckets.objects`/`Buckets.max_objects`). Leave unset to apply no object-count cap (`maxObjects` stays `null`). Read at request time via `process.env` (see [webapp/src/lib/storage/object-quota.ts](webapp/src/lib/storage/object-quota.ts)).
+- `GARAGE_PUBLIC_S3_ENDPOINT` — **optional, server-only**. The endpoint *advertised to users* on the bucket "connect" page for their own tools (aws cli, rclone). Served as `s3PublicEndpoint` by [`/next-api/config`](webapp/src/app/next-api/config/route.ts) and falls back to `GARAGE_S3_ENDPOINT`. Set it when the URL you publish differs from the CORS-enabled gateway the in-app file browser must talk to — the browser always uses `GARAGE_S3_ENDPOINT`.
+- `APP_PUBLIC_URL` — server-only, read by the PocketBase `bucket-usage-alerts` cron via `$os.getenv` to build absolute CTA links in alert emails. Must reach the PB process (in Docker, pass via `docker run -e`). Unset and the cron logs a warning and skips.
+
+## Architecture
+
+End-to-end flow:
+
+```
+Browser                                                 Garage cluster
+  │                                                          ▲
+  ├─► PocketBase :8090 (client-side SDK) ── reads: Users, Admins, AccessKeys,
+  │                                          Buckets, StorageClaims, StorageTransfers
+  │
+  └─► Next.js :3000 ─► /next-api/garage/* Route Handlers (server-only)
+                          │  reads PB session via Bearer token
+                          │  authorizes via Admins / ownership check in PB
+                          ▼
+                       lib/garage/  ── bearer-auth fetch client → Garage admin API v2
+```
+
+Two parallel back ends, two different auth boundaries:
+
+- **PocketBase** is reached directly from the browser using the JS SDK ([webapp/src/lib/pocketbase.ts](webapp/src/lib/pocketbase.ts)). All consumer files use `'use client'`. PB's collection rules enforce per-user access. Rationale: [docs/PB_SSR.md](docs/PB_SSR.md).
+- **Garage admin API** is server-side only, proxied through Next.js Route Handlers under [webapp/src/app/next-api/garage/](webapp/src/app/next-api/garage/). The handler reads the PB auth token from the `Authorization: Bearer <token>` header (sent by [webapp/src/lib/api-client.ts](webapp/src/lib/api-client.ts)), verifies it via `pb.collection('Users').authRefresh()`, authorizes (admin via Admins collection, ownership via `AccessKeys.user`/`Buckets.user`), and only then calls Garage with the cluster bearer token.
+
+### Data model
+
+| Collection | Fields | Role |
+|---|---|---|
+| `Users` (PB auth) | `notification_threshold_pct` | Identity + per-account fill-alert threshold (10–90, integer, default 90). No storage field — the user's claim is derived from the two ledgers below. |
+| `Admins` | `user: relation(Users)` | Membership grants the admin scope. Listed/viewed only by admins (the rule self-references `@collection.Admins`). |
+| `AccessKeys` | `user`, `garage_key_id`, `name` | Maps a Garage S3 access-key ID to a PB user. Secret is shown once at creation, never persisted. |
+| `Buckets` | `user`, `garage_bucket_id`, `name`, `quota_gb`, `bytes`, `objects`, `max_size`, `max_objects`, `usage_updated_at` | Maps a Garage bucket to its owning PB user; `quota_gb` is mirrored to Garage's per-bucket quota and slices the user's total claim. `bytes`/`objects`/`max_size`/`max_objects`/`usage_updated_at` are a usage cache refreshed on dashboard reads, consumed by the daily alert cron. `max_size` (bytes) mirrors `quota_gb`; `max_objects` (count, 0 = no cap) is the Garage `maxObjects` quota derived from `GARAGE_AVG_OBJECT_SIZE_MB`. |
+| `StorageClaims` | `user`, `node_id`, `node_hostname`, `node_zone`, `quota_gb`, `note` | **Append-only ledger** of per-node grants, admin-written. One row is one signed adjustment (`quota_gb` may be negative to reclaim), not a state snapshot — a user's effective claim on a node is the sum of their rows for it, and their total claim is the sum across all nodes. `note` records why (e.g. "upgraded to 8TB disk"). `(user, node_id)` is indexed but deliberately **not unique**. |
+| `StorageTransfers` | `from_user`, `to_user`, `quota_gb`, `note` | **Append-only ledger** of user→user handoffs of already-granted capacity. `quota_gb` is always positive (min 0.001) and flows `from_user → to_user`; there is no update path, and deleting a row is how a recipient "returns" it. Node-agnostic by design — a transfer carries no `node_id`. |
+
+**PB write rules are not `null` — the Route-Handler funnel is convention, not enforcement.** `AccessKeys`/`Buckets` allow `user = @request.auth.id || <admin>` on create/update/delete, `StorageClaims` is admin-only, `StorageTransfers` lets the sender create and the recipient delete. So PB would happily *accept* a direct SDK write from the browser — and every quota invariant and every Garage-side sync would be skipped. All app writes go through `/next-api/garage/*`; keep it that way, and don't read the permissive rules as license to write from a component.
+
+For `AccessKeys`/`Buckets`, a handler writes PB first, calls Garage, and rolls back the PB row on Garage failure (Garage first, PB second for deletes). `StorageClaims`/`StorageTransfers` have no Garage counterpart, so their handlers are pure PB writes fronted by a validator.
+
+#### Storage accounting
+
+Two helpers own the arithmetic — call them instead of summing rows yourself:
+
+- `getUserGrantedGb(pb, userId, { onlyPresent, layout })` — [webapp/src/lib/storage/claims.ts](webapp/src/lib/storage/claims.ts). Net granted GB: claims + received − sent. `onlyPresent: true` (which every validator passes) drops claims on nodes missing from the live layout, so decommissioned hardware can't back a bucket; transfers are never filtered, since they aren't node-scoped.
+- `getUserStorageSummary(pb, userId, layout?)` — [webapp/src/lib/storage/summary.ts](webapp/src/lib/storage/summary.ts). The whole position in one object (`claimsGb`, `sentGb`, `receivedGb`, `netGrantedGb`, `allocatedGb`, `availableGb` plus the raw rows). This is the read path for the dashboard and admin views.
+
+The per-row aggregates they build on live on the mutators — `StorageClaimMutator.sumByUser/sumByNode/sumByUserAndNode`, `StorageTransferMutator.sumSentByUser/sumReceivedByUser`, `BucketMutator.sumAllocatedGb` — so a new guard rarely needs a fresh query.
+
+From the browser, don't reassemble a user's position out of PB reads: `GET /next-api/garage/storage-summary` returns `getUserStorageSummary()` for the caller, or for `?userId=` when the caller is an admin. Same `?userId=`-or-self, admin-gated shape is used by `/next-api/garage/transfers`.
+
+**Four storage invariants:**
+- Per user: `sum(bucket.quota_gb for user) ≤ netGranted(user)` — checked anywhere either side of that inequality moves: the bucket handlers (allocation up), `assertClaimDeltaAllowed` (claim down), and both transfer handlers (capacity out or clawed back).
+- Per node: `sum(claim.quota_gb on node) ≤ node.capacity / replicationFactor`.
+- Per user *and* node: `sum(claim.quota_gb for user on node) ≥ 0`. Without this, a user could hold −5 TB on one node and +5 TB on another and net out fine, while the negative rows silently freed capacity on the first node for other users to over-claim.
+- Per transfer: a sender may only give away capacity they have *not* already allocated (`netGranted − allocated`), and a transfer may only be returned if the recipient still covers their buckets without it (else 409).
+
+Because ledger rows are signed, the first three checks reduce to the same question — *what does the sum look like after this delta?* — so `assertClaimDeltaAllowed()` in [webapp/src/lib/storage/claim-ledger.ts](webapp/src/lib/storage/claim-ledger.ts) is the single guard for **every** claim mutation: POST passes `+amount`, DELETE passes `−amount`, PATCH passes `new − old` (and skips the guard entirely when that's zero, e.g. a note-only edit). No entry needs excluding from the sums. It reads the live layout via `loadClaimContext()`. Tests: [claim-ledger.test.ts](webapp/src/lib/storage/claim-ledger.test.ts).
+
+A claim on a node absent from the layout can only be wound down, never grown. The `onlyPresent` filter already values such claims at 0, so retiring one never strands a bucket.
+
+Reversing a grant should normally **append a negative entry**, not delete the original — DELETE exists to fix mistyped entries and rewrites history. Both the admin claims table and the user dashboard roll entries up per `(user, node)` / per node before display, so the ledger never leaks into the UI as duplicate node rows.
+
+Per-node claims are an *accounting* construct, not data placement — Garage spreads each bucket's data across all storage nodes per its layout, so a claim doesn't pin a user's bytes to a node. Transfers lean on that: because they're node-agnostic, moving capacity between users changes neither side's per-node sums, so the node-capacity invariant is untouched and `sum(claims on node)` stays the honest measure of what a node has promised.
+
+### Admin gate
+
+Admin checks use the `Admins` collection rules: the listRule/viewRule (`@collection.Admins.user ?= @request.auth.id`) means a non-admin querying their own row gets a 404 and an admin gets the record. So [webapp/src/lib/auth/server.ts](webapp/src/lib/auth/server.ts) `isUserAdmin()` and the client-side [webapp/src/hooks/use-admin-status.ts](webapp/src/hooks/use-admin-status.ts) both work via the same self-scoped lookup, no superuser auth needed.
+
+`getPbAsSuperuser()` from [webapp/src/lib/auth/server.ts](webapp/src/lib/auth/server.ts) authenticates as a PB superuser when a Route Handler needs to bypass collection rules (e.g. updating fields the caller's `updateRule` doesn't permit). After the migration that opened Users list/view to admins, most admin reads no longer need this — but it remains the escape hatch for trusted writes.
+
+### Garage client
+
+[webapp/src/lib/garage/](webapp/src/lib/garage/) wraps the [Garage admin API v2](https://garagehq.deuxfleurs.fr/api/garage-admin-v2.html). Every file starts with `import 'server-only'`. Every Garage response is parsed through a zod schema in [webapp/src/lib/garage/schemas.ts](webapp/src/lib/garage/schemas.ts) — Garage v2 is "early implementation, may change", so the schema layer protects us against drift. Errors map to typed classes (`GarageNotFoundError`, `GarageQuorumError`, `GarageAuthError`, `GarageValidationError`) in [errors.ts](webapp/src/lib/garage/errors.ts).
+
+Tests for the client are in [webapp/src/lib/garage/garage-client.test.ts](webapp/src/lib/garage/garage-client.test.ts) — they mock `globalThis.fetch`. The vitest config aliases `server-only` to a stub ([webapp/src/test/server-only-stub.ts](webapp/src/test/server-only-stub.ts)) so server modules are importable from tests.
+
+## Key invariants
+
+- **Client-side PocketBase only.** Don't call PocketBase from a Server Component. Server-side PB instances exist only inside `/next-api/garage/*` Route Handlers — and only to verify the caller's auth token (`authRefresh`) or perform privileged admin operations as a superuser. Rationale: [docs/PB_SSR.md](docs/PB_SSR.md).
+- **Garage client is server-only.** The bearer token must never reach the browser. Anything under `webapp/src/lib/garage/` is `import 'server-only'`. Browsers reach Garage exclusively via `/next-api/garage/*` proxies.
+- **Mutators, not raw SDK** for PB reads. Data access goes through a `BaseMutator` subclass (see [shared/src/mutators/base.ts](shared/src/mutators/base.ts)) — handles zod validation, default expand/filter/sort, error wrapping, realtime subscriptions. Direct `pb.collection('...').create(...)` calls are a smell for read paths; mutations on `AccessKeys`/`Buckets` go through Route Handlers and may use the typed PB client directly there since the validation already happened above.
+- **Mutators live in `shared/`**, exposed via `@garage-ware/shared/mutators`.
+- **`TypedPocketBase` is duplicated.** [webapp/src/lib/types.ts](webapp/src/lib/types.ts) defines a webapp-local `TypedPocketBase` to avoid type drift between the webapp's `pocketbase` package and shared's. When wiring a new collection into the typed client, update **that** file's overload list, not just shared's.
+- **Schema → migration → restart.** After editing a `defineCollection()` in `shared/src/schema/`: rebuild shared, run `yarn db:migrate`, review the generated file, then restart PocketBase (it auto-applies on startup).
+
+## Adding a collection
+
+1. Create `shared/src/schema/<name>.ts` using `defineCollection()` + zod field helpers from `pocketbase-zod-schema` (`TextField`, `RelationField`, `BoolField`, `NumberField`, etc.). Export the collection, the `Schema`, the `InputSchema`, and inferred types. See existing schemas (`user.ts`, `admin.ts`, `access-key.ts`, `bucket.ts`) for the pattern, or `storage-claim.ts` / `storage-transfer.ts` for an append-only ledger (deliberately non-unique index; transfers also set `updateRule: null`, since a handoff is corrected by deleting it, not editing it).
+2. Re-export from [shared/src/schema.ts](shared/src/schema.ts).
+3. Create `shared/src/mutators/<name>.ts` extending `BaseMutator<T, TInput>` — implement `getCollection()` and `validateInput()`. Re-export from [shared/src/mutators/index.ts](shared/src/mutators/index.ts).
+4. Add a collection overload in [webapp/src/lib/types.ts](webapp/src/lib/types.ts).
+5. `yarn workspace @garage-ware/shared build && yarn db:migrate`, review the migration, restart PocketBase.
+
+### Migration ordering caveat
+
+`pocketbase-migrate` emits one file per collection, timestamped at generation time. If a new collection's rule references another collection (e.g. `@collection.Admins.user ?= @request.auth.id`), the referenced collection must be created **first** — PocketBase validates rules at collection-save time and will reject a forward reference. After `yarn db:migrate`, check the generated filenames and rename them so timestamps order dependencies correctly. The current migrations show the pattern: `1778036285_created_Admins.js` runs before `1778036286_created_AccessKeys.js` and `1778036287_created_Buckets.js`.
+
+**Generated migrations are a starting point, not gospel.** Hand-editing one is normal when the generator can't express the change — [1785361304_updated_StorageClaims.js](pocketbase/pb_migrations/1785361304_updated_StorageClaims.js) (the append-only-ledger conversion) is the worked example: it splits one schema diff into ordered `app.save()` steps because the replacement index reuses the name `idx_storageclaims_user_node` and PocketBase rejects a collection holding two indexes with the same name, so the drop must land before the add. It also documents in its `down` that reverting can't succeed against existing ledger data without collapsing each `(user, node)` pair first. Read the generated file before trusting it, and leave that kind of note behind.
+
+## Adding a /next-api/garage/* Route Handler
+
+1. Create `webapp/src/app/next-api/garage/<...>/route.ts` exporting `GET`/`POST`/etc.
+2. Start with `await getServerUser(req)` (any authenticated caller) or `await requireAdmin(req)` (admin-only). For ownership checks: load the PB row and compare `record.user !== user.id` then fall back to `isUserAdmin(pb, user.id)`. All three helpers are in [webapp/src/lib/auth/server.ts](webapp/src/lib/auth/server.ts).
+3. Build a Garage client via `GarageClient.fromEnv()` and call the relevant module under `lib/garage/` (`cluster`, `keys`, `buckets`, `permissions`). Claim/transfer handlers touch no Garage state except the layout — they call `loadClaimContext(garage)` or `cluster.getLayout(garage)` purely to value capacity.
+4. For mutations: write PB first, call Garage second; on Garage failure, roll back the PB row (and vice versa for deletes — Garage first, PB second). Use `try { ... } catch (err) { return errorResponse(err); }` to map `HttpError`/`GarageError` to JSON responses.
+5. From the client, call via `api()` from [webapp/src/lib/api-client.ts](webapp/src/lib/api-client.ts) — it auto-attaches the PB token as a bearer header. Don't write a bare `fetch()`.
+
+## Docker
+
+[docker/Dockerfile](docker/Dockerfile) builds a single container with Supervisor running PocketBase + Next.js + Nginx (reverse proxy on :80). All runtime state lives under a single `/data` volume — back up by snapshotting that one directory. See [docker/README.md](docker/README.md). Garage itself runs separately; the container only needs to reach `GARAGE_ADMIN_URL` over the network.
+
+Nginx routing inside the container:
+
+| Path | Backend |
+|---|---|
+| `/` | Next.js :3000 |
+| `/api/` | PocketBase :8090 (API) |
+| `/_/` | PocketBase :8090 (admin UI) |
+| `/health` | PocketBase health probe |
+
+In Docker, build with `NEXT_PUBLIC_POCKETBASE_URL=/` (same-origin) — the PB JS SDK appends `/api/...` to the base URL itself, and nginx proxies that prefix through to PocketBase, so `/api` here would resolve to `/api/api/...`. That `/` is the Dockerfile default and what [docker-build.yml](.github/workflows/docker-build.yml) passes. For local dev, use `http://localhost:8090`.
+
+## Notes
+
+[docs/](docs/) is vendored upstream reference material, not docs about this app — `PB_*.md` for PocketBase (auth, hooks, crons, filters, realtime, SSR) and `GarageHQ_*` for the cluster, including the full [admin API OpenAPI spec](docs/GarageHQ_OPENAPI.json). Check there before guessing at a PB rule syntax or a Garage endpoint shape; the one file that *is* about this app's design is [docs/PB_SSR.md](docs/PB_SSR.md).
+
+ESLint config at the repo root ignores `pocketbase/**` and `scripts/**` ([eslint.config.mjs](eslint.config.mjs)). The lint rule `react-hooks/set-state-in-effect` is enabled and strict — define an inner async function inside `useEffect`, do all `setState` calls inside its async callbacks (with a `cancelled` flag) rather than in the effect body or in helpers called synchronously from it. See [webapp/src/app/dashboard/buckets/page.tsx](webapp/src/app/dashboard/buckets/page.tsx) for the canonical pattern.

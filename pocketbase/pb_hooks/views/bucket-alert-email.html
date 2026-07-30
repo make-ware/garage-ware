@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Storage alert</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: #1f2937; max-width: 560px; margin: 0 auto; padding: 24px;">
+  <h2 style="margin: 0 0 8px;">Storage alert</h2>
+  <p style="margin: 0 0 16px; color: #4b5563;">
+    {{len .buckets}} of your buckets {{if ne (len .buckets) 1}}are{{else}}is{{end}} at or over your {{.threshold}}% fill threshold (storage or object count).
+  </p>
+
+  <table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+    <thead>
+      <tr style="text-align: left; font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em;">
+        <th style="padding: 8px 0; border-bottom: 1px solid #e5e7eb;">Bucket</th>
+        <th style="padding: 8px 0; border-bottom: 1px solid #e5e7eb;">Used</th>
+        <th style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; text-align: right;">Full</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .buckets}}
+      <tr>
+        <td style="padding: 12px 0; border-bottom: 1px solid #f3f4f6;">
+          <a href="{{$.appUrl}}/dashboard/buckets/{{.id}}" style="color: #2563eb; text-decoration: none; font-weight: 500;">{{.name}}</a>
+          <div style="font-size: 12px; color: #9ca3af;">checked {{.lastChecked}}</div>
+        </td>
+        <td style="padding: 12px 0; border-bottom: 1px solid #f3f4f6; font-variant-numeric: tabular-nums;">
+          {{.used}} / {{.quota}}
+          {{if .hasObjectQuota}}<div style="font-size: 12px; color: #6b7280;">{{.objectsUsed}} / {{.maxObjects}} objects</div>{{end}}
+        </td>
+        <td style="padding: 12px 0; border-bottom: 1px solid #f3f4f6; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600;">
+          {{if .sizeOver}}<span style="color: #dc2626;">{{.pctFull}}%</span>{{else}}<span>{{.pctFull}}%</span>{{end}}
+          {{if .hasObjectQuota}}{{if .objectOver}}<div style="font-size: 12px; font-weight: 600; color: #dc2626;">{{.objectPctFull}}% obj</div>{{else}}<div style="font-size: 12px; font-weight: 600; color: #6b7280;">{{.objectPctFull}}% obj</div>{{end}}{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <p style="margin: 0 0 12px;">You have two options:</p>
+  <ul style="margin: 0 0 24px; padding-left: 20px; color: #374151;">
+    <li style="margin-bottom: 8px;">
+      <strong>Deal with the overage</strong> — open the bucket above to delete unused objects or raise its quota (subject to your storage claim).
+    </li>
+    <li>
+      <strong>Adjust your alert threshold</strong> — raise the percentage in your <a href="{{.appUrl}}/dashboard/profile" style="color: #2563eb;">profile settings</a> to mute these reminders.
+    </li>
+  </ul>
+
+  <p style="margin: 24px 0 0; font-size: 12px; color: #9ca3af;">
+    Sent by garage-ware. Usage figures reflect the last time you visited the dashboard.
+  </p>
+</body>
+</html>
