@@ -3,10 +3,18 @@
 // Per-(user, node) roll-up of the StorageClaims ledger. A cache, maintained by
 // the hooks in pb_hooks/main.pb.js.
 //
-// Note this collection is created EMPTY. The onBootstrap hook backfills it from
-// the ledger on first start after deploy, and the nightly cron keeps it honest.
-// Reads switch to it, so a missing backfill reads as everyone having zero
-// granted storage — verify the backfill ran before trusting any figure.
+// Note this collection is created EMPTY. It is backfilled from the ledger by
+// the *sibling migration* 1786122444_created_StorageUserBalances.js, which runs
+// straight after this one and calls rebuildAll once both tables exist; the
+// nightly cron then keeps it honest. Deliberately not an onBootstrap hook —
+// migrations run after bootstrap fires, so such a hook would find no
+// collections on exactly the upgrade boot that has data to backfill (see the
+// note in pb_hooks/main.pb.js).
+//
+// Reads switch to this table, so a missing backfill reads as everyone having
+// zero granted storage. To verify it ran, look for the
+// "[storage-balance] migration backfill: N user(s), M node balance(s)" line in
+// the startup log — not for anything at bootstrap.
 //
 // Two choices here are deliberately the opposite of StorageClaimAudit:
 //   - `user` cascades from Users. This is derived data; when the user goes,

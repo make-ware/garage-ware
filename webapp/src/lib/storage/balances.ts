@@ -53,11 +53,17 @@ export async function getUserBalances(
 ): Promise<UserBalances> {
   const nodes = new StorageNodeBalanceMutator(pb);
   const users = new StorageUserBalanceMutator(pb);
-  const [nodeResult, userBalance] = await Promise.all([
-    nodes.listByUser(userId),
+  // Paged, not `listByUser` — that reads a single 500-row page, which is the
+  // exact shape of the bug this module exists to retire. This read backs
+  // assertClaimDeltaAllowed, so a truncated page under-reports the user's
+  // claims and the guard waves through an over-grant.
+  const [nodeBalances, userBalance] = await Promise.all([
+    fetchAllPages<StorageNodeBalance>((page, perPage) =>
+      nodes.getList(page, perPage, `user = "${userId}"`)
+    ),
     users.findByUser(userId),
   ]);
-  return { nodeBalances: nodeResult.items, userBalance };
+  return { nodeBalances, userBalance };
 }
 
 /**
