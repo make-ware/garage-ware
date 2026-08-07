@@ -26,107 +26,147 @@
 
 // The claim hooks below do double duty: they write the audit trail AND keep the
 // StorageNodeBalances / StorageUserBalances roll-ups current. Both happen in the
-// same handler, after the same e.next(), on the same transactional e.app — so a
-// claim, its audit row, and its balance either all commit or all roll back.
-// Splitting them into parallel hooks would only create a way for them to
-// disagree.
+// same handler, after the same e.next() — so a claim, its audit row, and its
+// balance either all commit or all roll back. Splitting them into parallel hooks
+// would only create a way for them to disagree.
+//
+// That atomicity is NOT free, and does not come from e.app: inside a request
+// hook e.app is the plain request app, and the record save that e.next() runs
+// commits in a transaction of its own before e.next() returns. Worse, the
+// default handler writes the HTTP response from inside that same call, so by
+// the time a naive post-e.next() audit write throws, the client has already been
+// told the claim succeeded and the error only reaches the log.
+//
+// So every hook that must stay in step with its record wraps the whole thing in
+// `withRecordTx`, which is the two-line dance below:
+//
+//     e.app.runInTransaction((txApp) => {
+//       e.app = txApp;   // the save inside e.next() now joins THIS transaction
+//       fn(txApp);
+//     });
+//
+// Assigning e.app before e.next() is what makes it work — the default handler
+// reads e.App to build its upsert form, and PocketBase's runInTransaction nests
+// safely (a txApp's DB is already a *dbx.Tx, so the inner call runs inline).
+// It also fixes the response ordering for free: PocketBase defers the response
+// write to transaction-complete whenever e.App is transactional, so a failed
+// audit or balance write now rolls the claim back AND surfaces as an error to
+// the caller, instead of a 200 with a silently missing trail.
+//
+// The read-modify-write inside applyClaimDelta depends on this too. StorageNode-
+// Balances has a UNIQUE (user, node_id); unwrapped, two concurrent claims on the
+// same pair either collide on that constraint or clobber each other's total,
+// after the claims themselves have already committed. Running it inside the
+// write transaction serializes it against the other writer.
+//
+// withRecordTx lives in lib/record-tx.js and is `require`d inside each handler,
+// for the same Goja reason as the other helpers.
 
 onRecordCreateRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
-  e.next();
-  const amountGb = e.record.getFloat("quota_gb");
-  writeClaimAudit(e.app, {
-    action: "create",
-    claim: e.record,
-    previousGb: 0,
-    newGb: amountGb,
-    auth: e.auth,
-    source: "api",
-  });
-  applyClaimDelta(e.app, {
-    userId: e.record.getString("user"),
-    nodeId: e.record.getString("node_id"),
-    deltaGb: amountGb,
-    entryDelta: 1,
-    nodeHostname: e.record.getString("node_hostname"),
-    nodeZone: e.record.getString("node_zone"),
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
+  withRecordTx(e, (txApp) => {
+    e.next();
+    const amountGb = e.record.getFloat("quota_gb");
+    writeClaimAudit(txApp, {
+      action: "create",
+      claim: e.record,
+      previousGb: 0,
+      newGb: amountGb,
+      auth: e.auth,
+      source: "api",
+    });
+    applyClaimDelta(txApp, {
+      userId: e.record.getString("user"),
+      nodeId: e.record.getString("node_id"),
+      deltaGb: amountGb,
+      entryDelta: 1,
+      nodeHostname: e.record.getString("node_hostname"),
+      nodeZone: e.record.getString("node_zone"),
+    });
   });
 }, "StorageClaims");
 
 onRecordUpdateRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   // original() is the record as it was loaded from the DB, before the request
   // applied its changes — read it before e.next() commits them.
   const before = e.record.original();
   const previousGb = before.getFloat("quota_gb");
   const previousNodeId = before.getString("node_id");
   const previousUserId = before.getString("user");
-  e.next();
-  const newGb = e.record.getFloat("quota_gb");
-  const nodeId = e.record.getString("node_id");
-  const userId = e.record.getString("user");
-  writeClaimAudit(e.app, {
-    action: "update",
-    claim: e.record,
-    previousGb: previousGb,
-    newGb: newGb,
-    auth: e.auth,
-    source: "api",
-  });
+  withRecordTx(e, (txApp) => {
+    e.next();
+    const newGb = e.record.getFloat("quota_gb");
+    const nodeId = e.record.getString("node_id");
+    const userId = e.record.getString("user");
+    writeClaimAudit(txApp, {
+      action: "update",
+      claim: e.record,
+      previousGb: previousGb,
+      newGb: newGb,
+      auth: e.auth,
+      source: "api",
+    });
 
-  if (previousUserId === userId && previousNodeId === nodeId) {
-    // Ordinary case: the amount moved, the pair did not.
-    applyClaimDelta(e.app, {
-      userId: userId,
-      nodeId: nodeId,
-      deltaGb: newGb - previousGb,
-      entryDelta: 0,
-      nodeHostname: e.record.getString("node_hostname"),
-      nodeZone: e.record.getString("node_zone"),
-    });
-  } else {
-    // The entry was re-pointed at a different user or node. Nothing in the app
-    // does this, but the PB admin UI can — move the whole entry rather than
-    // leaving its old pair overstated.
-    applyClaimDelta(e.app, {
-      userId: previousUserId,
-      nodeId: previousNodeId,
-      deltaGb: -previousGb,
-      entryDelta: -1,
-    });
-    applyClaimDelta(e.app, {
-      userId: userId,
-      nodeId: nodeId,
-      deltaGb: newGb,
-      entryDelta: 1,
-      nodeHostname: e.record.getString("node_hostname"),
-      nodeZone: e.record.getString("node_zone"),
-    });
-  }
+    if (previousUserId === userId && previousNodeId === nodeId) {
+      // Ordinary case: the amount moved, the pair did not.
+      applyClaimDelta(txApp, {
+        userId: userId,
+        nodeId: nodeId,
+        deltaGb: newGb - previousGb,
+        entryDelta: 0,
+        nodeHostname: e.record.getString("node_hostname"),
+        nodeZone: e.record.getString("node_zone"),
+      });
+    } else {
+      // The entry was re-pointed at a different user or node. Nothing in the app
+      // does this, but the PB admin UI can — move the whole entry rather than
+      // leaving its old pair overstated.
+      applyClaimDelta(txApp, {
+        userId: previousUserId,
+        nodeId: previousNodeId,
+        deltaGb: -previousGb,
+        entryDelta: -1,
+      });
+      applyClaimDelta(txApp, {
+        userId: userId,
+        nodeId: nodeId,
+        deltaGb: newGb,
+        entryDelta: 1,
+        nodeHostname: e.record.getString("node_hostname"),
+        nodeZone: e.record.getString("node_zone"),
+      });
+    }
+  });
 }, "StorageClaims");
 
 onRecordDeleteRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   const previousGb = e.record.getFloat("quota_gb");
   const userId = e.record.getString("user");
   const nodeId = e.record.getString("node_id");
-  e.next();
-  writeClaimAudit(e.app, {
-    action: "delete",
-    claim: e.record,
-    previousGb: previousGb,
-    newGb: 0,
-    auth: e.auth,
-    source: "api",
-  });
-  applyClaimDelta(e.app, {
-    userId: userId,
-    nodeId: nodeId,
-    deltaGb: -previousGb,
-    entryDelta: -1,
+  withRecordTx(e, (txApp) => {
+    e.next();
+    writeClaimAudit(txApp, {
+      action: "delete",
+      claim: e.record,
+      previousGb: previousGb,
+      newGb: 0,
+      auth: e.auth,
+      source: "api",
+    });
+    applyClaimDelta(txApp, {
+      userId: userId,
+      nodeId: nodeId,
+      deltaGb: -previousGb,
+      entryDelta: -1,
+    });
   });
 }, "StorageClaims");
 
@@ -141,6 +181,7 @@ onRecordDeleteRequest((e) => {
 onRecordDeleteRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
 
   const userId = e.record.id;
   const userEmail = e.record.email();
@@ -194,28 +235,30 @@ onRecordDeleteRequest((e) => {
     quotaGb: transfer.getFloat("quota_gb"),
   }));
 
-  e.next();
+  withRecordTx(e, (txApp) => {
+    e.next();
 
-  for (const snapshot of transferSnapshots) {
-    // Only the surviving counterparty needs correcting.
-    applyTransferDelta(e.app, {
-      fromUserId: snapshot.fromUserId === userId ? null : snapshot.fromUserId,
-      toUserId: snapshot.toUserId === userId ? null : snapshot.toUserId,
-      deltaGb: -snapshot.quotaGb,
-    });
-  }
+    for (const snapshot of transferSnapshots) {
+      // Only the surviving counterparty needs correcting.
+      applyTransferDelta(txApp, {
+        fromUserId: snapshot.fromUserId === userId ? null : snapshot.fromUserId,
+        toUserId: snapshot.toUserId === userId ? null : snapshot.toUserId,
+        deltaGb: -snapshot.quotaGb,
+      });
+    }
 
-  for (const snapshot of snapshots) {
-    writeClaimAudit(e.app, {
-      action: "delete",
-      claim: snapshot.claim,
-      previousGb: snapshot.previousGb,
-      newGb: 0,
-      auth: e.auth,
-      source: "cascade",
-      userEmail: userEmail,
-    });
-  }
+    for (const snapshot of snapshots) {
+      writeClaimAudit(txApp, {
+        action: "delete",
+        claim: snapshot.claim,
+        previousGb: snapshot.previousGb,
+        newGb: 0,
+        auth: e.auth,
+        source: "cascade",
+        userEmail: userEmail,
+      });
+    }
+  });
 }, "Users");
 
 // ---------------------------------------------------------------------------
@@ -235,24 +278,30 @@ onRecordDeleteRequest((e) => {
 // and delete are the only two events.
 onRecordCreateRequest((e) => {
   const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
-  e.next();
-  applyTransferDelta(e.app, {
-    fromUserId: e.record.getString("from_user"),
-    toUserId: e.record.getString("to_user"),
-    deltaGb: e.record.getFloat("quota_gb"),
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
+  withRecordTx(e, (txApp) => {
+    e.next();
+    applyTransferDelta(txApp, {
+      fromUserId: e.record.getString("from_user"),
+      toUserId: e.record.getString("to_user"),
+      deltaGb: e.record.getFloat("quota_gb"),
+    });
   });
 }, "StorageTransfers");
 
 onRecordDeleteRequest((e) => {
   const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   const fromUserId = e.record.getString("from_user");
   const toUserId = e.record.getString("to_user");
   const quotaGb = e.record.getFloat("quota_gb");
-  e.next();
-  applyTransferDelta(e.app, {
-    fromUserId: fromUserId,
-    toUserId: toUserId,
-    deltaGb: -quotaGb,
+  withRecordTx(e, (txApp) => {
+    e.next();
+    applyTransferDelta(txApp, {
+      fromUserId: fromUserId,
+      toUserId: toUserId,
+      deltaGb: -quotaGb,
+    });
   });
 }, "StorageTransfers");
 
@@ -260,42 +309,51 @@ onRecordDeleteRequest((e) => {
 // for, so allocated_gb tracks it.
 onRecordCreateRequest((e) => {
   const { applyAllocationDelta } = require(`${__hooks}/lib/storage-balance.js`);
-  e.next();
-  applyAllocationDelta(
-    e.app,
-    e.record.getString("user"),
-    e.record.getFloat("quota_gb")
-  );
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
+  withRecordTx(e, (txApp) => {
+    e.next();
+    applyAllocationDelta(
+      txApp,
+      e.record.getString("user"),
+      e.record.getFloat("quota_gb")
+    );
+  });
 }, "Buckets");
 
 onRecordUpdateRequest((e) => {
   const { applyAllocationDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   const before = e.record.original();
   const previousGb = before.getFloat("quota_gb");
   const previousUserId = before.getString("user");
-  e.next();
-  const newGb = e.record.getFloat("quota_gb");
-  const userId = e.record.getString("user");
+  withRecordTx(e, (txApp) => {
+    e.next();
+    const newGb = e.record.getFloat("quota_gb");
+    const userId = e.record.getString("user");
 
-  // Most Buckets updates are the webapp's usage-cache write (bytes, objects,
-  // usage_updated_at) on every dashboard load, which leaves the quota alone.
-  // Skip those rather than churn a balance row on every page view.
-  if (previousUserId === userId) {
-    if (previousGb !== newGb) {
-      applyAllocationDelta(e.app, userId, newGb - previousGb);
+    // Most Buckets updates are the webapp's usage-cache write (bytes, objects,
+    // usage_updated_at) on every dashboard load, which leaves the quota alone.
+    // Skip those rather than churn a balance row on every page view.
+    if (previousUserId === userId) {
+      if (previousGb !== newGb) {
+        applyAllocationDelta(txApp, userId, newGb - previousGb);
+      }
+      return;
     }
-    return;
-  }
-  applyAllocationDelta(e.app, previousUserId, -previousGb);
-  applyAllocationDelta(e.app, userId, newGb);
+    applyAllocationDelta(txApp, previousUserId, -previousGb);
+    applyAllocationDelta(txApp, userId, newGb);
+  });
 }, "Buckets");
 
 onRecordDeleteRequest((e) => {
   const { applyAllocationDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   const userId = e.record.getString("user");
   const quotaGb = e.record.getFloat("quota_gb");
-  e.next();
-  applyAllocationDelta(e.app, userId, -quotaGb);
+  withRecordTx(e, (txApp) => {
+    e.next();
+    applyAllocationDelta(txApp, userId, -quotaGb);
+  });
 }, "Buckets");
 
 // Nightly full recompute. This is the audit of the incremental hooks above, not
@@ -307,7 +365,7 @@ cronAdd("storage-balance-rebuild", "30 3 * * *", () => {
     const result = rebuildAll($app);
     if (result.corrected > 0) {
       console.warn(
-        `[storage-balance] rebuild corrected ${result.corrected} row(s), net drift ${result.driftGb} GB — an incremental hook is missing a path`
+        `[storage-balance] rebuild corrected ${result.corrected} row(s), worst drift ${result.driftGb} GB — an incremental hook is missing a path`
       );
     } else {
       console.log(
@@ -338,7 +396,7 @@ routerAdd(
     const result = rebuildAll(e.app);
     if (result.corrected > 0) {
       console.warn(
-        `[storage-balance] manual rebuild corrected ${result.corrected} row(s), net drift ${result.driftGb} GB`
+        `[storage-balance] manual rebuild corrected ${result.corrected} row(s), worst drift ${result.driftGb} GB`
       );
     }
     return e.json(200, result);
