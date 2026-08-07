@@ -153,7 +153,7 @@ function AdminLedgerView() {
         // Not routine maintenance: the incremental hooks are supposed to keep
         // these exact, so anything corrected here is a bug worth chasing.
         toast.warning(
-          `Corrected ${result.corrected} balance row(s), net drift ${formatSignedStorage(result.driftGb)} — an incremental hook missed a write path`
+          `Corrected ${result.corrected} balance row(s), worst drift ${formatSignedStorage(result.driftGb)} — an incremental hook missed a write path`
         );
       } else {
         toast.success(
