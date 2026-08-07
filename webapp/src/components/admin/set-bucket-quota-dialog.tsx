@@ -24,10 +24,20 @@ interface Props {
   currentGb: number;
   /** What Garage currently enforces, in GiB. Differs from `currentGb` on drift. */
   garageGb: number | null;
-  /** Owner's net grant and what their other buckets already reserve, in GiB. */
-  ownerGrantedGb: number;
-  ownerOtherAllocatedGb: number;
+  /**
+   * The owner's PocketBase id. Their grant is fetched here rather than passed
+   * in: the admin buckets page reads users from `/next-api/garage/users`, which
+   * returns a single 200-row page, so any owner past that page arrived as a
+   * grant of 0 and the dialog refused every quota as over-grant.
+   */
+  ownerId: string;
   onApplied: () => void | Promise<void>;
+}
+
+interface OwnerPosition {
+  grantedGb: number;
+  /** Everything the owner's buckets reserve, this one included. */
+  allocatedGb: number;
 }
 
 /**
@@ -48,23 +58,59 @@ export function SetBucketQuotaDialog({
   ownerEmail,
   currentGb,
   garageGb,
-  ownerGrantedGb,
-  ownerOtherAllocatedGb,
+  ownerId,
   onApplied,
 }: Props) {
   const [targetGb, setTargetGb] = useState(currentGb);
   const [submitting, setSubmitting] = useState(false);
+  const [position, setPosition] = useState<OwnerPosition | null>(null);
+  const [positionError, setPositionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setTargetGb(currentGb);
-  }, [open, currentGb, bucketId]);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const summary = await api<{
+          netGrantedGb: number;
+          allocatedGb: number;
+        }>(
+          `/next-api/garage/storage-summary?userId=${encodeURIComponent(ownerId)}`
+        );
+        if (cancelled) return;
+        setPosition({
+          grantedGb: summary.netGrantedGb,
+          allocatedGb: summary.allocatedGb,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setPositionError(
+          err instanceof Error ? err.message : 'Could not read the owner grant'
+        );
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, ownerId]);
 
-  const remainingGb = ownerGrantedGb - ownerOtherAllocatedGb - targetGb;
-  const overGrant = remainingGb < 0;
+  // This bucket's own quota is being replaced, so counting it would charge the
+  // owner twice against their own grant.
+  const ownerOtherAllocatedGb = position
+    ? Math.max(position.allocatedGb - currentGb, 0)
+    : 0;
+  const remainingGb = position
+    ? position.grantedGb - ownerOtherAllocatedGb - targetGb
+    : 0;
+  // Only a *known* grant can block the form. While the position is loading, or
+  // if it could not be read at all, fall through to the server's own check —
+  // refusing to submit on an unknown grant is how this dialog used to dead-end.
+  const overGrant = position !== null && remainingGb < 0;
   const invalid = !Number.isFinite(targetGb) || targetGb < 0;
   const unchanged = targetGb === currentGb;
   const driftedFromGarage = garageGb !== null && garageGb !== currentGb;
+  const loadingPosition = position === null && positionError === null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -131,13 +177,22 @@ export function SetBucketQuotaDialog({
               </>
             )}
             <br />
-            Owner grant: <strong>{formatStorage(ownerGrantedGb)}</strong> ·
-            their other buckets:{' '}
-            <strong>{formatStorage(ownerOtherAllocatedGb)}</strong> · left after
-            this:{' '}
-            <strong className={overGrant ? 'text-destructive' : undefined}>
-              {formatStorage(Math.max(remainingGb, 0))}
-            </strong>
+            {loadingPosition && <>Checking the owner&apos;s grant…</>}
+            {positionError && (
+              <>Owner grant unavailable — the server will validate on save.</>
+            )}
+            {position && (
+              <>
+                Owner grant:{' '}
+                <strong>{formatStorage(position.grantedGb)}</strong> · their
+                other buckets:{' '}
+                <strong>{formatStorage(ownerOtherAllocatedGb)}</strong> · left
+                after this:{' '}
+                <strong className={overGrant ? 'text-destructive' : undefined}>
+                  {formatStorage(Math.max(remainingGb, 0))}
+                </strong>
+              </>
+            )}
           </p>
 
           {overGrant && (
