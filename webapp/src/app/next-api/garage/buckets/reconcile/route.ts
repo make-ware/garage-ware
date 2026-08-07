@@ -4,7 +4,7 @@ import { GarageClient, buckets } from '@/lib/garage';
 import { requireAdmin, errorResponse } from '@/lib/auth/server';
 import { describeQuotaDrift, syncQuotaToPb } from '@/lib/storage/quota-sync';
 import { maxObjectsForQuotaGib } from '@/lib/storage/object-quota';
-import { gibToBytes } from '@/lib/storage/units';
+import { bytesToGib, gibToBytes } from '@/lib/storage/units';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,17 +71,37 @@ export async function POST(req: Request) {
         }
 
         const drift = describeQuotaDrift(pbBucket, r.value);
-        const needsWork =
-          drift.sizeDrifted || (body.includeObjects && drift.objectsDrifted);
-        if (!needsWork) return;
+        const fixSize = drift.sizeDrifted;
+        const fixObjects = body.includeObjects && drift.objectsDrifted;
+        if (!fixSize && !fixObjects) return;
 
         try {
           if (body.direction === 'adopt-garage') {
-            if (drift.sizeDrifted) {
+            if (fixSize) {
               await syncQuotaToPb(pb, pbBucket, r.value);
             }
-            // Adopting Garage's size makes the derived object cap correct by
-            // construction, so there is nothing separate to reconcile here.
+            if (fixObjects) {
+              // The object axis has no PocketBase side to adopt. `max_objects`
+              // is only a usage-cache mirror, and `objectsDrifted` compares
+              // Garage's cap against the one *derived* from the byte quota via
+              // GARAGE_AVG_OBJECT_SIZE_MB — so the sole repair, in either
+              // direction, is writing Garage. Skipping it here while still
+              // counting the bucket as synced is what let the endpoint report
+              // "N adopted" with nothing written and the drift banner intact.
+              //
+              // Derive from Garage's byte quota: after the adopt above that is
+              // also what PocketBase holds, and when the size had not drifted
+              // the two already agreed.
+              const adoptedGb = bytesToGib(drift.garageSizeBytes);
+              await buckets.updateBucket(garage, {
+                id: pbBucket.garage_bucket_id,
+                quotas: {
+                  maxSize:
+                    drift.garageSizeBytes > 0 ? drift.garageSizeBytes : null,
+                  maxObjects: maxObjectsForQuotaGib(adoptedGb),
+                },
+              });
+            }
           } else {
             const quotaGb = pbBucket.quota_gb ?? 0;
             await buckets.updateBucket(garage, {
