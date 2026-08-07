@@ -9,6 +9,7 @@ import type {
   AccessKey,
   Bucket,
   StorageClaim,
+  StorageClaimAudit,
   StorageTransfer,
 } from '@garage-ware/shared';
 
@@ -18,6 +19,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'AccessKeys'): RecordService<AccessKey>;
   collection(idOrName: 'Buckets'): RecordService<Bucket>;
   collection(idOrName: 'StorageClaims'): RecordService<StorageClaim>;
+  collection(idOrName: 'StorageClaimAudit'): RecordService<StorageClaimAudit>;
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
 }
 

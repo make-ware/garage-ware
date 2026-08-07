@@ -1,10 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import {
-  BucketMutator,
-  StorageClaimMutator,
-} from '@garage-ware/shared/mutators';
-import { GarageClient, buckets } from '@/lib/garage';
+import { BucketMutator } from '@garage-ware/shared/mutators';
+import { GarageClient, buckets, cluster } from '@/lib/garage';
+import { getStorageSummariesForUsers } from '@/lib/storage/summary';
 import {
   errorResponse,
   getPbAsSuperuser,
@@ -45,17 +43,32 @@ export async function GET(req: Request) {
       }
     });
 
-    const claims = new StorageClaimMutator(pb);
-    const items = await Promise.all(
-      result.items.map(async (u) => ({
+    // The layout is needed to value claims: one on a node that has left the
+    // cluster backs nothing, and must not be counted here either — otherwise
+    // this list disagrees with what each user sees on their own dashboard.
+    const layout = await cluster.getLayout(garage);
+    const summaries = await getStorageSummariesForUsers(
+      pb,
+      result.items.map((u) => u.id),
+      layout
+    );
+
+    const items = result.items.map((u) => {
+      const summary = summaries.get(u.id);
+      return {
         id: u.id,
         email: (u as { email?: string }).email,
         name: (u as { name?: string }).name,
-        granted_gb: await claims.sumByUser(u.id),
+        claims_gb: summary?.claimsGb ?? 0,
+        sent_gb: summary?.sentGb ?? 0,
+        received_gb: summary?.receivedGb ?? 0,
+        net_granted_gb: summary?.netGrantedGb ?? 0,
+        allocated_gb: summary?.allocatedGb ?? 0,
+        available_gb: summary?.availableGb ?? 0,
         used_bytes: userBytes.get(u.id) ?? 0,
         created: (u as { created?: string }).created,
-      }))
-    );
+      };
+    });
     return Response.json({ items });
   } catch (err) {
     return errorResponse(err);

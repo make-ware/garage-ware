@@ -2,6 +2,119 @@
 // PocketBase JavaScript Hooks
 // Documentation: https://pocketbase.io/docs/js-overview/
 
+// ---------------------------------------------------------------------------
+// StorageClaims audit trail
+// ---------------------------------------------------------------------------
+//
+// StorageClaims is an append-only ledger, but only of the rows that currently
+// exist: PATCH /next-api/garage/claims/[id] rewrites an entry's amount and
+// DELETE removes it outright, and neither leaves any trace of who did it or
+// what the value was before. These hooks record that, into StorageClaimAudit.
+//
+// Why hooks and not the Next.js route handlers, which already know the actor
+// and the before/after: the hooks also catch writes made through the PocketBase
+// admin UI or a direct SDK call. Those are precisely the writes an audit trail
+// exists for, and the route handlers never see them.
+//
+// Why the *Request* variants rather than onRecordAfter*Success: only
+// RecordRequestEvent carries `e.auth` (it embeds RequestEvent), and attributing
+// the actor is the whole point. The tradeoff is that request hooks do not fire
+// for rows removed by a cascade delete, which the Users hook below covers.
+//
+// Each handler requires its helper inside the callback: Goja runs every hook in
+// a fresh executor, so a top-level require here would not be visible to them.
+
+onRecordCreateRequest((e) => {
+  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  e.next();
+  writeClaimAudit(e.app, {
+    action: "create",
+    claim: e.record,
+    previousGb: 0,
+    newGb: e.record.getFloat("quota_gb"),
+    auth: e.auth,
+    source: "api",
+  });
+}, "StorageClaims");
+
+onRecordUpdateRequest((e) => {
+  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  // original() is the record as it was loaded from the DB, before the request
+  // applied its changes — read it before e.next() commits them.
+  const previousGb = e.record.original().getFloat("quota_gb");
+  e.next();
+  writeClaimAudit(e.app, {
+    action: "update",
+    claim: e.record,
+    previousGb: previousGb,
+    newGb: e.record.getFloat("quota_gb"),
+    auth: e.auth,
+    source: "api",
+  });
+}, "StorageClaims");
+
+onRecordDeleteRequest((e) => {
+  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const previousGb = e.record.getFloat("quota_gb");
+  e.next();
+  writeClaimAudit(e.app, {
+    action: "delete",
+    claim: e.record,
+    previousGb: previousGb,
+    newGb: 0,
+    auth: e.auth,
+    source: "api",
+  });
+}, "StorageClaims");
+
+// Deleting a user cascades to their StorageClaims rows at the model layer, with
+// no per-row HTTP request — so the delete hook above never sees them. Record
+// them here instead.
+//
+// The claims and the user's email have to be read *before* e.next(), while both
+// still exist, but the audit rows are only written *after* it succeeds: writing
+// first would leave the trail claiming a deletion that a failed request never
+// performed. The deleted claim records stay readable in memory afterwards.
+onRecordDeleteRequest((e) => {
+  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+
+  const userId = e.record.id;
+  const userEmail = e.record.email();
+
+  let claims = [];
+  try {
+    claims = e.app.findRecordsByFilter(
+      "StorageClaims",
+      "user = {:userId}",
+      "-created",
+      0,
+      0,
+      { userId: userId }
+    );
+  } catch (err) {
+    console.error("[claim-audit] cascade lookup failed for user:", userId, err);
+  }
+
+  const snapshots = claims.map((claim) => ({
+    claim: claim,
+    previousGb: claim.getFloat("quota_gb"),
+  }));
+
+  e.next();
+
+  for (const snapshot of snapshots) {
+    writeClaimAudit(e.app, {
+      action: "delete",
+      claim: snapshot.claim,
+      previousGb: snapshot.previousGb,
+      newGb: 0,
+      auth: e.auth,
+      source: "cascade",
+      userEmail: userEmail,
+    });
+  }
+}, "Users");
+
 // Daily reminder for buckets at or over the user's notification_threshold_pct.
 // DB-only: reads cached `bytes` + `usage_updated_at` written back by the webapp
 // when users visit /dashboard/buckets. Does NOT call Garage. A bucket without

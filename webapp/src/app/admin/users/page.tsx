@@ -23,15 +23,7 @@ import { api } from '@/lib/api-client';
 import { formatBytes, formatStorage } from '@/lib/format';
 import { toast } from 'sonner';
 import { InviteUserDialog } from '@/components/admin/invite-user-dialog';
-
-interface AdminUser {
-  id: string;
-  email: string;
-  name?: string;
-  granted_gb: number;
-  used_bytes: number;
-  created?: string;
-}
+import type { AdminUser } from '@/lib/admin-types';
 
 interface AdminRecord {
   id: string;
@@ -115,12 +107,20 @@ export default function AdminUsersPage() {
         <CardHeader>
           <CardTitle>All users</CardTitle>
           <CardDescription>
-            Total granted storage is the sum of per-node claims. Manage claims
-            in the{' '}
+            <strong>Granted</strong> is the user&apos;s net position: claims on
+            nodes still in the layout, plus transfers received, minus transfers
+            sent — the same figure they see on their own dashboard.{' '}
+            <strong>Allocated</strong> is what their buckets already reserve,
+            and <strong>Available</strong> is what is left to allocate. Manage
+            claims in the{' '}
             <Link href="/admin/claims" className="underline">
               Claims
             </Link>{' '}
-            tab.
+            tab and handoffs in{' '}
+            <Link href="/admin/transfers" className="underline">
+              Transfers
+            </Link>
+            .
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -129,8 +129,10 @@ export default function AdminUsersPage() {
               <TableRow>
                 <TableHead>Email</TableHead>
                 <TableHead>Name</TableHead>
-                <TableHead>Granted</TableHead>
-                <TableHead>Used</TableHead>
+                <TableHead className="text-right">Granted</TableHead>
+                <TableHead className="text-right">Allocated</TableHead>
+                <TableHead className="text-right">Available</TableHead>
+                <TableHead className="text-right">Used</TableHead>
                 <TableHead>Admin</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -140,8 +142,18 @@ export default function AdminUsersPage() {
                 <TableRow key={u.id}>
                   <TableCell className="font-medium">{u.email}</TableCell>
                   <TableCell>{u.name || '—'}</TableCell>
-                  <TableCell>{formatStorage(u.granted_gb ?? 0)}</TableCell>
-                  <TableCell>{formatBytes(u.used_bytes ?? 0)}</TableCell>
+                  <TableCell className="text-right">
+                    {formatStorage(u.net_granted_gb ?? 0)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {formatStorage(u.allocated_gb ?? 0)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {formatStorage(u.available_gb ?? 0)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {formatBytes(u.used_bytes ?? 0)}
+                  </TableCell>
                   <TableCell>{admins.has(u.id) ? 'Yes' : '—'}</TableCell>
                   <TableCell className="text-right space-x-2">
                     <Link href={`/admin/claims?userId=${u.id}`}>

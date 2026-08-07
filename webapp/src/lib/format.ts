@@ -38,6 +38,47 @@ export function formatGib(gib: number, opts?: FormatOpts): string {
  */
 export const formatStorage = formatGib;
 
+/**
+ * Render a signed ledger amount, e.g. "+2 TB" / "-500 GB".
+ * Ledger entries are signed adjustments, so the sign is the point — never let
+ * a negative render as a bare magnitude.
+ */
+export function formatSignedStorage(gib: number, opts?: FormatOpts): string {
+  return `${gib < 0 ? '-' : '+'}${formatGib(Math.abs(gib), opts)}`;
+}
+
+/**
+ * Format a PocketBase timestamp as a short local date.
+ *
+ * PocketBase serialises datetimes as "YYYY-MM-DD HH:mm:ss.sssZ" with a space
+ * rather than a "T", which Safari and some other engines refuse to parse.
+ * Swapping in the "T" first is what makes this safe to use everywhere.
+ */
+export function formatPbDate(value: string | undefined | null): string {
+  if (!value) return '—';
+  const parsed = new Date(value.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/** Same parsing fix as {@link formatPbDate}, but including the time of day. */
+export function formatPbDateTime(value: string | undefined | null): string {
+  if (!value) return '—';
+  const parsed = new Date(value.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function stripTrailingZeros(s: string): string {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
 }

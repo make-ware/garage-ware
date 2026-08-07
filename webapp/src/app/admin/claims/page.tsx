@@ -1,9 +1,9 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Card,
@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
+import { SetClaimDialog } from '@/components/admin/set-claim-dialog';
 import {
   Select,
   SelectContent,
@@ -33,49 +34,31 @@ import {
 } from '@/components/ui/table';
 import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import { api } from '@/lib/api-client';
-import { formatStorage } from '@/lib/format';
-import { bytesToGib } from '@/lib/storage/units';
-import type { StorageClaim } from '@garage-ware/shared';
-import type { ClusterLayout } from '@/lib/garage';
+import { formatPbDate, formatSignedStorage, formatStorage } from '@/lib/format';
+import type { AdminUser, LayoutResponse } from '@/lib/admin-types';
+import {
+  nodeUsableGbInLayout,
+  rollUpClaimsByUserNode,
+  sumClaimsByNode,
+  sumClaimsByUserNode,
+  userNodeKey,
+  type UserNodeClaimRollup,
+} from '@/lib/storage/ledger-math';
+import type { StorageClaim, StorageClaimAudit } from '@garage-ware/shared';
 
-interface AdminUser {
-  id: string;
-  email: string;
-  name?: string;
-  granted_gb: number;
+/** Row targeted by the "Set claim" dialog. */
+interface SetClaimTarget {
+  group: UserNodeClaimRollup;
+  userEmail: string;
+  nodeLabel: string;
+  nodeFreeGb: number;
 }
 
-interface LayoutResponse extends ClusterLayout {
-  replicationFactor: number;
-}
-
-/** One (user, node) pair rolled up from its ledger entries. */
-interface ClaimGroup {
-  key: string;
-  userId: string;
-  nodeId: string;
+function nodeLabelFor(group: {
   nodeHostname?: string;
-  nodeZone?: string;
-  effectiveGb: number;
-  /** Newest first. */
-  entries: StorageClaim[];
-}
-
-/** Render a signed ledger amount, e.g. "+2 TB" / "-500 GB". */
-function formatSigned(gib: number): string {
-  const magnitude = formatStorage(Math.abs(gib));
-  return `${gib < 0 ? '-' : '+'}${magnitude}`;
-}
-
-function formatEntryDate(value: string | undefined): string {
-  if (!value) return '—';
-  const parsed = new Date(value.replace(' ', 'T'));
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  nodeId: string;
+}): string {
+  return group.nodeHostname || `${group.nodeId.slice(0, 12)}…`;
 }
 
 function AdminClaimsView() {
@@ -88,6 +71,12 @@ function AdminClaimsView() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [auditByKey, setAuditByKey] = useState<
+    Map<string, StorageClaimAudit[]>
+  >(new Map());
+  const [setClaimTarget, setSetClaimTarget] = useState<SetClaimTarget | null>(
+    null
+  );
 
   const [formUser, setFormUser] = useState<string>('');
   const [formNode, setFormNode] = useState<string>('');
@@ -95,26 +84,30 @@ function AdminClaimsView() {
   const [formNote, setFormNote] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
-  async function refresh() {
+  const load = useCallback(async () => {
     const [claimsResp, usersResp, layoutResp] = await Promise.all([
       api<{ items: StorageClaim[] }>('/next-api/garage/claims?all=true'),
       api<{ items: AdminUser[] }>('/next-api/garage/users'),
       api<LayoutResponse>('/next-api/garage/cluster/layout'),
     ]);
+    return { claimsResp, usersResp, layoutResp };
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const { claimsResp, usersResp, layoutResp } = await load();
     setClaims(claimsResp.items);
     setUsers(usersResp.items);
     setLayout(layoutResp);
-  }
+    // Audit rows are fetched per expanded row; drop the cache so a reopened
+    // row shows the entry that was just written rather than a stale list.
+    setAuditByKey(new Map());
+  }, [load]);
 
   useEffect(() => {
     let cancelled = false;
-    const load = async () => {
+    const run = async () => {
       try {
-        const [claimsResp, usersResp, layoutResp] = await Promise.all([
-          api<{ items: StorageClaim[] }>('/next-api/garage/claims?all=true'),
-          api<{ items: AdminUser[] }>('/next-api/garage/users'),
-          api<LayoutResponse>('/next-api/garage/cluster/layout'),
-        ]);
+        const { claimsResp, usersResp, layoutResp } = await load();
         if (cancelled) return;
         setClaims(claimsResp.items);
         setUsers(usersResp.items);
@@ -126,68 +119,34 @@ function AdminClaimsView() {
         if (!cancelled) setLoading(false);
       }
     };
-    load();
+    run();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [load]);
 
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
 
-  const claimsByNode = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const c of claims) {
-      map.set(c.node_id, (map.get(c.node_id) ?? 0) + (Number(c.quota_gb) || 0));
-    }
-    return map;
-  }, [claims]);
+  /** Total claimed per node across all users — drives the free-capacity hints. */
+  const claimsByNode = useMemo(() => sumClaimsByNode(claims), [claims]);
 
-  /** Effective claim per (user, node) — the ledger sum for that pair. */
-  const effectiveByUserNode = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const c of claims) {
-      const key = `${c.user}::${c.node_id}`;
-      map.set(key, (map.get(key) ?? 0) + (Number(c.quota_gb) || 0));
-    }
-    return map;
-  }, [claims]);
+  /** Effective claim per (user, node) pair. */
+  const effectiveByUserNode = useMemo(
+    () => sumClaimsByUserNode(claims),
+    [claims]
+  );
 
-  const groups = useMemo<ClaimGroup[]>(() => {
-    const map = new Map<string, ClaimGroup>();
-    for (const c of claims) {
-      const key = `${c.user}::${c.node_id}`;
-      let group = map.get(key);
-      if (!group) {
-        group = {
-          key,
-          userId: c.user,
-          nodeId: c.node_id,
-          nodeHostname: c.node_hostname,
-          nodeZone: c.node_zone,
-          effectiveGb: 0,
-          entries: [],
-        };
-        map.set(key, group);
-      }
-      group.effectiveGb += Number(c.quota_gb) || 0;
-      group.entries.push(c);
-      // The newest entry carries the freshest node metadata.
-      group.nodeHostname ??= c.node_hostname;
-      group.nodeZone ??= c.node_zone;
-    }
-    const list = [...map.values()];
-    for (const group of list) {
-      group.entries.sort((a, b) => (a.created < b.created ? 1 : -1));
-    }
+  const groups = useMemo(() => {
+    const list = rollUpClaimsByUserNode(claims, layout ?? undefined);
     return list.sort((a, b) => {
       const aEmail = userById.get(a.userId)?.email ?? a.userId;
       const bEmail = userById.get(b.userId)?.email ?? b.userId;
       return (
         aEmail.localeCompare(bEmail) ||
-        (a.nodeHostname ?? a.nodeId).localeCompare(b.nodeHostname ?? b.nodeId)
+        nodeLabelFor(a).localeCompare(nodeLabelFor(b))
       );
     });
-  }, [claims, userById]);
+  }, [claims, layout, userById]);
 
   const visibleGroups = useMemo(
     () =>
@@ -195,22 +154,27 @@ function AdminClaimsView() {
     [groups, filterUserId]
   );
 
-  const selectedRole = layout?.roles.find((r) => r.id === formNode);
-  const selectedNodeUsableGb =
-    selectedRole?.capacity && layout
-      ? bytesToGib(selectedRole.capacity) /
-        Math.max(layout.replicationFactor, 1)
-      : 0;
+  const replicationFactor = layout?.replicationFactor ?? 1;
+
+  const nodeFreeGbFor = useCallback(
+    (nodeId: string) => {
+      const usableGb =
+        nodeUsableGbInLayout(layout, nodeId, replicationFactor) ?? 0;
+      return Math.max(usableGb - (claimsByNode.get(nodeId) ?? 0), 0);
+    },
+    [layout, replicationFactor, claimsByNode]
+  );
+
+  const selectedNodeUsableGb = formNode
+    ? (nodeUsableGbInLayout(layout, formNode, replicationFactor) ?? 0)
+    : 0;
   const selectedNodeAllocatedGb = formNode
     ? (claimsByNode.get(formNode) ?? 0)
     : 0;
-  const selectedNodeFreeGb = Math.max(
-    selectedNodeUsableGb - selectedNodeAllocatedGb,
-    0
-  );
+  const selectedNodeFreeGb = formNode ? nodeFreeGbFor(formNode) : 0;
   const selectedPairEffectiveGb =
     formUser && formNode
-      ? (effectiveByUserNode.get(`${formUser}::${formNode}`) ?? 0)
+      ? (effectiveByUserNode.get(userNodeKey(formUser, formNode)) ?? 0)
       : 0;
 
   // Seed the amount field: for a fresh (user, node) pair offer the node's
@@ -219,19 +183,60 @@ function AdminClaimsView() {
   useEffect(() => {
     if (!formNode) return;
     const hasExisting =
-      formUser && effectiveByUserNode.has(`${formUser}::${formNode}`);
+      formUser && effectiveByUserNode.has(userNodeKey(formUser, formNode));
     if (hasExisting) {
       setFormQuotaGib(0);
       return;
     }
-    const role = layout?.roles.find((r) => r.id === formNode);
     const usableGb =
-      role?.capacity && layout
-        ? bytesToGib(role.capacity) / Math.max(layout.replicationFactor, 1)
-        : 0;
+      nodeUsableGbInLayout(layout, formNode, replicationFactor) ?? 0;
     const allocatedGb = claimsByNode.get(formNode) ?? 0;
     setFormQuotaGib(Math.max(usableGb - allocatedGb, 0));
-  }, [formUser, formNode, layout, claimsByNode, effectiveByUserNode]);
+  }, [
+    formUser,
+    formNode,
+    layout,
+    replicationFactor,
+    claimsByNode,
+    effectiveByUserNode,
+  ]);
+
+  // Load a row's audit trail the first time it is expanded. Cheap per row, and
+  // the alternative — fetching the whole trail up front — scales with cluster
+  // history rather than with what the admin is looking at.
+  useEffect(() => {
+    let cancelled = false;
+    const missing = [...expanded].filter((key) => !auditByKey.has(key));
+    if (missing.length === 0) return;
+
+    const run = async () => {
+      const fetched = await Promise.all(
+        missing.map(async (key) => {
+          const [userId, nodeId] = key.split('::');
+          try {
+            const resp = await api<{ items: StorageClaimAudit[] }>(
+              `/next-api/garage/claim-audit?userId=${encodeURIComponent(userId)}&nodeId=${encodeURIComponent(nodeId)}&perPage=200`
+            );
+            return [key, resp.items] as const;
+          } catch {
+            // A failed audit fetch must not blank out the ledger rows next to
+            // it; show the row with an empty trail instead.
+            return [key, [] as StorageClaimAudit[]] as const;
+          }
+        })
+      );
+      if (cancelled) return;
+      setAuditByKey((prev) => {
+        const next = new Map(prev);
+        for (const [key, items] of fetched) next.set(key, items);
+        return next;
+      });
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, auditByKey]);
 
   function toggleExpanded(key: string) {
     setExpanded((prev) => {
@@ -264,13 +269,13 @@ function AdminClaimsView() {
         },
       });
       toast.success(
-        `Claim adjusted by ${formatSigned(formQuotaGib)} — now ${formatStorage(
+        `Claim adjusted by ${formatSignedStorage(formQuotaGib)} — now ${formatStorage(
           selectedPairEffectiveGb + formQuotaGib
         )}`
       );
       setFormQuotaGib(0);
       setFormNote('');
-      setExpanded((prev) => new Set(prev).add(`${formUser}::${formNode}`));
+      setExpanded((prev) => new Set(prev).add(userNodeKey(formUser, formNode)));
       await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Adjustment failed');
@@ -313,9 +318,11 @@ function AdminClaimsView() {
           <CardDescription>
             Per-node accounting in logical (post-replication) GB. Enter a
             positive amount to grant more — e.g. after upgrading the node&apos;s
-            disk — or a negative amount to reclaim. The sum of all claims on a
-            node stays capped at its usable capacity, and a user&apos;s claim on
-            a node can never go below zero.
+            disk — or a negative amount to reclaim. To restate a user&apos;s
+            total rather than the change, use <strong>Set claim</strong> on
+            their row below. The sum of all claims on a node stays capped at its
+            usable capacity, and a user&apos;s claim on a node can never go
+            below zero.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -413,7 +420,9 @@ function AdminClaimsView() {
           <CardDescription>
             {visibleGroups.length} claim
             {visibleGroups.length === 1 ? '' : 's'} — expand a row to see its
-            ledger history
+            ledger history and audit trail. Claims on nodes that have left the
+            layout are shown struck through: they back nothing, and do not count
+            toward the user&apos;s granted total.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -431,15 +440,15 @@ function AdminClaimsView() {
                   <TableHead>Zone</TableHead>
                   <TableHead className="text-right">Claim</TableHead>
                   <TableHead className="text-right">Entries</TableHead>
+                  <TableHead className="w-24" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {visibleGroups.map((group) => {
                   const user = userById.get(group.userId);
-                  const present = layout?.roles.some(
-                    (r) => r.id === group.nodeId
-                  );
                   const isOpen = expanded.has(group.key);
+                  const auditEntries = auditByKey.get(group.key);
+                  const nodeLabel = nodeLabelFor(group);
                   return [
                     <TableRow key={group.key}>
                       <TableCell>
@@ -449,9 +458,7 @@ function AdminClaimsView() {
                           className="h-7 w-7 p-0"
                           aria-expanded={isOpen}
                           aria-label={
-                            isOpen
-                              ? 'Hide ledger history'
-                              : 'Show ledger history'
+                            isOpen ? 'Hide claim history' : 'Show claim history'
                           }
                           onClick={() => toggleExpanded(group.key)}
                         >
@@ -464,19 +471,54 @@ function AdminClaimsView() {
                       </TableCell>
                       <TableCell>{user?.email ?? group.userId}</TableCell>
                       <TableCell className="font-mono text-xs">
-                        {group.nodeHostname || group.nodeId.slice(0, 12) + '…'}
-                        {!present && (
+                        {nodeLabel}
+                        {!group.presentInLayout && (
                           <span className="ml-2 text-destructive">
                             (not in layout)
                           </span>
                         )}
                       </TableCell>
                       <TableCell>{group.nodeZone || '—'}</TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatStorage(group.effectiveGb)}
+                      <TableCell
+                        className={`text-right font-medium ${
+                          group.presentInLayout
+                            ? ''
+                            : 'text-muted-foreground line-through'
+                        }`}
+                        title={
+                          group.presentInLayout
+                            ? undefined
+                            : 'This node has left the layout, so the claim counts as 0 toward the user’s granted total'
+                        }
+                      >
+                        {formatStorage(group.claimedGb)}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
                         {group.entries.length}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7"
+                          disabled={!group.presentInLayout}
+                          title={
+                            group.presentInLayout
+                              ? undefined
+                              : 'A claim on a node that has left the layout can only be wound down'
+                          }
+                          onClick={() =>
+                            setSetClaimTarget({
+                              group,
+                              userEmail: user?.email ?? group.userId,
+                              nodeLabel,
+                              nodeFreeGb: nodeFreeGbFor(group.nodeId),
+                            })
+                          }
+                        >
+                          <Pencil className="mr-1 h-3.5 w-3.5" />
+                          Set claim
+                        </Button>
                       </TableCell>
                     </TableRow>,
                     isOpen && (
@@ -485,8 +527,11 @@ function AdminClaimsView() {
                         className="hover:bg-transparent"
                       >
                         <TableCell />
-                        <TableCell colSpan={5} className="py-0">
+                        <TableCell colSpan={6} className="py-0">
                           <div className="my-2 rounded-md border bg-muted/30">
+                            <p className="px-3 pt-2 text-xs font-medium text-muted-foreground">
+                              Current ledger entries
+                            </p>
                             <table className="w-full text-xs">
                               <thead>
                                 <tr className="text-muted-foreground border-b">
@@ -511,7 +556,7 @@ function AdminClaimsView() {
                                       className="border-b last:border-0"
                                     >
                                       <td className="px-3 py-2 whitespace-nowrap">
-                                        {formatEntryDate(entry.created)}
+                                        {formatPbDate(entry.created)}
                                       </td>
                                       <td
                                         className={`px-3 py-2 text-right font-mono whitespace-nowrap ${
@@ -520,7 +565,7 @@ function AdminClaimsView() {
                                             : 'text-foreground'
                                         }`}
                                       >
-                                        {formatSigned(amount)}
+                                        {formatSignedStorage(amount)}
                                       </td>
                                       <td className="px-3 py-2 text-muted-foreground">
                                         {entry.note || '—'}
@@ -542,12 +587,13 @@ function AdminClaimsView() {
                                             <>
                                               <p>
                                                 Deletes the{' '}
-                                                {formatSigned(amount)} entry
-                                                from {user?.email ?? 'the user'}
+                                                {formatSignedStorage(amount)}{' '}
+                                                entry from{' '}
+                                                {user?.email ?? 'the user'}
                                                 &apos;s ledger on this node,
                                                 leaving{' '}
                                                 {formatStorage(
-                                                  group.effectiveGb - amount
+                                                  group.claimedGb - amount
                                                 )}
                                                 . This will fail if their
                                                 buckets already exceed what
@@ -573,6 +619,96 @@ function AdminClaimsView() {
                                 })}
                               </tbody>
                             </table>
+
+                            <p className="px-3 pt-3 text-xs font-medium text-muted-foreground">
+                              Audit trail
+                            </p>
+                            <p className="px-3 pb-1 text-[11px] text-muted-foreground">
+                              Every recorded change, including entries that have
+                              since been edited or deleted.
+                            </p>
+                            {auditEntries === undefined ? (
+                              <p className="px-3 pb-3 text-xs text-muted-foreground">
+                                Loading...
+                              </p>
+                            ) : auditEntries.length === 0 ? (
+                              <p className="px-3 pb-3 text-xs text-muted-foreground">
+                                Nothing recorded yet.
+                              </p>
+                            ) : (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-muted-foreground border-b">
+                                    <th className="text-left font-medium px-3 py-2">
+                                      Date
+                                    </th>
+                                    <th className="text-left font-medium px-3 py-2">
+                                      Action
+                                    </th>
+                                    <th className="text-right font-medium px-3 py-2">
+                                      Change
+                                    </th>
+                                    <th className="text-left font-medium px-3 py-2">
+                                      By
+                                    </th>
+                                    <th className="text-left font-medium px-3 py-2">
+                                      Note
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {auditEntries.map((entry) => {
+                                    const delta = Number(entry.delta_gb) || 0;
+                                    return (
+                                      <tr
+                                        key={entry.id}
+                                        className="border-b last:border-0"
+                                      >
+                                        <td className="px-3 py-2 whitespace-nowrap">
+                                          {formatPbDate(entry.created)}
+                                        </td>
+                                        <td className="px-3 py-2">
+                                          {entry.action}
+                                          {entry.source === 'cascade' && (
+                                            <span className="ml-1 text-muted-foreground">
+                                              (user deleted)
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td
+                                          className={`px-3 py-2 text-right font-mono whitespace-nowrap ${
+                                            delta < 0
+                                              ? 'text-destructive'
+                                              : 'text-foreground'
+                                          }`}
+                                        >
+                                          {formatSignedStorage(delta)}
+                                          <span className="ml-1 text-muted-foreground">
+                                            (
+                                            {formatStorage(
+                                              Number(entry.previous_gb) || 0
+                                            )}{' '}
+                                            →{' '}
+                                            {formatStorage(
+                                              Number(entry.new_gb) || 0
+                                            )}
+                                            )
+                                          </span>
+                                        </td>
+                                        <td className="px-3 py-2 text-muted-foreground">
+                                          {entry.actor_email ||
+                                            entry.actor_type ||
+                                            '—'}
+                                        </td>
+                                        <td className="px-3 py-2 text-muted-foreground">
+                                          {entry.note || '—'}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -584,6 +720,22 @@ function AdminClaimsView() {
           )}
         </CardContent>
       </Card>
+
+      {setClaimTarget && (
+        <SetClaimDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setSetClaimTarget(null);
+          }}
+          userId={setClaimTarget.group.userId}
+          userEmail={setClaimTarget.userEmail}
+          nodeId={setClaimTarget.group.nodeId}
+          nodeLabel={setClaimTarget.nodeLabel}
+          currentGb={setClaimTarget.group.claimedGb}
+          nodeFreeGb={setClaimTarget.nodeFreeGb}
+          onApplied={refresh}
+        />
+      )}
     </div>
   );
 }

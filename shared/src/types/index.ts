@@ -7,6 +7,7 @@ import type { Admin } from '../schema/admin';
 import type { AccessKey } from '../schema/access-key';
 import type { Bucket } from '../schema/bucket';
 import type { StorageClaim } from '../schema/storage-claim';
+import type { StorageClaimAudit } from '../schema/storage-claim-audit';
 import type { StorageTransfer } from '../schema/storage-transfer';
 
 // Typed PocketBase interface
@@ -16,6 +17,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'AccessKeys'): RecordService<AccessKey>;
   collection(idOrName: 'Buckets'): RecordService<Bucket>;
   collection(idOrName: 'StorageClaims'): RecordService<StorageClaim>;
+  collection(idOrName: 'StorageClaimAudit'): RecordService<StorageClaimAudit>;
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
 }
 

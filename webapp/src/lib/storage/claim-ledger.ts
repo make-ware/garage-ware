@@ -6,7 +6,7 @@ import {
 import { HttpError } from '@/lib/auth/server';
 import { formatStorage } from '@/lib/format';
 import { getUserGrantedGb } from '@/lib/storage/claims';
-import { bytesToGib } from '@/lib/storage/units';
+import { nodeUsableGbInLayout } from '@/lib/storage/ledger-math';
 import { cluster, type GarageClient, type ClusterLayout } from '@/lib/garage';
 import type { TypedPocketBase } from '@/lib/types';
 
@@ -37,11 +37,13 @@ export async function loadClaimContext(
   return { layout, replicationFactor };
 }
 
-/** Logical GB a node can back, i.e. raw capacity divided by replication. */
+/**
+ * Logical GB a node can back, i.e. raw capacity divided by replication.
+ * The admin console needs the same number client-side, so the arithmetic lives
+ * in `ledger-math` and this is the server-side convenience wrapper.
+ */
 export function nodeUsableGb(ctx: ClaimContext, nodeId: string): number | null {
-  const role = ctx.layout.roles.find((r) => r.id === nodeId);
-  if (!role?.capacity || role.capacity <= 0) return null;
-  return bytesToGib(role.capacity) / Math.max(ctx.replicationFactor, 1);
+  return nodeUsableGbInLayout(ctx.layout, nodeId, ctx.replicationFactor);
 }
 
 /**

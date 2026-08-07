@@ -4,6 +4,7 @@ import {
   StorageTransferMutator,
 } from '@garage-ware/shared/mutators';
 import type { ClusterLayout } from '@/lib/garage';
+import { filterPresentClaims, sumEntries } from '@/lib/storage/ledger-math';
 import type { TypedPocketBase } from '@/lib/types';
 
 export interface GrantedOptions {
@@ -39,11 +40,8 @@ export async function getUserGrantedGb(
           'getUserGrantedGb: layout required when onlyPresent is true'
         );
       }
-      const presentIds = new Set(options.layout.roles.map((r) => r.id));
       const result = await claims.listByUser(userId);
-      return result.items
-        .filter((c) => presentIds.has(c.node_id))
-        .reduce((sum, c) => sum + (Number(c.quota_gb) || 0), 0);
+      return sumEntries(filterPresentClaims(result.items, options.layout));
     })(),
     transfers.sumReceivedByUser(userId),
     transfers.sumSentByUser(userId),
