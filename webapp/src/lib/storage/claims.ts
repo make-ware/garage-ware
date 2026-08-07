@@ -1,10 +1,7 @@
 import 'server-only';
-import {
-  StorageClaimMutator,
-  StorageTransferMutator,
-} from '@garage-ware/shared/mutators';
 import type { ClusterLayout } from '@/lib/garage';
-import { filterPresentClaims, sumEntries } from '@/lib/storage/ledger-math';
+import { computeSummaryFromBalances } from '@/lib/storage/ledger-math';
+import { getUserBalances } from '@/lib/storage/balances';
 import type { TypedPocketBase } from '@/lib/types';
 
 export interface GrantedOptions {
@@ -21,31 +18,26 @@ export interface GrantedOptions {
 /**
  * Net granted GB for a user: direct node claims + received transfers - sent transfers.
  * The onlyPresent filter applies only to claims; transfers are node-agnostic.
+ *
+ * Reads the materialized balances rather than summing the ledger, so it stays
+ * correct past the page sizes the raw sums were capped at.
  */
 export async function getUserGrantedGb(
   pb: TypedPocketBase,
   userId: string,
   options: GrantedOptions = {}
 ): Promise<number> {
-  const claims = new StorageClaimMutator(pb);
-  const transfers = new StorageTransferMutator(pb);
+  if (options.onlyPresent && !options.layout) {
+    throw new Error(
+      'getUserGrantedGb: layout required when onlyPresent is true'
+    );
+  }
 
-  const [claimsGb, receivedGb, sentGb] = await Promise.all([
-    (async () => {
-      if (!options.onlyPresent) {
-        return claims.sumByUser(userId);
-      }
-      if (!options.layout) {
-        throw new Error(
-          'getUserGrantedGb: layout required when onlyPresent is true'
-        );
-      }
-      const result = await claims.listByUser(userId);
-      return sumEntries(filterPresentClaims(result.items, options.layout));
-    })(),
-    transfers.sumReceivedByUser(userId),
-    transfers.sumSentByUser(userId),
-  ]);
-
-  return claimsGb + receivedGb - sentGb;
+  const { nodeBalances, userBalance } = await getUserBalances(pb, userId);
+  const summary = computeSummaryFromBalances(
+    nodeBalances,
+    userBalance,
+    options.onlyPresent ? options.layout : undefined
+  );
+  return summary.netGrantedGb;
 }

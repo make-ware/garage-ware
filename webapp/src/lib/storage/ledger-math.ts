@@ -67,8 +67,14 @@ export function nodeUsableGbInLayout(
   return nodeUsableGbFrom(role?.capacity, replicationFactor);
 }
 
-/** One node's position for a single user, rolled up from its ledger entries. */
-export interface NodeClaimRollup {
+/**
+ * One node's position for a single user.
+ *
+ * The same shape whether it was rolled up from raw ledger entries or read from
+ * the materialized StorageNodeBalances cache — that equivalence is what lets
+ * the read path switch to the cache without every consumer noticing.
+ */
+export interface NodeClaimPosition {
   nodeId: string;
   nodeHostname?: string;
   nodeZone?: string;
@@ -76,6 +82,12 @@ export interface NodeClaimRollup {
   claimedGb: number;
   /** False when the node has left the layout, i.e. this claim counts for nothing. */
   presentInLayout: boolean;
+  /** How many ledger entries back the sum. */
+  entryCount: number;
+}
+
+/** A {@link NodeClaimPosition} that also carries the entries it was built from. */
+export interface NodeClaimRollup extends NodeClaimPosition {
   /** Newest first. */
   entries: StorageClaim[];
 }
@@ -122,11 +134,13 @@ export function rollUpClaimsByUserNode(
         nodeZone: claim.node_zone,
         claimedGb: 0,
         presentInLayout: present ? present.has(claim.node_id) : true,
+        entryCount: 0,
         entries: [],
       };
       map.set(key, group);
     }
     group.claimedGb += Number(claim.quota_gb) || 0;
+    group.entryCount += 1;
     group.entries.push(claim);
     // The newest entry carries the freshest node metadata.
     group.nodeHostname ??= claim.node_hostname;
@@ -161,11 +175,13 @@ export function rollUpClaimsByNode(
         nodeZone: claim.node_zone,
         claimedGb: 0,
         presentInLayout: present ? present.has(claim.node_id) : true,
+        entryCount: 0,
         entries: [],
       };
       map.set(claim.node_id, group);
     }
     group.claimedGb += Number(claim.quota_gb) || 0;
+    group.entryCount += 1;
     group.entries.push(claim);
     group.nodeHostname ??= claim.node_hostname;
     group.nodeZone ??= claim.node_zone;
@@ -204,7 +220,8 @@ export function sumClaimsByUserNode(
 
 /** A user's complete storage position. Mirrors the `StorageSummary` shape. */
 export interface ComputedStorageSummary {
-  claims: StorageClaim[];
+  /** Per-node breakdown, whether derived from entries or from the balance cache. */
+  nodeClaims: NodeClaimPosition[];
   sentTransfers: StorageTransfer[];
   receivedTransfers: StorageTransfer[];
   claimsGb: number;
@@ -213,6 +230,80 @@ export interface ComputedStorageSummary {
   netGrantedGb: number;
   allocatedGb: number;
   availableGb: number;
+}
+
+/** The subset of a StorageNodeBalances row the arithmetic needs. */
+export interface NodeBalanceLike {
+  node_id: string;
+  claimed_gb: number;
+  entry_count?: number;
+  node_hostname?: string;
+  node_zone?: string;
+}
+
+/** The subset of a StorageUserBalances row the arithmetic needs. */
+export interface UserBalanceLike {
+  sent_gb: number;
+  received_gb: number;
+  allocated_gb: number;
+}
+
+/** Turn materialized per-node rows into the shared display/position shape. */
+export function nodePositionsFromBalances(
+  balances: readonly NodeBalanceLike[],
+  layout?: ClusterLayout
+): NodeClaimPosition[] {
+  const present = layout ? presentNodeIdSet(layout) : null;
+  return balances.map((b) => ({
+    nodeId: b.node_id,
+    nodeHostname: b.node_hostname || undefined,
+    nodeZone: b.node_zone || undefined,
+    claimedGb: Number(b.claimed_gb) || 0,
+    presentInLayout: present ? present.has(b.node_id) : true,
+    entryCount: Number(b.entry_count) || 0,
+  }));
+}
+
+/**
+ * The same position as {@link computeStorageSummary}, from the materialized
+ * balances instead of the raw ledger.
+ *
+ * This is the whole reason the cache is stored per (user, node) rather than as
+ * one net figure: the layout filter is applied *here*, at read time, where the
+ * live layout is actually available. A PocketBase hook cannot reach Garage, so
+ * a pre-filtered number written by a hook would silently keep counting
+ * decommissioned nodes.
+ *
+ * `userBalance` may be null — a user who has never been party to a transfer or
+ * owned a bucket simply has no row, which is a zeroed position, not an error.
+ */
+export function computeSummaryFromBalances(
+  nodeBalances: readonly NodeBalanceLike[],
+  userBalance: UserBalanceLike | null | undefined,
+  layout?: ClusterLayout
+): ComputedStorageSummary {
+  const nodeClaims = nodePositionsFromBalances(nodeBalances, layout);
+  const claimsGb = nodeClaims
+    .filter((n) => n.presentInLayout)
+    .reduce((sum, n) => sum + n.claimedGb, 0);
+  const sentGb = Number(userBalance?.sent_gb) || 0;
+  const receivedGb = Number(userBalance?.received_gb) || 0;
+  const allocatedGb = Number(userBalance?.allocated_gb) || 0;
+  const netGrantedGb = claimsGb + receivedGb - sentGb;
+
+  return {
+    nodeClaims,
+    // Balances hold sums, not rows. Callers that need the individual transfers
+    // for display fetch them separately; the numbers here do not depend on it.
+    sentTransfers: [],
+    receivedTransfers: [],
+    claimsGb,
+    sentGb,
+    receivedGb,
+    netGrantedGb,
+    allocatedGb,
+    availableGb: Math.max(netGrantedGb - allocatedGb, 0),
+  };
 }
 
 /**
@@ -237,7 +328,9 @@ export function computeStorageSummary(
   const netGrantedGb = claimsGb + receivedGb - sentGb;
 
   return {
-    claims: [...claims],
+    // includeZero so a fully wound-down node still appears, matching what the
+    // balance-backed path returns (it keeps the row until the ledger is empty).
+    nodeClaims: rollUpClaimsByNode(claims, layout, { includeZero: true }),
     sentTransfers: [...sentTransfers],
     receivedTransfers: [...receivedTransfers],
     claimsGb,

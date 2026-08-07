@@ -5,4 +5,6 @@ export * from './schema/access-key.js';
 export * from './schema/bucket.js';
 export * from './schema/storage-claim.js';
 export * from './schema/storage-claim-audit.js';
+export * from './schema/storage-node-balance.js';
+export * from './schema/storage-user-balance.js';
 export * from './schema/storage-transfer.js';

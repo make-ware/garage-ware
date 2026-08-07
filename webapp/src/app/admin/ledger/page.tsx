@@ -3,7 +3,8 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   Card,
   CardContent,
@@ -65,6 +66,7 @@ function AdminLedgerView() {
   const [layout, setLayout] = useState<LayoutResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
 
   const query = useMemo(() => {
     const q = new URLSearchParams({
@@ -138,9 +140,50 @@ function AdminLedgerView() {
   const totalPages = data?.totalPages ?? 1;
   const totalItems = data?.totalItems ?? 0;
 
+  async function rebuildBalances() {
+    setRebuilding(true);
+    try {
+      const result = await api<{
+        users: number;
+        nodes: number;
+        corrected: number;
+        driftGb: number;
+      }>('/next-api/garage/storage-balances/rebuild', { method: 'POST' });
+      if (result.corrected > 0) {
+        // Not routine maintenance: the incremental hooks are supposed to keep
+        // these exact, so anything corrected here is a bug worth chasing.
+        toast.warning(
+          `Corrected ${result.corrected} balance row(s), net drift ${formatSignedStorage(result.driftGb)} — an incremental hook missed a write path`
+        );
+      } else {
+        toast.success(
+          `Balances clean: ${result.users} user(s), ${result.nodes} node balance(s)`
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Rebuild failed');
+    } finally {
+      setRebuilding(false);
+    }
+  }
+
   return (
     <div className="p-8 max-w-7xl">
-      <h1 className="text-3xl font-bold mb-2">Claim ledger</h1>
+      <div className="mb-2 flex items-start justify-between gap-4">
+        <h1 className="text-3xl font-bold">Claim ledger</h1>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={rebuilding}
+          onClick={rebuildBalances}
+          title="Recompute the storage balance roll-ups from the ledgers and report anything that had to be corrected"
+        >
+          <RefreshCw
+            className={`mr-1 h-4 w-4 ${rebuilding ? 'animate-spin' : ''}`}
+          />
+          {rebuilding ? 'Rebuilding…' : 'Rebuild balances'}
+        </Button>
+      </div>
       <p className="text-muted-foreground mb-6">
         Every recorded change to the storage-claim ledger — who changed whose
         grant, when, and by how much. Written by a PocketBase hook rather than

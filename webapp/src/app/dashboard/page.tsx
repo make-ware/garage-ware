@@ -16,7 +16,6 @@ import { ProtectedRoute } from '@/components/auth/protected-route';
 import { useAdminStatus } from '@/hooks/use-admin-status';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
-import { rollUpClaimsByNode } from '@/lib/storage/ledger-math';
 import { bytesToGib } from '@/lib/storage/units';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
 import {
@@ -147,13 +146,12 @@ function StorageDashboard() {
 
   const summary = data?.summary;
 
-  // Claims are an append-only ledger, so a node can have several entries. Roll
-  // them up per node — the user cares about their effective claim there, not
-  // the admin's grant history. Nodes netting to zero are dropped by default.
-  // Same helper the admin console uses, so the two cannot disagree.
+  // The per-node breakdown arrives already rolled up — the server reads it from
+  // the materialized balances rather than summing the ledger. A node whose
+  // entries net to zero is no longer a claim worth listing.
   const claimsByNode = useMemo(
-    () => rollUpClaimsByNode(summary?.claims ?? []),
-    [summary?.claims]
+    () => (summary?.nodeClaims ?? []).filter((n) => n.claimedGb !== 0),
+    [summary?.nodeClaims]
   );
 
   const netGranted = summary?.netGrantedGb ?? 0;

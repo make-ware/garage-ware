@@ -5,4 +5,6 @@ export * from './access-key';
 export * from './bucket';
 export * from './storage-claim';
 export * from './storage-claim-audit';
+export * from './storage-node-balance';
+export * from './storage-user-balance';
 export * from './storage-transfer';

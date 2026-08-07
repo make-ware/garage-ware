@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeStorageSummary,
+  computeSummaryFromBalances,
   filterPresentClaims,
+  nodePositionsFromBalances,
   nodeUsableGbFrom,
   nodeUsableGbInLayout,
   presentNodeIdSet,
@@ -11,6 +13,7 @@ import {
   sumClaimsByUserNode,
   sumTransfers,
   userNodeKey,
+  type NodeBalanceLike,
 } from './ledger-math';
 import { GIBIBYTE } from './units';
 import type { ClusterLayout } from '@/lib/garage';
@@ -261,8 +264,11 @@ describe('computeStorageSummary', () => {
     // The retired node's 500 GB backs nothing, so it must not inflate the grant.
     expect(summary.claimsGb).toBe(100);
     expect(summary.netGrantedGb).toBe(100);
-    // ...but the raw rows are still returned for display.
-    expect(summary.claims).toHaveLength(2);
+    // ...but the node is still listed, flagged, so the UI can show why.
+    expect(summary.nodeClaims).toHaveLength(2);
+    expect(
+      summary.nodeClaims.find((n) => n.nodeId === 'node-gone')?.presentInLayout
+    ).toBe(false);
   });
 
   it('never filters transfers by layout, since they are node-agnostic', () => {
@@ -323,5 +329,211 @@ describe('computeStorageSummary', () => {
       layout()
     );
     expect(summary.claimsGb).toBe(75);
+  });
+});
+
+/**
+ * Derive balance rows from a ledger the way the PocketBase hooks in
+ * pb_hooks/lib/storage-balance.js do, so the two paths can be compared.
+ */
+function materialize(
+  claims: StorageClaim[],
+  sent: StorageTransfer[],
+  received: StorageTransfer[],
+  allocatedGb: number
+) {
+  const nodes = new Map<string, NodeBalanceLike>();
+  for (const c of claims) {
+    let row = nodes.get(c.node_id);
+    if (!row) {
+      row = {
+        node_id: c.node_id,
+        claimed_gb: 0,
+        entry_count: 0,
+        node_hostname: c.node_hostname,
+        node_zone: c.node_zone,
+      };
+      nodes.set(c.node_id, row);
+    }
+    row.claimed_gb += Number(c.quota_gb) || 0;
+    row.entry_count = (row.entry_count ?? 0) + 1;
+  }
+  return {
+    nodeBalances: [...nodes.values()],
+    userBalance: {
+      sent_gb: sumTransfers(sent),
+      received_gb: sumTransfers(received),
+      allocated_gb: allocatedGb,
+    },
+  };
+}
+
+/** Assert the cache and the ledger produce the same position. */
+function expectEquivalent(
+  claims: StorageClaim[],
+  sent: StorageTransfer[],
+  received: StorageTransfer[],
+  allocatedGb: number
+) {
+  const raw = computeStorageSummary(
+    claims,
+    sent,
+    received,
+    allocatedGb,
+    layout()
+  );
+  const { nodeBalances, userBalance } = materialize(
+    claims,
+    sent,
+    received,
+    allocatedGb
+  );
+  const cached = computeSummaryFromBalances(
+    nodeBalances,
+    userBalance,
+    layout()
+  );
+
+  expect(cached.claimsGb).toBeCloseTo(raw.claimsGb, 9);
+  expect(cached.sentGb).toBeCloseTo(raw.sentGb, 9);
+  expect(cached.receivedGb).toBeCloseTo(raw.receivedGb, 9);
+  expect(cached.netGrantedGb).toBeCloseTo(raw.netGrantedGb, 9);
+  expect(cached.allocatedGb).toBeCloseTo(raw.allocatedGb, 9);
+  expect(cached.availableGb).toBeCloseTo(raw.availableGb, 9);
+  return { raw, cached };
+}
+
+describe('computeSummaryFromBalances', () => {
+  // This is the property the entire materialization rests on: if reading the
+  // cache can ever disagree with summing the ledger, the cache is a liability.
+  it('equals computeStorageSummary for a plain position', () => {
+    expectEquivalent([claim('u1', 'node-a', 100)], [], [], 0);
+  });
+
+  it('equals computeStorageSummary with transfers both ways', () => {
+    expectEquivalent(
+      [claim('u1', 'node-a', 100)],
+      [transfer('u1', 'u2', 30)],
+      [transfer('u3', 'u1', 12)],
+      25
+    );
+  });
+
+  it('equals computeStorageSummary with several signed entries on one node', () => {
+    expectEquivalent(
+      [
+        claim('u1', 'node-a', 100),
+        claim('u1', 'node-a', -30),
+        claim('u1', 'node-a', 5),
+        claim('u1', 'node-b', 40),
+      ],
+      [],
+      [],
+      0
+    );
+  });
+
+  it('equals computeStorageSummary when a node has left the layout', () => {
+    const { cached } = expectEquivalent(
+      [claim('u1', 'node-a', 100), claim('u1', 'node-gone', 500)],
+      [],
+      [],
+      0
+    );
+    // ...and both agree the retired node contributes nothing.
+    expect(cached.netGrantedGb).toBe(100);
+  });
+
+  it('equals computeStorageSummary when a pair nets to zero', () => {
+    expectEquivalent(
+      [claim('u1', 'node-a', 100), claim('u1', 'node-a', -100)],
+      [],
+      [],
+      0
+    );
+  });
+
+  it('equals computeStorageSummary when over-allocated', () => {
+    const { cached } = expectEquivalent(
+      [claim('u1', 'node-a', 10)],
+      [],
+      [],
+      90
+    );
+    expect(cached.availableGb).toBe(0);
+  });
+
+  it('treats a missing user balance row as a zeroed position', () => {
+    const summary = computeSummaryFromBalances(
+      [{ node_id: 'node-a', claimed_gb: 50 }],
+      null,
+      layout()
+    );
+    expect(summary.netGrantedGb).toBe(50);
+    expect(summary.sentGb).toBe(0);
+    expect(summary.receivedGb).toBe(0);
+    expect(summary.allocatedGb).toBe(0);
+  });
+
+  it('flags a balance row whose node has left the layout', () => {
+    const summary = computeSummaryFromBalances(
+      [
+        { node_id: 'node-a', claimed_gb: 10 },
+        { node_id: 'node-gone', claimed_gb: 999 },
+      ],
+      null,
+      layout()
+    );
+    expect(summary.netGrantedGb).toBe(10);
+    const gone = summary.nodeClaims.find((n) => n.nodeId === 'node-gone');
+    expect(gone?.presentInLayout).toBe(false);
+    // Still listed, so the UI can explain why it does not count.
+    expect(gone?.claimedGb).toBe(999);
+  });
+
+  it('counts every node when no layout is supplied', () => {
+    const summary = computeSummaryFromBalances(
+      [
+        { node_id: 'node-a', claimed_gb: 10 },
+        { node_id: 'node-gone', claimed_gb: 5 },
+      ],
+      null
+    );
+    expect(summary.netGrantedGb).toBe(15);
+  });
+});
+
+describe('nodePositionsFromBalances', () => {
+  it('carries hostname, zone and entry count through', () => {
+    const [position] = nodePositionsFromBalances(
+      [
+        {
+          node_id: 'node-a',
+          claimed_gb: 12,
+          entry_count: 3,
+          node_hostname: 'box1',
+          node_zone: 'dc1',
+        },
+      ],
+      layout()
+    );
+    expect(position).toMatchObject({
+      nodeId: 'node-a',
+      nodeHostname: 'box1',
+      nodeZone: 'dc1',
+      claimedGb: 12,
+      entryCount: 3,
+      presentInLayout: true,
+    });
+  });
+
+  it('normalises empty metadata strings to undefined', () => {
+    // PocketBase returns "" for an unset text field, which would otherwise
+    // render as a blank cell instead of falling back to the node id.
+    const [position] = nodePositionsFromBalances([
+      { node_id: 'node-a', claimed_gb: 1, node_hostname: '', node_zone: '' },
+    ]);
+    expect(position.nodeHostname).toBeUndefined();
+    expect(position.nodeZone).toBeUndefined();
   });
 });

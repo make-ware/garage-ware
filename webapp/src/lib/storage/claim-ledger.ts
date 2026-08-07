@@ -1,12 +1,15 @@
 import 'server-only';
-import {
-  BucketMutator,
-  StorageClaimMutator,
-} from '@garage-ware/shared/mutators';
 import { HttpError } from '@/lib/auth/server';
 import { formatStorage } from '@/lib/format';
-import { getUserGrantedGb } from '@/lib/storage/claims';
-import { nodeUsableGbInLayout } from '@/lib/storage/ledger-math';
+import {
+  getNodeClaimedGb,
+  getUserBalances,
+  getUserNodeClaimedGb,
+} from '@/lib/storage/balances';
+import {
+  computeSummaryFromBalances,
+  nodeUsableGbInLayout,
+} from '@/lib/storage/ledger-math';
 import { cluster, type GarageClient, type ClusterLayout } from '@/lib/garage';
 import type { TypedPocketBase } from '@/lib/types';
 
@@ -77,18 +80,22 @@ export async function assertClaimDeltaAllowed(
     }
   }
 
-  const claims = new StorageClaimMutator(pb);
-  const buckets = new BucketMutator(pb);
-
-  const [nodeSumGb, userNodeSumGb, grantedGb, allocatedGb] = await Promise.all([
-    claims.sumByNode(delta.nodeId),
-    claims.sumByUserAndNode(delta.userId, delta.nodeId),
-    getUserGrantedGb(pb, delta.userId, {
-      onlyPresent: true,
-      layout: ctx.layout,
-    }),
-    buckets.sumAllocatedGb(delta.userId),
+  // All four figures come from the materialized balances. They used to be four
+  // ledger scans capped at one page each, which meant this guard — the one
+  // thing standing between the cluster and an over-allocated node — quietly
+  // stopped being correct once a ledger outgrew 1000 rows.
+  const [nodeSumGb, userNodeSumGb, balances] = await Promise.all([
+    getNodeClaimedGb(pb, delta.nodeId),
+    getUserNodeClaimedGb(pb, delta.userId, delta.nodeId),
+    getUserBalances(pb, delta.userId),
   ]);
+  const position = computeSummaryFromBalances(
+    balances.nodeBalances,
+    balances.userBalance,
+    ctx.layout
+  );
+  const grantedGb = position.netGrantedGb;
+  const allocatedGb = position.allocatedGb;
 
   if (usableGb !== null && nodeSumGb + delta.deltaGb > usableGb) {
     throw new HttpError(

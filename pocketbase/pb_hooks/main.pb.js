@@ -24,38 +24,95 @@
 // Each handler requires its helper inside the callback: Goja runs every hook in
 // a fresh executor, so a top-level require here would not be visible to them.
 
+// The claim hooks below do double duty: they write the audit trail AND keep the
+// StorageNodeBalances / StorageUserBalances roll-ups current. Both happen in the
+// same handler, after the same e.next(), on the same transactional e.app — so a
+// claim, its audit row, and its balance either all commit or all roll back.
+// Splitting them into parallel hooks would only create a way for them to
+// disagree.
+
 onRecordCreateRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
   e.next();
+  const amountGb = e.record.getFloat("quota_gb");
   writeClaimAudit(e.app, {
     action: "create",
     claim: e.record,
     previousGb: 0,
-    newGb: e.record.getFloat("quota_gb"),
+    newGb: amountGb,
     auth: e.auth,
     source: "api",
+  });
+  applyClaimDelta(e.app, {
+    userId: e.record.getString("user"),
+    nodeId: e.record.getString("node_id"),
+    deltaGb: amountGb,
+    entryDelta: 1,
+    nodeHostname: e.record.getString("node_hostname"),
+    nodeZone: e.record.getString("node_zone"),
   });
 }, "StorageClaims");
 
 onRecordUpdateRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
   // original() is the record as it was loaded from the DB, before the request
   // applied its changes — read it before e.next() commits them.
-  const previousGb = e.record.original().getFloat("quota_gb");
+  const before = e.record.original();
+  const previousGb = before.getFloat("quota_gb");
+  const previousNodeId = before.getString("node_id");
+  const previousUserId = before.getString("user");
   e.next();
+  const newGb = e.record.getFloat("quota_gb");
+  const nodeId = e.record.getString("node_id");
+  const userId = e.record.getString("user");
   writeClaimAudit(e.app, {
     action: "update",
     claim: e.record,
     previousGb: previousGb,
-    newGb: e.record.getFloat("quota_gb"),
+    newGb: newGb,
     auth: e.auth,
     source: "api",
   });
+
+  if (previousUserId === userId && previousNodeId === nodeId) {
+    // Ordinary case: the amount moved, the pair did not.
+    applyClaimDelta(e.app, {
+      userId: userId,
+      nodeId: nodeId,
+      deltaGb: newGb - previousGb,
+      entryDelta: 0,
+      nodeHostname: e.record.getString("node_hostname"),
+      nodeZone: e.record.getString("node_zone"),
+    });
+  } else {
+    // The entry was re-pointed at a different user or node. Nothing in the app
+    // does this, but the PB admin UI can — move the whole entry rather than
+    // leaving its old pair overstated.
+    applyClaimDelta(e.app, {
+      userId: previousUserId,
+      nodeId: previousNodeId,
+      deltaGb: -previousGb,
+      entryDelta: -1,
+    });
+    applyClaimDelta(e.app, {
+      userId: userId,
+      nodeId: nodeId,
+      deltaGb: newGb,
+      entryDelta: 1,
+      nodeHostname: e.record.getString("node_hostname"),
+      nodeZone: e.record.getString("node_zone"),
+    });
+  }
 }, "StorageClaims");
 
 onRecordDeleteRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
   const previousGb = e.record.getFloat("quota_gb");
+  const userId = e.record.getString("user");
+  const nodeId = e.record.getString("node_id");
   e.next();
   writeClaimAudit(e.app, {
     action: "delete",
@@ -64,6 +121,12 @@ onRecordDeleteRequest((e) => {
     newGb: 0,
     auth: e.auth,
     source: "api",
+  });
+  applyClaimDelta(e.app, {
+    userId: userId,
+    nodeId: nodeId,
+    deltaGb: -previousGb,
+    entryDelta: -1,
   });
 }, "StorageClaims");
 
@@ -77,6 +140,7 @@ onRecordDeleteRequest((e) => {
 // performed. The deleted claim records stay readable in memory afterwards.
 onRecordDeleteRequest((e) => {
   const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
 
   const userId = e.record.id;
   const userEmail = e.record.email();
@@ -100,7 +164,46 @@ onRecordDeleteRequest((e) => {
     previousGb: claim.getFloat("quota_gb"),
   }));
 
+  // StorageTransfers cascades from BOTH parties, so deleting this user also
+  // silently removes the transfers they sent and received — and the transfer
+  // hooks below never fire for a cascade. The counterparty's sent_gb/received_gb
+  // would stay overstated until the nightly rebuild, and a validator reading it
+  // in the meantime would let them over-allocate. Unwind their side here.
+  // This user's own balance rows cascade away, so they need no adjustment.
+  let transfers = [];
+  try {
+    transfers = e.app.findRecordsByFilter(
+      "StorageTransfers",
+      "from_user = {:userId} || to_user = {:userId}",
+      "",
+      0,
+      0,
+      { userId: userId }
+    );
+  } catch (err) {
+    console.error(
+      "[storage-balance] cascade transfer lookup failed for user:",
+      userId,
+      err
+    );
+  }
+
+  const transferSnapshots = transfers.map((transfer) => ({
+    fromUserId: transfer.getString("from_user"),
+    toUserId: transfer.getString("to_user"),
+    quotaGb: transfer.getFloat("quota_gb"),
+  }));
+
   e.next();
+
+  for (const snapshot of transferSnapshots) {
+    // Only the surviving counterparty needs correcting.
+    applyTransferDelta(e.app, {
+      fromUserId: snapshot.fromUserId === userId ? null : snapshot.fromUserId,
+      toUserId: snapshot.toUserId === userId ? null : snapshot.toUserId,
+      deltaGb: -snapshot.quotaGb,
+    });
+  }
 
   for (const snapshot of snapshots) {
     writeClaimAudit(e.app, {
@@ -114,6 +217,134 @@ onRecordDeleteRequest((e) => {
     });
   }
 }, "Users");
+
+// ---------------------------------------------------------------------------
+// Storage balance roll-ups
+// ---------------------------------------------------------------------------
+//
+// StorageNodeBalances / StorageUserBalances are a cache of the two ledgers,
+// maintained here so that reading a user's position costs O(nodes) instead of
+// O(ledger entries). The ledgers only ever grow, and every per-user sum used to
+// read a single page of them — a silent wrong answer waiting on row count.
+//
+// The claim side is handled in the StorageClaims hooks above (same handler as
+// the audit trail, so the two cannot diverge). What is left is transfers,
+// bucket allocations, and keeping the whole thing honest.
+
+// A transfer has no update path — it is corrected by deleting it — so create
+// and delete are the only two events.
+onRecordCreateRequest((e) => {
+  const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  e.next();
+  applyTransferDelta(e.app, {
+    fromUserId: e.record.getString("from_user"),
+    toUserId: e.record.getString("to_user"),
+    deltaGb: e.record.getFloat("quota_gb"),
+  });
+}, "StorageTransfers");
+
+onRecordDeleteRequest((e) => {
+  const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const fromUserId = e.record.getString("from_user");
+  const toUserId = e.record.getString("to_user");
+  const quotaGb = e.record.getFloat("quota_gb");
+  e.next();
+  applyTransferDelta(e.app, {
+    fromUserId: fromUserId,
+    toUserId: toUserId,
+    deltaGb: -quotaGb,
+  });
+}, "StorageTransfers");
+
+// A bucket's quota_gb is the slice of its owner's grant that is already spoken
+// for, so allocated_gb tracks it.
+onRecordCreateRequest((e) => {
+  const { applyAllocationDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  e.next();
+  applyAllocationDelta(
+    e.app,
+    e.record.getString("user"),
+    e.record.getFloat("quota_gb")
+  );
+}, "Buckets");
+
+onRecordUpdateRequest((e) => {
+  const { applyAllocationDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const before = e.record.original();
+  const previousGb = before.getFloat("quota_gb");
+  const previousUserId = before.getString("user");
+  e.next();
+  const newGb = e.record.getFloat("quota_gb");
+  const userId = e.record.getString("user");
+
+  // Most Buckets updates are the webapp's usage-cache write (bytes, objects,
+  // usage_updated_at) on every dashboard load, which leaves the quota alone.
+  // Skip those rather than churn a balance row on every page view.
+  if (previousUserId === userId) {
+    if (previousGb !== newGb) {
+      applyAllocationDelta(e.app, userId, newGb - previousGb);
+    }
+    return;
+  }
+  applyAllocationDelta(e.app, previousUserId, -previousGb);
+  applyAllocationDelta(e.app, userId, newGb);
+}, "Buckets");
+
+onRecordDeleteRequest((e) => {
+  const { applyAllocationDelta } = require(`${__hooks}/lib/storage-balance.js`);
+  const userId = e.record.getString("user");
+  const quotaGb = e.record.getFloat("quota_gb");
+  e.next();
+  applyAllocationDelta(e.app, userId, -quotaGb);
+}, "Buckets");
+
+// Nightly full recompute. This is the audit of the incremental hooks above, not
+// routine maintenance: a non-zero `corrected` means one of them missed a write
+// path, so it is logged loudly and recorded per-row in `last_drift_gb`.
+cronAdd("storage-balance-rebuild", "30 3 * * *", () => {
+  const { rebuildAll } = require(`${__hooks}/lib/storage-balance.js`);
+  try {
+    const result = rebuildAll($app);
+    if (result.corrected > 0) {
+      console.warn(
+        `[storage-balance] rebuild corrected ${result.corrected} row(s), net drift ${result.driftGb} GB — an incremental hook is missing a path`
+      );
+    } else {
+      console.log(
+        `[storage-balance] rebuild clean: ${result.users} user(s), ${result.nodes} node balance(s)`
+      );
+    }
+  } catch (err) {
+    console.error("[storage-balance] rebuild failed:", err);
+  }
+});
+
+// Note there is deliberately no onBootstrap backfill here. Migrations run
+// *after* bootstrap fires, so on the boot that upgrades an existing deployment
+// a hook-based backfill finds no collections and does nothing — leaving the
+// cache empty on exactly the installation that has data to backfill. The
+// initial population lives in 1786122444_created_StorageUserBalances.js
+// instead, where it is atomic with the schema change.
+
+// Force a rebuild on demand. Superuser-only, and proxied by the admin-gated
+// Next.js route at /next-api/garage/storage-balances/rebuild — keeping the
+// recompute here means there is exactly one implementation of it, shared with
+// the cron above, rather than a second one in TypeScript that could disagree.
+routerAdd(
+  "POST",
+  "/api/storage-balances/rebuild",
+  (e) => {
+    const { rebuildAll } = require(`${__hooks}/lib/storage-balance.js`);
+    const result = rebuildAll(e.app);
+    if (result.corrected > 0) {
+      console.warn(
+        `[storage-balance] manual rebuild corrected ${result.corrected} row(s), net drift ${result.driftGb} GB`
+      );
+    }
+    return e.json(200, result);
+  },
+  $apis.requireSuperuserAuth()
+);
 
 // Daily reminder for buckets at or over the user's notification_threshold_pct.
 // DB-only: reads cached `bytes` + `usage_updated_at` written back by the webapp
