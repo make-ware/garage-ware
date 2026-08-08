@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   Card,
   CardContent,
@@ -16,15 +17,15 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { SortableTableHead } from '@/components/ui/sortable-table-head';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { ImportToUserDialog } from '@/components/admin/import-to-user-dialog';
-import { SetBucketQuotaDialog } from '@/components/admin/set-bucket-quota-dialog';
+import { QuotaFillPct } from '@/components/storage/quota-fill';
+import { useTableSort } from '@/hooks/use-table-sort';
 import { api } from '@/lib/api-client';
-import { formatStorage } from '@/lib/format';
-import { bytesToGib } from '@/lib/storage/units';
+import { formatBytes, formatStorage } from '@/lib/format';
+import { bytesToGib, gibToBytes } from '@/lib/storage/units';
 import { toast } from 'sonner';
-import type { AdminUser } from '@/lib/admin-types';
 import type { BucketWithUsage } from '@/lib/types';
 import type { UnallocatedBucket } from '@/app/next-api/garage/buckets/unallocated/route';
 
@@ -32,117 +33,71 @@ type AdminBucket = Omit<BucketWithUsage, 'expand'> & {
   expand?: { user?: { email?: string; name?: string } };
 };
 
-/** One row of GET /next-api/garage/buckets/quota-audit. */
-interface QuotaAuditRow {
-  id: string;
-  name: string;
-  user: string;
-  pb_quota_gb: number;
-  status: 'ok' | 'drifted' | 'unknown';
-  error?: string;
-  garage_quota_gb?: number;
-  size_drifted?: boolean;
-  garage_max_objects?: number;
-  expected_max_objects?: number | null;
-  objects_drifted?: boolean;
+function ownerOf(b: AdminBucket): string {
+  return b.expand?.user?.email ?? b.user;
 }
 
-interface QuotaAuditResponse {
-  items: QuotaAuditRow[];
-  total: number;
-  drifted: number;
-  unknown: number;
-}
+/**
+ * Module scope on purpose: `useTableSort` memoises on this reference, so an
+ * inline object literal would be new every render and defeat the memo.
+ */
+const BUCKET_SORT = {
+  name: (b: AdminBucket) => b.name,
+  owner: ownerOf,
+  size: (b: AdminBucket) => {
+    const cap = gibToBytes(b.quota_gb ?? 0);
+    return cap > 0 && b.bytes !== undefined ? (b.bytes / cap) * 100 : null;
+  },
+  objects: (b: AdminBucket) => {
+    const cap = b.maxObjects ?? 0;
+    return cap > 0 && b.objects !== undefined ? (b.objects / cap) * 100 : null;
+  },
+} as const;
 
-interface QuotaTarget {
-  bucket: AdminBucket;
-  audit?: QuotaAuditRow;
-}
+type BucketSortKey = keyof typeof BUCKET_SORT;
 
 export default function AdminBucketsPage() {
   const [buckets, setBuckets] = useState<AdminBucket[]>([]);
   const [unallocated, setUnallocated] = useState<UnallocatedBucket[]>([]);
-  const [audit, setAudit] = useState<QuotaAuditResponse | null>(null);
-  const [users, setUsers] = useState<AdminUser[]>([]);
   const [importing, setImporting] = useState<UnallocatedBucket | null>(null);
-  const [quotaTarget, setQuotaTarget] = useState<QuotaTarget | null>(null);
-  const [reconciling, setReconciling] = useState(false);
+
+  // Fetch-only, so the mount effect and refresh() each own their setState.
+  // They used to be verbatim copies where only one had a try/catch, which is
+  // how a failing reload after a *successful* write reported as a failed write.
+  const load = useCallback(async () => {
+    const [all, free] = await Promise.all([
+      api<{ items: AdminBucket[] }>('/next-api/garage/buckets?all=true'),
+      api<{ items: UnallocatedBucket[] }>(
+        '/next-api/garage/buckets/unallocated'
+      ),
+    ]);
+    return { all, free };
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const { all, free } = await load();
+    setBuckets(all.items);
+    setUnallocated(free.items);
+  }, [load]);
 
   useEffect(() => {
     let cancelled = false;
-    const load = async () => {
+    const run = async () => {
       try {
-        const [all, free, auditResp, usersResp] = await Promise.all([
-          api<{ items: AdminBucket[] }>('/next-api/garage/buckets?all=true'),
-          api<{ items: UnallocatedBucket[] }>(
-            '/next-api/garage/buckets/unallocated'
-          ),
-          api<QuotaAuditResponse>('/next-api/garage/buckets/quota-audit'),
-          api<{ items: AdminUser[] }>('/next-api/garage/users'),
-        ]);
+        const { all, free } = await load();
         if (cancelled) return;
         setBuckets(all.items);
         setUnallocated(free.items);
-        setAudit(auditResp);
-        setUsers(usersResp.items);
       } catch (err) {
         if (!cancelled)
           toast.error(err instanceof Error ? err.message : 'Failed to load');
       }
     };
-    load();
+    run();
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  async function refresh() {
-    const [all, free, auditResp, usersResp] = await Promise.all([
-      api<{ items: AdminBucket[] }>('/next-api/garage/buckets?all=true'),
-      api<{ items: UnallocatedBucket[] }>(
-        '/next-api/garage/buckets/unallocated'
-      ),
-      api<QuotaAuditResponse>('/next-api/garage/buckets/quota-audit'),
-      api<{ items: AdminUser[] }>('/next-api/garage/users'),
-    ]);
-    setBuckets(all.items);
-    setUnallocated(free.items);
-    setAudit(auditResp);
-    setUsers(usersResp.items);
-  }
-
-  async function reconcile(
-    direction: 'adopt-garage' | 'push-pb',
-    bucketIds?: string[]
-  ) {
-    setReconciling(true);
-    try {
-      const result = await api<{ synced: number; failed: number }>(
-        '/next-api/garage/buckets/reconcile',
-        {
-          method: 'POST',
-          body: {
-            direction,
-            includeObjects: true,
-            ...(bucketIds && { bucketIds }),
-          },
-        }
-      );
-      const verb =
-        direction === 'adopt-garage'
-          ? 'adopted from Garage'
-          : 'pushed to Garage';
-      toast.success(
-        `${result.synced} bucket${result.synced === 1 ? '' : 's'} ${verb}` +
-          (result.failed > 0 ? ` · ${result.failed} failed` : '')
-      );
-      await refresh();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Reconcile failed');
-    } finally {
-      setReconciling(false);
-    }
-  }
+  }, [load]);
 
   async function importBucket(garageBucketId: string, userId: string) {
     await api('/next-api/garage/buckets/import', {
@@ -150,94 +105,122 @@ export default function AdminBucketsPage() {
       body: { garage_bucket_id: garageBucketId, user_id: userId },
     });
     toast.success('Bucket imported');
-    await refresh();
+    try {
+      await refresh();
+    } catch {
+      toast.warning(
+        'Imported, but the page could not reload — refresh to see it.'
+      );
+    }
   }
 
-  const totalQuotaGb = buckets.reduce((sum, b) => sum + (b.quota_gb ?? 0), 0);
-  const totalUsedGb = bytesToGib(
-    buckets.reduce((sum, b) => sum + (b.bytes ?? 0), 0)
+  const { sorted, sort, toggle } = useTableSort<AdminBucket, BucketSortKey>(
+    buckets,
+    BUCKET_SORT,
+    { key: 'name', direction: 'asc' }
   );
-  const totalObjects = buckets.reduce((sum, b) => sum + (b.objects ?? 0), 0);
 
-  const auditById = new Map((audit?.items ?? []).map((a) => [a.id, a]));
-  const userById = new Map(users.map((u) => [u.id, u]));
-  const driftedIds = (audit?.items ?? [])
-    .filter((a) => a.status === 'drifted')
-    .map((a) => a.id);
+  const totalQuotaGb = buckets.reduce((sum, b) => sum + (b.quota_gb ?? 0), 0);
+  const totalBytes = buckets.reduce((sum, b) => sum + (b.bytes ?? 0), 0);
+  const totalObjects = buckets.reduce((sum, b) => sum + (b.objects ?? 0), 0);
 
   return (
     <div className="p-8 max-w-7xl space-y-6">
       <h1 className="text-3xl font-bold">Buckets</h1>
 
-      {audit && audit.drifted > 0 && (
-        <Card className="border-destructive/50">
-          <CardHeader>
-            <CardTitle className="text-base">Quota drift detected</CardTitle>
-            <CardDescription>
-              {audit.drifted} bucket{audit.drifted === 1 ? '' : 's'} where what
-              we record disagrees with what Garage enforces
-              {audit.unknown > 0 && ` · ${audit.unknown} could not be checked`}.
-              Adopting takes Garage as the truth; pushing re-applies our value,
-              which is what repairs a quota change that only half landed.
-            </CardDescription>
+      <div className="grid gap-4 sm:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Buckets</CardDescription>
+            <CardTitle>{buckets.length}</CardTitle>
           </CardHeader>
-          <CardContent className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={reconciling}
-              onClick={() => reconcile('adopt-garage', driftedIds)}
-            >
-              Adopt Garage values
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={reconciling}
-              onClick={() => reconcile('push-pb', driftedIds)}
-            >
-              Push our values to Garage
-            </Button>
+          <CardContent className="text-sm text-muted-foreground">
+            {unallocated.length > 0
+              ? `${unallocated.length} unallocated`
+              : 'all allocated'}
           </CardContent>
         </Card>
-      )}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total storage</CardDescription>
+            <CardTitle>{formatBytes(totalBytes)}</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            used of {formatStorage(totalQuotaGb)} allocated
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total objects</CardDescription>
+            <CardTitle>{totalObjects.toLocaleString()}</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            stored across all buckets
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Allocated</CardDescription>
+            <CardTitle>{formatStorage(totalQuotaGb)}</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            reserved by bucket quotas
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
         <CardHeader>
           <CardTitle>All buckets</CardTitle>
           <CardDescription>
-            {buckets.length} total · {formatStorage(totalUsedGb)} used of{' '}
-            {formatStorage(totalQuotaGb)} allocated ·{' '}
-            {totalObjects.toLocaleString()} objects.
+            Click a column to sort. Quota drift and per-bucket quota changes
+            live on the{' '}
+            <Link href="/admin/quota" className="underline">
+              Quota
+            </Link>{' '}
+            page.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Owner</TableHead>
-                <TableHead>Used</TableHead>
-                <TableHead>Quota</TableHead>
-                <TableHead>Drift</TableHead>
-                <TableHead className="text-right">Objects</TableHead>
-                <TableHead className="text-right">Object limit</TableHead>
+                <SortableTableHead
+                  active={sort.key === 'name'}
+                  direction={sort.direction}
+                  onSort={() => toggle('name')}
+                >
+                  Name
+                </SortableTableHead>
+                <SortableTableHead
+                  active={sort.key === 'owner'}
+                  direction={sort.direction}
+                  onSort={() => toggle('owner')}
+                >
+                  Owner
+                </SortableTableHead>
+                <SortableTableHead
+                  active={sort.key === 'size'}
+                  direction={sort.direction}
+                  onSort={() => toggle('size')}
+                >
+                  Size quota
+                </SortableTableHead>
+                <SortableTableHead
+                  active={sort.key === 'objects'}
+                  direction={sort.direction}
+                  onSort={() => toggle('objects')}
+                >
+                  Object quota
+                </SortableTableHead>
                 <TableHead>Garage ID</TableHead>
-                <TableHead className="w-24" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {buckets.map((b) => {
-                const usedGb = bytesToGib(b.bytes ?? 0);
+              {sorted.map((b) => {
                 const quotaGb = b.quota_gb ?? 0;
-                const pct =
-                  quotaGb > 0 ? Math.round((usedGb / quotaGb) * 100) : null;
+                const quotaBytes = gibToBytes(quotaGb);
                 const maxObjects = b.maxObjects ?? null;
-                const objPct =
-                  maxObjects && maxObjects > 0 && b.objects !== undefined
-                    ? Math.round(((b.objects ?? 0) / maxObjects) * 100)
-                    : null;
-                const drift = auditById.get(b.id);
                 return (
                   <TableRow key={b.id}>
                     <TableCell className="font-medium">{b.name}</TableCell>
@@ -248,89 +231,30 @@ export default function AdminBucketsPage() {
                       {b.bytes === undefined ? (
                         <span className="text-muted-foreground">—</span>
                       ) : (
-                        <>
-                          {formatStorage(usedGb)}
-                          {pct !== null && (
-                            <span className="text-muted-foreground text-xs ml-1">
-                              ({pct}%)
-                            </span>
-                          )}
-                        </>
+                        formatBytes(b.bytes)
                       )}
+                      <span className="text-muted-foreground">
+                        {' / '}
+                        {quotaGb > 0 ? formatStorage(quotaGb) : 'none'}
+                      </span>
+                      <QuotaFillPct used={b.bytes} cap={quotaBytes} />
                     </TableCell>
-                    <TableCell>{formatStorage(quotaGb)}</TableCell>
-                    <TableCell className="text-xs">
-                      {!drift || drift.status === 'ok' ? (
-                        <span className="text-muted-foreground">—</span>
-                      ) : drift.status === 'unknown' ? (
-                        <Badge
-                          variant="outline"
-                          title={drift.error ?? 'Garage did not answer'}
-                        >
-                          unknown
-                        </Badge>
-                      ) : (
-                        <div className="space-y-0.5">
-                          {drift.size_drifted && (
-                            <div
-                              className="text-destructive"
-                              title="PocketBase and Garage disagree about the size quota"
-                            >
-                              size: Garage has{' '}
-                              {formatStorage(drift.garage_quota_gb ?? 0)}
-                            </div>
-                          )}
-                          {drift.objects_drifted && (
-                            <div
-                              className="text-destructive"
-                              title="Garage's object cap does not match what this quota should derive"
-                            >
-                              objects:{' '}
-                              {(drift.garage_max_objects ?? 0).toLocaleString()}{' '}
-                              → expected{' '}
-                              {drift.expected_max_objects == null
-                                ? 'none'
-                                : drift.expected_max_objects.toLocaleString()}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell>
                       {b.objects === undefined ? (
-                        '—'
+                        <span className="text-muted-foreground">—</span>
                       ) : (
-                        <>
-                          {(b.objects ?? 0).toLocaleString()}
-                          {objPct !== null && (
-                            <span className="text-muted-foreground text-xs ml-1">
-                              ({objPct}%)
-                            </span>
-                          )}
-                        </>
+                        b.objects.toLocaleString()
                       )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {maxObjects != null && maxObjects > 0 ? (
-                        maxObjects.toLocaleString()
-                      ) : (
-                        <span className="text-muted-foreground">none</span>
-                      )}
+                      <span className="text-muted-foreground">
+                        {' / '}
+                        {maxObjects && maxObjects > 0
+                          ? maxObjects.toLocaleString()
+                          : 'none'}
+                      </span>
+                      <QuotaFillPct used={b.objects} cap={maxObjects} />
                     </TableCell>
                     <TableCell className="font-mono text-xs">
                       {b.garage_bucket_id}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7"
-                        onClick={() =>
-                          setQuotaTarget({ bucket: b, audit: drift })
-                        }
-                      >
-                        Set quota
-                      </Button>
                     </TableCell>
                   </TableRow>
                 );
@@ -368,10 +292,6 @@ export default function AdminBucketsPage() {
                   const usedGb = bytesToGib(b.bytes ?? 0);
                   const maxGb = b.maxSize ? bytesToGib(b.maxSize) : 0;
                   const maxObjects = b.maxObjects ?? null;
-                  const objPct =
-                    maxObjects && maxObjects > 0 && b.objects !== undefined
-                      ? Math.round((b.objects / maxObjects) * 100)
-                      : null;
                   return (
                     <TableRow key={b.id}>
                       <TableCell>
@@ -404,11 +324,7 @@ export default function AdminBucketsPage() {
                         ) : (
                           <>
                             {b.objects.toLocaleString()}
-                            {objPct !== null && (
-                              <span className="text-muted-foreground text-xs ml-1">
-                                ({objPct}%)
-                              </span>
-                            )}
+                            <QuotaFillPct used={b.objects} cap={maxObjects} />
                           </>
                         )}
                       </TableCell>
@@ -454,29 +370,6 @@ export default function AdminBucketsPage() {
           await importBucket(importing.id, userId);
         }}
       />
-
-      {quotaTarget && (
-        <SetBucketQuotaDialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setQuotaTarget(null);
-          }}
-          bucketId={quotaTarget.bucket.id}
-          bucketName={quotaTarget.bucket.name}
-          ownerEmail={
-            quotaTarget.bucket.expand?.user?.email ??
-            userById.get(quotaTarget.bucket.user)?.email ??
-            quotaTarget.bucket.user
-          }
-          currentGb={quotaTarget.bucket.quota_gb ?? 0}
-          garageGb={quotaTarget.audit?.garage_quota_gb ?? null}
-          // The dialog reads the owner's position itself. `users` here is one
-          // 200-row page, so an owner past it would otherwise show a grant of 0
-          // and the dialog would reject every quota as over-grant.
-          ownerId={quotaTarget.bucket.user}
-          onApplied={refresh}
-        />
-      )}
     </div>
   );
 }
