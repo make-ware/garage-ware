@@ -1,5 +1,6 @@
 import 'server-only';
-import { MEGABYTE, gibToBytes } from './units';
+import { MEGABYTE } from './units';
+import { deriveMaxObjects, effectiveMaxObjects } from './object-cap';
 
 /**
  * Average object size in bytes, derived from the optional
@@ -17,16 +18,24 @@ export function avgObjectSizeBytes(): number | null {
 }
 
 /**
- * Derive a bucket's `maxObjects` quota from its byte quota (stored as binary
- * GiB) and the configured average object size. Returns null when no average is
- * configured or the quota is 0, so callers can hand the result straight to
- * Garage's `quotas.maxObjects` (null = no cap). This is a coarse accounting
- * sanity-cap, not an exact count — at least 1 object is always allowed for a
- * non-zero quota.
+ * Derive a bucket's `maxObjects` quota from its byte quota alone, ignoring any
+ * override. This is "what the configured average derives" — use it only where
+ * there is no PocketBase record to consult (bucket creation), or where an
+ * override has just been cleared.
  */
 export function maxObjectsForQuotaGib(quotaGib: number): number | null {
-  const avg = avgObjectSizeBytes();
-  if (avg === null) return null;
-  if (!(quotaGib > 0)) return null;
-  return Math.max(1, Math.floor(gibToBytes(quotaGib) / avg));
+  return deriveMaxObjects(quotaGib, avgObjectSizeBytes());
+}
+
+/**
+ * What this bucket should actually be capped at: its persisted `object_quota`
+ * override when set, otherwise the derivation. This is the one every write of a
+ * `maxObjects` to Garage should go through, so an admin's deliberate cap is not
+ * silently recomputed away.
+ */
+export function effectiveMaxObjectsFor(record: {
+  quota_gb?: number;
+  object_quota?: number;
+}): number | null {
+  return effectiveMaxObjects(record, avgObjectSizeBytes());
 }

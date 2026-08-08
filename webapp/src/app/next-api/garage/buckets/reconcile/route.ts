@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { GarageClient, buckets } from '@/lib/garage';
 import { requireAdmin, errorResponse } from '@/lib/auth/server';
 import { describeQuotaDrift, syncQuotaToPb } from '@/lib/storage/quota-sync';
-import { maxObjectsForQuotaGib } from '@/lib/storage/object-quota';
+import {
+  effectiveMaxObjectsFor,
+  maxObjectsForQuotaGib,
+} from '@/lib/storage/object-quota';
 import { bytesToGib, gibToBytes } from '@/lib/storage/units';
 
 export const dynamic = 'force-dynamic';
@@ -81,26 +84,41 @@ export async function POST(req: Request) {
               await syncQuotaToPb(pb, pbBucket, r.value);
             }
             if (fixObjects) {
-              // The object axis has no PocketBase side to adopt. `max_objects`
-              // is only a usage-cache mirror, and `objectsDrifted` compares
-              // Garage's cap against the one *derived* from the byte quota via
-              // GARAGE_AVG_OBJECT_SIZE_MB — so the sole repair, in either
-              // direction, is writing Garage. Skipping it here while still
-              // counting the bucket as synced is what let the endpoint report
-              // "N adopted" with nothing written and the drift banner intact.
-              //
-              // Derive from Garage's byte quota: after the adopt above that is
-              // also what PocketBase holds, and when the size had not drifted
-              // the two already agreed.
-              const adoptedGb = bytesToGib(drift.garageSizeBytes);
-              await buckets.updateBucket(garage, {
-                id: pbBucket.garage_bucket_id,
-                quotas: {
-                  maxSize:
-                    drift.garageSizeBytes > 0 ? drift.garageSizeBytes : null,
-                  maxObjects: maxObjectsForQuotaGib(adoptedGb),
-                },
-              });
+              if (drift.garageMaxObjects > 0) {
+                // The object axis DOES have a PocketBase side now:
+                // `object_quota`. Adopting means recording the cap Garage
+                // already enforces as the deliberate one. The live limit does
+                // not move — only the disagreement does, which is exactly what
+                // "adopt Garage as the truth" should mean on this axis.
+                await pb.collection('Buckets').update(pbBucket.id, {
+                  object_quota: drift.garageMaxObjects,
+                });
+              } else {
+                // Garage caps nothing, and `object_quota: 0` cannot say
+                // "uncapped" — it says "derive". So there is no PocketBase
+                // value to adopt and the only repair is the historical one:
+                // write Garage the derived cap. Reachable only when an average
+                // IS configured; with none, the expectation is null, Garage's 0
+                // already matches, and `objectsDrifted` was false.
+                //
+                // Clear any stale override first so the two agree once the
+                // write lands, and derive rather than read the override back —
+                // the in-memory record still holds the value just cleared.
+                if ((pbBucket.object_quota ?? 0) !== 0) {
+                  await pb
+                    .collection('Buckets')
+                    .update(pbBucket.id, { object_quota: 0 });
+                }
+                const adoptedGb = bytesToGib(drift.garageSizeBytes);
+                await buckets.updateBucket(garage, {
+                  id: pbBucket.garage_bucket_id,
+                  quotas: {
+                    maxSize:
+                      drift.garageSizeBytes > 0 ? drift.garageSizeBytes : null,
+                    maxObjects: maxObjectsForQuotaGib(adoptedGb),
+                  },
+                });
+              }
             }
           } else {
             const quotaGb = pbBucket.quota_gb ?? 0;
@@ -108,7 +126,9 @@ export async function POST(req: Request) {
               id: pbBucket.garage_bucket_id,
               quotas: {
                 maxSize: quotaGb > 0 ? gibToBytes(quotaGb) : null,
-                maxObjects: maxObjectsForQuotaGib(quotaGb),
+                // Effective, not derived: this is the direction that re-applies
+                // an admin's explicit override after a half-applied PATCH.
+                maxObjects: effectiveMaxObjectsFor(pbBucket),
               },
             });
           }

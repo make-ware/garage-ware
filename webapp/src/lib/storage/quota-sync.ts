@@ -2,7 +2,7 @@ import 'server-only';
 import type { Bucket } from '@garage-ware/shared';
 import type { GarageBucket } from '@/lib/garage/schemas';
 import type { TypedPocketBase } from '@/lib/types';
-import { maxObjectsForQuotaGib } from '@/lib/storage/object-quota';
+import { effectiveMaxObjectsFor } from '@/lib/storage/object-quota';
 import { bytesToGib, gibToBytes } from '@/lib/storage/units';
 
 /** Byte tolerance absorbing GiB ↔ bytes rounding noise. */
@@ -18,11 +18,18 @@ export interface QuotaDrift {
   /** Garage's `quotas.maxObjects` (0 when uncapped). */
   garageMaxObjects: number;
   /**
-   * What `maxObjects` *should* be for this quota under the current
-   * GARAGE_AVG_OBJECT_SIZE_MB. Null when no average is configured, which means
-   * "no cap expected" rather than "expected zero".
+   * What this bucket *should* be capped at: its persisted `object_quota`
+   * override when set, otherwise what the byte quota derives under the current
+   * GARAGE_AVG_OBJECT_SIZE_MB. Null still means "no cap expected" rather than
+   * "expected zero".
    */
   expectedMaxObjects: number | null;
+  /**
+   * True when `expectedMaxObjects` came from an explicit override rather than
+   * the derivation. Carried so the admin UI can label a cap "override" vs
+   * "derived" without re-deriving it client-side.
+   */
+  objectQuotaOverridden: boolean;
   objectsDrifted: boolean;
   /** True if either side disagrees. */
   drifted: boolean;
@@ -31,12 +38,17 @@ export interface QuotaDrift {
 /**
  * Compare a bucket's stored quota against the live Garage one, on both axes.
  *
- * The object-count axis is the one nothing checked before. `maxObjects` is
- * derived from the byte quota via GARAGE_AVG_OBJECT_SIZE_MB, so changing that
- * setting silently leaves every existing bucket on its old cap — no read path
- * recomputes it, and `quotaHasDrifted` never looked. Reporting it is not the
- * same as fixing it: an object cap is a live limit, so repairing it stays an
- * explicit admin action rather than a side effect of someone loading a page.
+ * The object-count axis is the one nothing checked before. Absent an override,
+ * `maxObjects` is derived from the byte quota via GARAGE_AVG_OBJECT_SIZE_MB, so
+ * changing that setting silently leaves every existing bucket on its old cap —
+ * no read path recomputes it, and `quotaHasDrifted` never looked. Reporting it
+ * is not the same as fixing it: an object cap is a live limit, so repairing it
+ * stays an explicit admin action rather than a side effect of a page load.
+ *
+ * An explicit `object_quota` override is what the object axis is measured
+ * against when one is set. Without that, an admin who deliberately capped a
+ * bucket would see it reported as drifted forever and reverted by the next
+ * bulk reconcile.
  */
 export function describeQuotaDrift(
   pbRecord: Bucket,
@@ -47,9 +59,10 @@ export function describeQuotaDrift(
   const sizeDrifted = Math.abs(garageSizeBytes - pbSizeBytes) > BYTE_EPSILON;
 
   const garageMaxObjects = garageInfo.quotas?.maxObjects ?? 0;
-  const expectedMaxObjects = maxObjectsForQuotaGib(pbRecord.quota_gb ?? 0);
-  // With no average configured we expect no cap at all, so a cap that is
-  // already set is still a disagreement worth surfacing.
+  const objectQuotaOverridden = (pbRecord.object_quota ?? 0) > 0;
+  const expectedMaxObjects = effectiveMaxObjectsFor(pbRecord);
+  // With no override and no average configured we expect no cap at all, so a
+  // cap that is already set is still a disagreement worth surfacing.
   const objectsDrifted = (expectedMaxObjects ?? 0) !== garageMaxObjects;
 
   return {
@@ -58,6 +71,7 @@ export function describeQuotaDrift(
     sizeDrifted,
     garageMaxObjects,
     expectedMaxObjects,
+    objectQuotaOverridden,
     objectsDrifted,
     drifted: sizeDrifted || objectsDrifted,
   };
