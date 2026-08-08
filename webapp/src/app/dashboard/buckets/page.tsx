@@ -2,12 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
-import { bytesToGib } from '@/lib/storage/units';
 import { toast } from 'sonner';
 import {
   Card,
@@ -29,18 +27,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { BucketMetrics } from '@/components/storage/bucket-metrics';
+import { BucketTable } from '@/components/storage/bucket-table';
 import type { BucketWithUsage, StorageSummary } from '@/lib/types';
 
 function BucketsView() {
-  const router = useRouter();
   const [buckets, setBuckets] = useState<BucketWithUsage[]>([]);
   const [granted, setGranted] = useState(0);
   const [allocated, setAllocated] = useState(0);
@@ -121,64 +112,26 @@ function BucketsView() {
         </div>
       </div>
 
+      <BucketMetrics
+        buckets={buckets}
+        allocatedGb={allocated}
+        grantedGb={granted}
+        className="mb-6"
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>Your buckets</CardTitle>
           <CardDescription>
-            Each bucket gets a slice of your total storage claim.
+            Each bucket gets a slice of your total storage claim. Click a column
+            to sort.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
             <p className="text-muted-foreground">Loading...</p>
-          ) : buckets.length === 0 ? (
-            <p className="text-muted-foreground">No buckets yet.</p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Used</TableHead>
-                  <TableHead>Quota</TableHead>
-                  <TableHead>Garage ID</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {buckets.map((b) => {
-                  const usedGb = bytesToGib(b.bytes ?? 0);
-                  const quotaGb = b.quota_gb ?? 0;
-                  const pct =
-                    quotaGb > 0 ? Math.round((usedGb / quotaGb) * 100) : null;
-                  return (
-                    <TableRow
-                      key={b.id}
-                      className="cursor-pointer"
-                      onClick={() => router.push(`/dashboard/buckets/${b.id}`)}
-                    >
-                      <TableCell className="font-medium">{b.name}</TableCell>
-                      <TableCell>
-                        {b.bytes === undefined ? (
-                          <span className="text-muted-foreground">—</span>
-                        ) : (
-                          <>
-                            {formatStorage(usedGb)}
-                            {pct !== null && (
-                              <span className="text-muted-foreground text-xs ml-1">
-                                ({pct}%)
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </TableCell>
-                      <TableCell>{formatStorage(quotaGb)}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {b.garage_bucket_id.slice(0, 12)}…
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+            <BucketTable buckets={buckets} />
           )}
         </CardContent>
       </Card>
