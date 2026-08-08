@@ -414,28 +414,79 @@ routerAdd(
 // PocketBase's Goja runtime runs each hook callback in a fresh executor and
 // does not import top-level function declarations from main.pb.js. Keep this
 // formatter in sync by hand with webapp/src/lib/format.ts.
+// ---------------------------------------------------------------------------
+// Storage invites
+// ---------------------------------------------------------------------------
+//
+// An invite is storage promised to an email address with no account behind it
+// yet. The webapp writes the row (POST /next-api/garage/transfers, when the
+// recipient lookup comes back empty); this hook is only the notification, and
+// `POST /next-api/garage/invites/claim` is what later turns it into a real
+// StorageTransfer.
+//
+// onRecordAfterCreateSuccess, deliberately, NOT a request hook wrapped in
+// withRecordTx like the balance hooks: the invite is the record of the
+// promise, and a bounced email must not delete it. Mail here is best-effort —
+// it logs and moves on, and the sender still sees the pending invite on their
+// dashboard.
+onRecordAfterCreateSuccess((e) => {
+  const { formatGib } = require(`${__hooks}/lib/format.js`);
+
+  const APP_URL = $os.getenv("APP_PUBLIC_URL");
+  if (!APP_URL) {
+    console.warn("[storage-invite] APP_PUBLIC_URL not set; invite email skipped");
+    return;
+  }
+
+  const toEmail = e.record.getString("to_email");
+  const amount = formatGib(e.record.getFloat("quota_gb"));
+
+  let senderEmail = "A garage-ware user";
+  try {
+    senderEmail = $app.findRecordById("users", e.record.getString("from_user")).email();
+  } catch (err) {
+    // The sender vanishing between write and send is not a reason to withhold
+    // the invite — name them generically rather than dropping the mail.
+    console.warn("[storage-invite] sender lookup failed:", err);
+  }
+
+  let html;
+  try {
+    html = $template
+      .loadFiles(`${__hooks}/views/storage-invite-email.html`)
+      .render({
+        senderEmail: senderEmail,
+        toEmail: toEmail,
+        // Goja has no encodeURIComponent guarantee across versions; escape the
+        // two characters that actually appear in addresses and matter in a query.
+        toEmailEncoded: toEmail.replace(/\+/g, "%2B").replace(/@/g, "%40"),
+        amount: amount,
+        note: e.record.getString("note"),
+        appUrl: APP_URL,
+      });
+  } catch (err) {
+    console.error("[storage-invite] template render failed:", err);
+    return;
+  }
+
+  const settings = $app.settings();
+  const message = new MailerMessage({
+    from: { address: settings.meta.senderAddress, name: settings.meta.senderName },
+    to: [{ address: toEmail }],
+    subject: `${senderEmail} sent you ${amount} of storage`,
+    html: html,
+  });
+
+  try {
+    $app.newMailClient().send(message);
+    console.log(`[storage-invite] emailed ${toEmail} (${amount})`);
+  } catch (err) {
+    console.error("[storage-invite] mail send failed for:", toEmail, err);
+  }
+}, "StorageInvites");
+
 cronAdd("bucket-usage-alerts", "0 9 * * *", () => {
-  const formatBytes = (bytes) => {
-    if (!isFinite(bytes)) return String(bytes);
-    const KB = 1e3, MB = 1e6, GB = 1e9, TB = 1e12, PB = 1e15;
-    const abs = Math.abs(bytes);
-    let value, unit;
-    if (abs >= PB) { value = bytes / PB; unit = "PB"; }
-    else if (abs >= TB) { value = bytes / TB; unit = "TB"; }
-    else if (abs >= GB) { value = bytes / GB; unit = "GB"; }
-    else if (abs >= MB) { value = bytes / MB; unit = "MB"; }
-    else if (abs >= KB) { value = bytes / KB; unit = "KB"; }
-    else return bytes + " B";
-    let s = value.toFixed(2);
-    if (s.indexOf(".") !== -1) s = s.replace(/\.?0+$/, "");
-    return s + " " + unit;
-  };
-  // Stored quota_gb is binary GiB; bridge into bytes for the formatter so the
-  // email matches what the dashboard renders.
-  const formatGib = (gib) => formatBytes(gib * 1024 * 1024 * 1024);
-  // Thousands separators for object counts. Goja's Intl support is limited, so
-  // do it by hand rather than relying on Number.prototype.toLocaleString.
-  const formatCount = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const { formatBytes, formatGib, formatCount } = require(`${__hooks}/lib/format.js`);
 
   const APP_URL = $os.getenv("APP_PUBLIC_URL");
   if (!APP_URL) {

@@ -1,15 +1,26 @@
 import { z } from 'zod';
-import { StorageTransferMutator } from '@garage-ware/shared/mutators';
+import {
+  StorageTransferMutator,
+  StorageInviteMutator,
+} from '@garage-ware/shared/mutators';
+import type { StorageInvite, StorageTransfer } from '@garage-ware/shared';
 import { GarageClient, cluster } from '@/lib/garage';
 import { formatStorage } from '@/lib/format';
-import { getUserGrantedGb } from '@/lib/storage/claims';
+import { getUserStorageSummary } from '@/lib/storage/summary';
+import {
+  findUserIdByEmail,
+  getPendingInviteGb,
+  normaliseEmail,
+  resolveUserEmails,
+} from '@/lib/storage/invites';
 import {
   HttpError,
   errorResponse,
+  getPbAsSuperuser,
   getServerUser,
   isUserAdmin,
 } from '@/lib/auth/server';
-import { BucketMutator } from '@garage-ware/shared/mutators';
+import type { LabelledTransfer, TypedPocketBase } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +31,32 @@ const CreateBody = z.object({
   from_user_id: z.string().optional(),
 });
 
+/**
+ * Attach counterparty emails.
+ *
+ * Transfers store user ids and the dashboard used to render them raw, which
+ * told the recipient nothing about who had sent them a terabyte. The lookup
+ * runs as a superuser because the Users listRule is self-or-admin — see
+ * `lib/storage/invites.ts` for why that is acceptable here.
+ */
+async function labelTransfers(
+  superuserPb: TypedPocketBase,
+  sent: StorageTransfer[],
+  received: StorageTransfer[]
+): Promise<{ sent: LabelledTransfer[]; received: LabelledTransfer[] }> {
+  const emails = await resolveUserEmails(superuserPb, [
+    ...sent.map((t) => t.to_user),
+    ...received.map((t) => t.from_user),
+  ]);
+  return {
+    sent: sent.map((t) => ({ ...t, to_email: emails.get(t.to_user) })),
+    received: received.map((t) => ({
+      ...t,
+      from_email: emails.get(t.from_user),
+    })),
+  };
+}
+
 export async function GET(req: Request) {
   try {
     const { pb, user } = await getServerUser(req);
@@ -29,27 +66,44 @@ export async function GET(req: Request) {
 
     const transfers = new StorageTransferMutator(pb);
 
-    if (all || (requestedUserId && requestedUserId !== user.id)) {
+    if (all) {
       const admin = await isUserAdmin(pb, user.id);
       if (!admin) throw new HttpError(403, 'Admin privileges required');
-
-      if (all) {
-        const result = await transfers.getList(1, 500);
-        return Response.json({ items: result.items });
-      }
-
-      const [sent, received] = await Promise.all([
-        transfers.listSentByUser(requestedUserId!),
-        transfers.listReceivedByUser(requestedUserId!),
-      ]);
-      return Response.json({ sent: sent.items, received: received.items });
+      const result = await transfers.getList(1, 500);
+      return Response.json({ items: result.items });
     }
 
-    const [sent, received] = await Promise.all([
-      transfers.listSentByUser(user.id),
-      transfers.listReceivedByUser(user.id),
+    let targetUserId = user.id;
+    if (requestedUserId && requestedUserId !== user.id) {
+      const admin = await isUserAdmin(pb, user.id);
+      if (!admin) throw new HttpError(403, 'Admin privileges required');
+      targetUserId = requestedUserId;
+    }
+
+    const [sent, received, invites] = await Promise.all([
+      transfers.listSentByUser(targetUserId),
+      transfers.listReceivedByUser(targetUserId),
+      new StorageInviteMutator(pb).listByFromUser(targetUserId),
     ]);
-    return Response.json({ sent: sent.items, received: received.items });
+
+    // Emails are a label, not data — if the superuser credentials are absent
+    // or wrong, serve the rows unlabelled rather than failing the request. The
+    // dashboard renders "Unknown sender"; a 500 here would take the whole page
+    // down over cosmetics. The POST path below deliberately does *not* degrade:
+    // there, a failed lookup is indistinguishable from "no such account", and
+    // guessing wrong writes an invite for someone who already has one.
+    let labelled = { sent: sent.items, received: received.items } as {
+      sent: LabelledTransfer[];
+      received: LabelledTransfer[];
+    };
+    try {
+      const superuserPb = await getPbAsSuperuser();
+      labelled = await labelTransfers(superuserPb, sent.items, received.items);
+    } catch (err) {
+      console.warn('[transfers] counterparty emails unavailable:', err);
+    }
+
+    return Response.json({ ...labelled, invites: invites.items });
   } catch (err) {
     return errorResponse(err);
   }
@@ -67,52 +121,63 @@ export async function POST(req: Request) {
       fromUserId = body.from_user_id;
     }
 
-    // Resolve recipient by email. Admins can list all users; regular users can
-    // only see themselves, so a non-admin reaching here always sets fromUserId
-    // to their own id and looks up someone else — that lookup will 404 via the
-    // Users listRule, which is the correct behaviour (users can't probe emails).
-    let toUser: { id: string };
-    try {
-      toUser = (await pb
-        .collection('Users')
-        .getFirstListItem(
-          `email = "${body.to_user_email.replace(/"/g, '')}"`
-        )) as { id: string };
-    } catch {
-      throw new HttpError(
-        404,
-        `No user found with email "${body.to_user_email}"`
-      );
-    }
+    // Resolving the recipient needs to bypass the Users listRule
+    // (self-or-admin), or only admins could ever send a transfer.
+    const superuserPb = await getPbAsSuperuser();
+    const email = normaliseEmail(body.to_user_email);
+    const toUserId = await findUserIdByEmail(superuserPb, email);
 
-    if (fromUserId === toUser.id) {
+    if (toUserId === fromUserId) {
       throw new HttpError(400, 'Cannot transfer storage to yourself');
     }
 
     const garage = GarageClient.fromEnv();
     const layout = await cluster.getLayout(garage);
 
-    const [grantedGb, allocatedGb] = await Promise.all([
-      getUserGrantedGb(pb, fromUserId, { onlyPresent: true, layout }),
-      new BucketMutator(pb).sumAllocatedGb(fromUserId),
+    const [summary, promisedGb] = await Promise.all([
+      getUserStorageSummary(pb, fromUserId, layout),
+      getPendingInviteGb(pb, fromUserId),
     ]);
-    const availableGb = grantedGb - allocatedGb;
+
+    // Invites promise capacity without reserving it, so they have to come off
+    // the top here — otherwise the same gigabyte could be promised to five
+    // people, and four of those promises would fail at claim time.
+    const availableGb = summary.availableGb - promisedGb;
 
     if (body.quota_gb > availableGb) {
+      const promisedNote =
+        promisedGb > 0
+          ? ` (${formatStorage(promisedGb)} of your capacity is already promised to pending invites)`
+          : '';
       throw new HttpError(
         400,
-        `Not enough available capacity: ${formatStorage(availableGb)} available, ${formatStorage(body.quota_gb)} requested`
+        `Not enough available capacity: ${formatStorage(Math.max(availableGb, 0))} available, ${formatStorage(body.quota_gb)} requested${promisedNote}`
       );
     }
 
-    const record = await pb.collection('StorageTransfers').create({
-      from_user: fromUserId,
-      to_user: toUser.id,
-      quota_gb: body.quota_gb,
-      note: body.note ?? '',
-    });
+    // Known address → a transfer lands immediately. Unknown → an invite waits
+    // for them to sign up, and the PB hook on StorageInvites emails them.
+    if (toUserId) {
+      const record = await pb.collection('StorageTransfers').create({
+        from_user: fromUserId,
+        to_user: toUserId,
+        quota_gb: body.quota_gb,
+        note: body.note ?? '',
+      });
+      return Response.json({ kind: 'transfer', record });
+    }
 
-    return Response.json({ record });
+    const invite: StorageInvite = (await pb
+      .collection('StorageInvites')
+      .create({
+        from_user: fromUserId,
+        to_email: email,
+        quota_gb: body.quota_gb,
+        note: body.note ?? '',
+        status: 'pending',
+      })) as StorageInvite;
+
+    return Response.json({ kind: 'invite', record: invite });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return Response.json({ error: err.message }, { status: 400 });

@@ -8,3 +8,4 @@ export * from './storage-claim-audit';
 export * from './storage-node-balance';
 export * from './storage-user-balance';
 export * from './storage-transfer';
+export * from './storage-invite';

@@ -13,6 +13,7 @@ import type {
   StorageNodeBalance,
   StorageUserBalance,
   StorageTransfer,
+  StorageInvite,
 } from '@garage-ware/shared';
 import type { NodeClaimPosition } from '@/lib/storage/ledger-math';
 
@@ -30,7 +31,21 @@ export interface TypedPocketBase extends PocketBase {
     idOrName: 'StorageUserBalances'
   ): RecordService<StorageUserBalance>;
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
+  collection(idOrName: 'StorageInvites'): RecordService<StorageInvite>;
 }
+
+/**
+ * A transfer row carrying the counterparty's email rather than only their id.
+ *
+ * `StorageTransfers` stores relations, and a user cannot resolve another
+ * user's record (the Users listRule is self-or-admin) — so the address is
+ * attached server-side by `GET /next-api/garage/transfers`. It stays optional:
+ * a counterparty whose account has since been deleted has no address to show.
+ */
+export type LabelledTransfer = StorageTransfer & {
+  from_email?: string;
+  to_email?: string;
+};
 
 export type BucketWithUsage = Bucket & {
   bytes?: number;

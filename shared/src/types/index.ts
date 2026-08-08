@@ -11,6 +11,7 @@ import type { StorageClaimAudit } from '../schema/storage-claim-audit';
 import type { StorageNodeBalance } from '../schema/storage-node-balance';
 import type { StorageUserBalance } from '../schema/storage-user-balance';
 import type { StorageTransfer } from '../schema/storage-transfer';
+import type { StorageInvite } from '../schema/storage-invite';
 
 // Typed PocketBase interface
 export interface TypedPocketBase extends PocketBase {
@@ -27,6 +28,7 @@ export interface TypedPocketBase extends PocketBase {
     idOrName: 'StorageUserBalances'
   ): RecordService<StorageUserBalance>;
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
+  collection(idOrName: 'StorageInvites'): RecordService<StorageInvite>;
 }
 
 // PocketBase response types

@@ -20,6 +20,12 @@ import {
 interface SignupFormProps {
   onSuccess?: () => void;
   redirectTo?: string;
+  /**
+   * Prefills the email field. Set from `/signup?email=` so someone arriving
+   * from a storage invite lands on the address the storage is held against —
+   * signing up with a different one leaves the invite unclaimed.
+   */
+  defaultEmail?: string;
 }
 
 // Password strength calculation
@@ -47,7 +53,11 @@ const getPasswordStrengthColor = (strength: number): string => {
   return 'bg-green-500';
 };
 
-export function SignupForm({ onSuccess, redirectTo }: SignupFormProps) {
+export function SignupForm({
+  onSuccess,
+  redirectTo,
+  defaultEmail,
+}: SignupFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const { signup } = useAuth();
 
@@ -60,6 +70,7 @@ export function SignupForm({ onSuccess, redirectTo }: SignupFormProps) {
   } = useForm<RegisterData>({
     resolver: zodResolver(RegisterSchema),
     mode: 'onChange', // Enable real-time validation
+    defaultValues: defaultEmail ? { email: defaultEmail } : undefined,
   });
 
   const watchedPassword = watch('password', '');

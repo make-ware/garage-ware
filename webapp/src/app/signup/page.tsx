@@ -17,6 +17,8 @@ function SignupContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get('redirect') || '/';
+  // Storage invites link here with the address the invite is held against.
+  const invitedEmail = searchParams.get('email') || undefined;
 
   useEffect(() => {
     // Redirect to home or intended destination if already authenticated
@@ -40,7 +42,7 @@ function SignupContent() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <SignupForm redirectTo={redirectTo} />
+          <SignupForm redirectTo={redirectTo} defaultEmail={invitedEmail} />
         </CardContent>
       </Card>
     </div>
