@@ -69,3 +69,36 @@ export function gibToTb(gib: number): number {
 export function tbToGib(tb: number): number {
   return (tb * TERABYTE) / GIBIBYTE;
 }
+
+// ── Display rounding ─────────────────────────────────────────────────────
+
+/**
+ * Round `value` **down** to `decimals` places.
+ *
+ * Storage figures must never be displayed larger than they are. An admin who
+ * reads "18.67 TB free" off a node holding 18.66666… TB and types it back is
+ * asking for more than the node has — and the quota input seeds *itself* the
+ * same way, so a rounded-up seed exceeds the input's own `max` attribute and
+ * the browser blocks the submit before the request is ever sent. Flooring
+ * makes every storage number the UI shows a number that can actually be
+ * granted.
+ *
+ * The epsilon snap is not optional: scaling by a power of ten leaves round
+ * figures a hair short (4.35 * 100 === 434.99999999999994), and a plain floor
+ * would render an exact 4.35 TB claim as "4.34 TB". Only float noise is
+ * snapped — a genuine 18.66666 stays floored.
+ */
+export function floorToDecimals(value: number, decimals: number): number {
+  if (!Number.isFinite(value)) return value;
+  const factor = 10 ** decimals;
+  const scaled = value * factor;
+  const nearest = Math.round(scaled);
+  const tolerance = Math.abs(scaled) * 1e-12 + 1e-12;
+  if (Math.abs(scaled - nearest) <= tolerance) return nearest / factor;
+  return Math.floor(scaled) / factor;
+}
+
+/** {@link floorToDecimals}, rendered with a fixed number of places. */
+export function toFixedFloor(value: number, decimals: number): string {
+  return floorToDecimals(value, decimals).toFixed(decimals);
+}

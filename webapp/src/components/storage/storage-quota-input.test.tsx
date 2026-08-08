@@ -95,6 +95,37 @@ describe('StorageQuotaInput', () => {
     expect(input.value).toBe('2.');
   });
 
+  it('seeds within its own max, so the form can actually be submitted', () => {
+    // Regression: a node with 18.66666… TB free seeded the text "18.6667",
+    // which is above the max attribute. The field then reports itself invalid
+    // and the browser refuses to submit the enclosing form — silently, from
+    // the admin's point of view.
+    const freeGib = tbToGib(18.6666666666);
+    render(
+      <StorageQuotaInput
+        valueGib={freeGib}
+        onChangeGib={vi.fn()}
+        maxGib={freeGib}
+      />
+    );
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    expect(input.value).toBe('18.6666');
+    expect(Number(input.value)).toBeLessThanOrEqual(Number(input.max));
+    expect(input.validity.rangeOverflow).toBe(false);
+  });
+
+  it('floors the min bound outward so a full reclaim stays typeable', () => {
+    render(
+      <StorageQuotaInput
+        valueGib={0}
+        onChangeGib={vi.fn()}
+        minGib={-tbToGib(3.00005)}
+      />
+    );
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    expect(Number(input.min)).toBeLessThanOrEqual(-3.00005);
+  });
+
   it('re-syncs the displayed text from valueGib when not focused', () => {
     function ExternalHarness() {
       const [v, setV] = useState(tbToGib(1));

@@ -26,7 +26,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { BucketMetrics } from '@/components/storage/bucket-metrics';
 import { BucketTable } from '@/components/storage/bucket-table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -184,149 +183,162 @@ function StorageDashboard() {
         )}
       </div>
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Storage claim</CardTitle>
-          <CardDescription>
-            Your total granted quota and how much is allocated to buckets.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex justify-between text-sm">
-            <span>
-              Allocated: <strong>{formatStorage(allocated)}</strong> of{' '}
-              {formatStorage(netGranted)}
-            </span>
-            <span className="text-muted-foreground">
-              {formatStorage(available)} free
-            </span>
-          </div>
-          <Progress value={usedPct} />
+      <div className="mb-6 grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Storage claim</CardTitle>
+            <CardDescription>
+              Your total granted quota and how much is allocated to buckets.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex justify-between text-sm">
+              <span>
+                Allocated: <strong>{formatStorage(allocated)}</strong> of{' '}
+                {formatStorage(netGranted)}
+              </span>
+              <span className="text-muted-foreground">
+                {formatStorage(available)} free
+              </span>
+            </div>
+            <Progress value={usedPct} />
 
-          {hasBreakdown && (
-            <div className="text-xs text-muted-foreground space-y-0.5 border-l-2 pl-3 border-muted">
-              <div className="flex justify-between">
-                <span>From admin (claims)</span>
-                <span>{formatStorage(summary.claimsGb)}</span>
+            {hasBreakdown && (
+              <div className="text-xs text-muted-foreground space-y-0.5 border-l-2 pl-3 border-muted">
+                <div className="flex justify-between">
+                  <span>From admin (claims)</span>
+                  <span>{formatStorage(summary.claimsGb)}</span>
+                </div>
+                {summary.receivedGb > 0 && (
+                  <div className="flex justify-between text-green-700 dark:text-green-400">
+                    <span>Received transfers</span>
+                    <span>+{formatStorage(summary.receivedGb)}</span>
+                  </div>
+                )}
+                {summary.sentGb > 0 && (
+                  <div className="flex justify-between text-orange-700 dark:text-orange-400">
+                    <span>Sent transfers</span>
+                    <span>−{formatStorage(summary.sentGb)}</span>
+                  </div>
+                )}
               </div>
-              {summary.receivedGb > 0 && (
-                <div className="flex justify-between text-green-700 dark:text-green-400">
-                  <span>Received transfers</span>
-                  <span>+{formatStorage(summary.receivedGb)}</span>
-                </div>
-              )}
-              {summary.sentGb > 0 && (
-                <div className="flex justify-between text-orange-700 dark:text-orange-400">
-                  <span>Sent transfers</span>
-                  <span>−{formatStorage(summary.sentGb)}</span>
-                </div>
-              )}
-            </div>
-          )}
+            )}
 
-          {netGranted === 0 && (
-            <p className="text-sm text-muted-foreground">
-              Your storage quota is 0 GB. Ask an administrator to grant you a
-              claim before creating buckets.
-            </p>
-          )}
-          {data && data.buckets.length > 0 && (
-            <p className="text-sm text-muted-foreground">
-              Storage used: <strong>{formatStorage(data.usedGb)}</strong> across{' '}
-              {data.buckets.length} bucket
-              {data.buckets.length === 1 ? '' : 's'}
-            </p>
-          )}
+            {netGranted === 0 && (
+              <p className="text-sm text-muted-foreground">
+                Your storage quota is 0 GB. Ask an administrator to grant you a
+                claim before creating buckets.
+              </p>
+            )}
+            {data && data.buckets.length > 0 && (
+              <p className="text-sm text-muted-foreground">
+                Storage used: <strong>{formatStorage(data.usedGb)}</strong>{' '}
+                across {data.buckets.length} bucket
+                {data.buckets.length === 1 ? '' : 's'}
+              </p>
+            )}
 
-          {available > 0 && (
-            <div className="pt-1">
-              {!showTransferForm ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowTransferForm(true)}
-                >
-                  <ArrowLeftRight className="mr-2 h-4 w-4" />
-                  Transfer storage
-                </Button>
-              ) : (
-                <form
-                  onSubmit={handleSendTransfer}
-                  className="space-y-3 border rounded-md p-4 bg-muted/30"
-                >
-                  <p className="text-sm font-medium">
-                    Transfer storage to another user
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Available to transfer: {formatStorage(available)}
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="col-span-2 space-y-1">
-                      <Label htmlFor="transfer-email">Recipient email</Label>
-                      <Input
-                        id="transfer-email"
-                        type="email"
-                        placeholder="user@example.com"
-                        value={transferEmail}
-                        onChange={(e) => setTransferEmail(e.target.value)}
-                        required
-                      />
+            {available > 0 && (
+              <div className="pt-1">
+                {!showTransferForm ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowTransferForm(true)}
+                  >
+                    <ArrowLeftRight className="mr-2 h-4 w-4" />
+                    Transfer storage
+                  </Button>
+                ) : (
+                  <form
+                    onSubmit={handleSendTransfer}
+                    className="space-y-3 border rounded-md p-4 bg-muted/30"
+                  >
+                    <p className="text-sm font-medium">
+                      Transfer storage to another user
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Available to transfer: {formatStorage(available)}
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="col-span-2 space-y-1">
+                        <Label htmlFor="transfer-email">Recipient email</Label>
+                        <Input
+                          id="transfer-email"
+                          type="email"
+                          placeholder="user@example.com"
+                          value={transferEmail}
+                          onChange={(e) => setTransferEmail(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="transfer-amount">Amount</Label>
+                        <StorageQuotaInput
+                          id="transfer-amount"
+                          valueGib={transferGib}
+                          onChangeGib={setTransferGib}
+                          maxGib={available}
+                          min={0.001}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="transfer-note">Note (optional)</Label>
+                        <Input
+                          id="transfer-note"
+                          placeholder="Reason…"
+                          value={transferNote}
+                          onChange={(e) => setTransferNote(e.target.value)}
+                          maxLength={500}
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="transfer-amount">Amount</Label>
-                      <StorageQuotaInput
-                        id="transfer-amount"
-                        valueGib={transferGib}
-                        onChangeGib={setTransferGib}
-                        maxGib={available}
-                        min={0.001}
-                        required
-                      />
+                    <div className="flex gap-2">
+                      <Button type="submit" size="sm" disabled={transferring}>
+                        {transferring ? 'Transferring…' : 'Transfer'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setShowTransferForm(false);
+                          setTransferEmail('');
+                          setTransferGib(0);
+                          setTransferNote('');
+                        }}
+                      >
+                        Cancel
+                      </Button>
                     </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="transfer-note">Note (optional)</Label>
-                      <Input
-                        id="transfer-note"
-                        placeholder="Reason…"
-                        value={transferNote}
-                        onChange={(e) => setTransferNote(e.target.value)}
-                        maxLength={500}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button type="submit" size="sm" disabled={transferring}>
-                      {transferring ? 'Transferring…' : 'Transfer'}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setShowTransferForm(false);
-                        setTransferEmail('');
-                        setTransferGib(0);
-                        setTransferNote('');
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </form>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  </form>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-      {data && (
-        <BucketMetrics
-          buckets={data.buckets}
-          allocatedGb={allocated}
-          grantedGb={netGranted}
-          className="mb-6"
-        />
-      )}
+        <Card className="lg:col-span-1">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <KeyRound className="h-5 w-5" />
+              Access keys
+            </CardTitle>
+            <CardDescription>
+              {data ? `${data.keys.length} keys` : 'Loading...'} — S3
+              credentials for your applications and clients.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Link href="/dashboard/keys">
+              <Button variant="outline">
+                Manage keys <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card className="mb-6">
         <CardHeader>
@@ -463,26 +475,6 @@ function StorageDashboard() {
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <KeyRound className="h-5 w-5" />
-            Access keys
-          </CardTitle>
-          <CardDescription>
-            {data ? `${data.keys.length} keys` : 'Loading...'} — S3 credentials
-            for your applications and clients.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Link href="/dashboard/keys">
-            <Button variant="outline">
-              Manage keys <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
 
       {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
     </div>

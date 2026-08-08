@@ -94,7 +94,8 @@ describe('BucketMetrics', () => {
     );
     expect(screen.getByText('1 over 90% full')).toBeInTheDocument();
     expect(screen.getByText('10')).toBeInTheDocument(); // objects
-    expect(screen.getByText(/of 53.69 GB granted/)).toBeInTheDocument();
+    // 50 GiB is 53.6870912 GB — floored, never rounded up (see formatBytes).
+    expect(screen.getByText(/of 53.68 GB granted/)).toBeInTheDocument();
   });
 
   it('counts a bucket that is near its object cap as nearly full', () => {

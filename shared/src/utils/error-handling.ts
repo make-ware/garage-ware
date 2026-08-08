@@ -139,12 +139,20 @@ export function parseAuthError(error: ErrorType): AuthError {
 
   if (hasStatus(error)) {
     switch (error.status) {
-      case 400:
-        // Validation errors
-        if (hasData(error) && error.data?.data) {
-          const fieldErrors = error.data.data;
-          const fieldNames = Object.keys(fieldErrors);
+      case 400: {
+        // Field-scoped validation errors.
+        //
+        // PocketBase sends an *empty* `data` object for 400s that carry no
+        // per-field detail — a rejected login is literally
+        //   {"status":400,"message":"Failed to authenticate.","data":{}}
+        // and `{}` is truthy, so testing `error.data?.data` alone routed every
+        // failed login through this branch, found no fields, and fell out the
+        // bottom as the generic 'Invalid input data.' — never reaching the
+        // message-based mapping below that turns it into a credentials error.
+        const fieldErrors = hasData(error) ? error.data?.data : undefined;
+        const fieldNames = fieldErrors ? Object.keys(fieldErrors) : [];
 
+        if (fieldErrors && fieldNames.length > 0) {
           // Check if this is an authentication-related error (password or identity fields)
           const isAuthError = fieldNames.some((field) => {
             const fieldLower = field.toLowerCase();
@@ -192,12 +200,23 @@ export function parseAuthError(error: ErrorType): AuthError {
           };
         }
 
-        if (hasData(error) && error.data?.message) {
-          const dataMessage = error.data.message;
+        // No field detail: fall back to the response message. The PocketBase
+        // SDK mirrors the body's `message` onto the error itself, so read
+        // either — the top-level one survives an error that has been re-thrown.
+        // Its own placeholder is worse than our generic text, so skip it.
+        const dataMessage =
+          (hasData(error) && error.data?.message) ||
+          (hasMessage(error) && error.message !== 'Something went wrong.'
+            ? error.message
+            : '');
+
+        if (dataMessage) {
+          const lowerMessage = dataMessage.toLowerCase();
           if (
-            dataMessage.includes('Failed to authenticate') ||
-            dataMessage.toLowerCase().includes('invalid credentials') ||
-            dataMessage.toLowerCase().includes('authentication failed')
+            lowerMessage.includes('failed to authenticate') ||
+            lowerMessage.includes('invalid credentials') ||
+            lowerMessage.includes('invalid login credentials') ||
+            lowerMessage.includes('authentication failed')
           ) {
             return {
               type: 'authentication',
@@ -218,7 +237,7 @@ export function parseAuthError(error: ErrorType): AuthError {
 
           return {
             type: 'validation',
-            message: dataMessage || 'Invalid request data.',
+            message: dataMessage,
             originalError: error,
           };
         }
@@ -228,6 +247,7 @@ export function parseAuthError(error: ErrorType): AuthError {
           message: 'Invalid request data.',
           originalError: error,
         };
+      }
 
       case 401:
         return {

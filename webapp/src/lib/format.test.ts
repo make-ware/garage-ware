@@ -36,9 +36,23 @@ describe('formatBytes (decimal SI units)', () => {
   });
 
   it('respects custom decimals', () => {
+    // Floored, not rounded — .2346 would overstate the value.
     expect(formatBytes(1.234_567 * TERABYTE, { decimals: 4 })).toBe(
-      '1.2346 TB'
+      '1.2345 TB'
     );
+  });
+
+  it('rounds down so a displayed figure is never larger than the real one', () => {
+    // An admin reads "free to grant" off the screen and types it back into the
+    // grant form. Rounding up hands them a number the node cannot honour.
+    expect(formatBytes(18.666_666 * TERABYTE)).toBe('18.66 TB');
+    expect(formatBytes(1.999_9 * TERABYTE)).toBe('1.99 TB');
+  });
+
+  it('still renders round figures whole despite float scaling error', () => {
+    // 4.35 * 100 === 434.99999999999994 — a naive floor would print "4.34 TB".
+    expect(formatBytes(4.35 * TERABYTE)).toBe('4.35 TB');
+    expect(formatBytes(2.5 * TERABYTE)).toBe('2.5 TB');
   });
 
   it('falls back to MB / KB / B for sub-GB values', () => {
@@ -57,9 +71,9 @@ describe('formatGib (binary GiB → decimal GB/TB)', () => {
     expect(formatGib(tbToGib(1))).toBe('1 TB');
   });
 
-  it('formats 1024 GiB (=1 TiB) as 1.1 TB (decimal)', () => {
-    // 1 TiB = 1.0995... TB
-    expect(formatGib(1024)).toBe('1.1 TB');
+  it('formats 1024 GiB (=1 TiB) as 1.09 TB (decimal)', () => {
+    // 1 TiB = 1.0995... TB, floored to 1.09 rather than rounded to 1.1.
+    expect(formatGib(1024)).toBe('1.09 TB');
   });
 
   it('formatStorage is the same as formatGib', () => {

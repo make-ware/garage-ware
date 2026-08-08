@@ -5,25 +5,32 @@ import {
   MEGABYTE,
   PETABYTE,
   TERABYTE,
+  toFixedFloor,
 } from '@/lib/storage/units';
 
 type FormatOpts = { decimals?: number };
 
-/** Format raw bytes with decimal (SI) units: B / KB / MB / GB / TB / PB. */
+/**
+ * Format raw bytes with decimal (SI) units: B / KB / MB / GB / TB / PB.
+ *
+ * Rounds **down**, never up — see {@link toFixedFloor}. These strings are read
+ * back and re-typed by admins granting capacity, so overstating a figure by a
+ * rounding step produces a grant the server rejects.
+ */
 export function formatBytes(bytes: number, opts?: FormatOpts): string {
   const d = opts?.decimals ?? 2;
   if (!Number.isFinite(bytes)) return `${bytes}`;
   const abs = Math.abs(bytes);
   if (abs >= PETABYTE)
-    return `${stripTrailingZeros((bytes / PETABYTE).toFixed(d))} PB`;
+    return `${stripTrailingZeros(toFixedFloor(bytes / PETABYTE, d))} PB`;
   if (abs >= TERABYTE)
-    return `${stripTrailingZeros((bytes / TERABYTE).toFixed(d))} TB`;
+    return `${stripTrailingZeros(toFixedFloor(bytes / TERABYTE, d))} TB`;
   if (abs >= GIGABYTE)
-    return `${stripTrailingZeros((bytes / GIGABYTE).toFixed(d))} GB`;
+    return `${stripTrailingZeros(toFixedFloor(bytes / GIGABYTE, d))} GB`;
   if (abs >= MEGABYTE)
-    return `${stripTrailingZeros((bytes / MEGABYTE).toFixed(d))} MB`;
+    return `${stripTrailingZeros(toFixedFloor(bytes / MEGABYTE, d))} MB`;
   if (abs >= KILOBYTE)
-    return `${stripTrailingZeros((bytes / KILOBYTE).toFixed(d))} KB`;
+    return `${stripTrailingZeros(toFixedFloor(bytes / KILOBYTE, d))} KB`;
   return `${bytes} B`;
 }
 

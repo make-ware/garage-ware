@@ -7,9 +7,19 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from '@/components/ui/input-group';
-import { gbToGib, gibToGb, gibToTb, tbToGib } from '@/lib/storage/units';
+import {
+  floorToDecimals,
+  gbToGib,
+  gibToGb,
+  gibToTb,
+  tbToGib,
+  toFixedFloor,
+} from '@/lib/storage/units';
 
 export type StorageUnit = 'GB' | 'TB';
+
+/** Display precision of the quota inputs. See {@link snapGibForInput}. */
+export const QUOTA_INPUT_DECIMALS = 4;
 
 type Props = {
   /** Stored value in binary GiB (matches PocketBase). */
@@ -49,14 +59,43 @@ function displayToGib(value: number, unit: StorageUnit): number {
   return unit === 'TB' ? tbToGib(value) : gbToGib(value);
 }
 
+/**
+ * Seed text is rounded **down**, and so are `min`/`max` below.
+ *
+ * Rounding up here is a submit-blocking bug, not a cosmetic one: the grant
+ * forms seed this input with a node's full free capacity, so a node holding
+ * 18.66666 TB seeded a value of "18.6667" — above the input's own `max`, which
+ * makes the field invalid and makes the browser refuse to submit the form,
+ * with no error the admin can see. Flooring keeps the seed at or below every
+ * bound; flooring is monotonic, so applying it to the bounds too preserves
+ * min <= value <= max.
+ */
 function formatSeed(gib: number, unit: StorageUnit, decimals: number): string {
   if (!Number.isFinite(gib) || gib === 0) return '0';
-  const fixed = gibToDisplay(gib, unit).toFixed(decimals);
-  return stripTrailingZeros(fixed);
+  return stripTrailingZeros(toFixedFloor(gibToDisplay(gib, unit), decimals));
 }
 
 function stripTrailingZeros(s: string): string {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
+}
+
+/**
+ * Round a GiB amount down to a value this input can display exactly.
+ *
+ * Seed a form with this whenever the seed is a *capacity offer* rather than a
+ * current state — otherwise the box reads "18.6666 TB" while the request
+ * carries 18.666666…, and the server, summing the ledger in its own order, can
+ * land a hair over the node's capacity and reject a grant the admin never
+ * edited. Do not use it on a seed the user is expected to leave alone (a
+ * current claim, say): shaving it produces a spurious non-zero delta.
+ */
+export function snapGibForInput(
+  gib: number,
+  unit: StorageUnit = 'TB',
+  decimals: number = QUOTA_INPUT_DECIMALS
+): number {
+  if (!Number.isFinite(gib)) return gib;
+  return displayToGib(floorToDecimals(gibToDisplay(gib, unit), decimals), unit);
 }
 
 /**
@@ -101,9 +140,13 @@ export function StorageQuotaInput({
   }, [valueGib, unit, decimals, focused]);
 
   const maxDisplay =
-    typeof maxGib === 'number' ? gibToDisplay(maxGib, unit) : undefined;
+    typeof maxGib === 'number'
+      ? floorToDecimals(gibToDisplay(maxGib, unit), decimals)
+      : undefined;
   const minDisplay =
-    typeof minGib === 'number' ? gibToDisplay(minGib, unit) : min;
+    typeof minGib === 'number'
+      ? floorToDecimals(gibToDisplay(minGib, unit), decimals)
+      : min;
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const next = e.target.value;

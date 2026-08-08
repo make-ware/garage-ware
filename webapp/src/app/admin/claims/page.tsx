@@ -15,7 +15,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
+import {
+  snapGibForInput,
+  StorageQuotaInput,
+} from '@/components/storage/storage-quota-input';
 import { SetClaimDialog } from '@/components/admin/set-claim-dialog';
 import {
   Select,
@@ -179,7 +182,9 @@ function AdminClaimsView() {
 
   // Seed the amount field: for a fresh (user, node) pair offer the node's
   // remaining free space; for an existing claim start blank so the admin types
-  // the adjustment rather than the new total.
+  // the adjustment rather than the new total. The offer is snapped down to the
+  // input's own precision so the number in the box is exactly the number that
+  // gets posted.
   useEffect(() => {
     if (!formNode) return;
     const hasExisting =
@@ -191,7 +196,7 @@ function AdminClaimsView() {
     const usableGb =
       nodeUsableGbInLayout(layout, formNode, replicationFactor) ?? 0;
     const allocatedGb = claimsByNode.get(formNode) ?? 0;
-    setFormQuotaGib(Math.max(usableGb - allocatedGb, 0));
+    setFormQuotaGib(snapGibForInput(Math.max(usableGb - allocatedGb, 0)));
   }, [
     formUser,
     formNode,
