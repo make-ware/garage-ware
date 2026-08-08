@@ -142,6 +142,15 @@ function applyAllocationDelta(app, userId, deltaGb) {
  * to correct means a hook missed a write, so the size of the correction is
  * recorded on the row (`last_drift_gb`) and returned, rather than quietly
  * fixed. Returns { users, nodes, corrected, driftGb }.
+ *
+ * `driftGb` and `last_drift_gb` are the *worst single correction*, signed —
+ * deliberately not a net total. A net cancels: a row 5 GB short on claims and
+ * 5 GB over on allocated is wrong twice and nets to zero, which would report it
+ * clean and leave `corrected` un-incremented. Summing magnitudes instead would
+ * over-report, because a missed applyClaimDelta writes both the node row and the
+ * user row, so the same discrepancy shows up in two caches. The largest single
+ * correction has neither failure mode and is the number an operator chasing the
+ * missing write path actually wants.
  */
 function rebuildAll(app) {
   const stamp = nowIso();
@@ -207,10 +216,15 @@ function rebuildAll(app) {
   // rather than only from the aggregate return value.
   const nodeDriftByUser = {};
 
+  /** Keep whichever of two signed drifts is larger in magnitude. */
+  function worse(a, b) {
+    return Math.abs(b) > Math.abs(a) ? b : a;
+  }
+
   function noteNodeDrift(userId, diff) {
     corrected += 1;
-    driftGb += diff;
-    nodeDriftByUser[userId] = (nodeDriftByUser[userId] || 0) + diff;
+    driftGb = worse(driftGb, diff);
+    nodeDriftByUser[userId] = worse(nodeDriftByUser[userId] || 0, diff);
   }
 
   // --- node balances -------------------------------------------------------
@@ -263,18 +277,28 @@ function rebuildAll(app) {
     const hadAllocated = row ? row.getFloat("allocated_gb") || 0 : 0;
     if (!row) row = newUserBalance(app, userId);
 
-    const ownDrift =
-      want.claims -
-      hadClaims +
-      (want.sent - hadSent) +
-      (want.received - hadReceived) +
-      (want.allocated - hadAllocated);
-    if (Math.abs(ownDrift) > EPSILON || !seenUserRows[userId]) {
+    // Each field is compared on its own. Collapsing them into one sum first is
+    // what let a genuinely drifted row report clean: claims short by 5 and
+    // allocated over by 5 is two bugs, not zero.
+    const ownDrifts = [
+      want.claims - hadClaims,
+      want.sent - hadSent,
+      want.received - hadReceived,
+      want.allocated - hadAllocated,
+    ];
+    let ownDrift = 0;
+    for (const diff of ownDrifts) ownDrift = worse(ownDrift, diff);
+
+    const isNew = !seenUserRows[userId];
+    if (Math.abs(ownDrift) > EPSILON || isNew) {
       corrected += 1;
-      driftGb += ownDrift;
+      driftGb = worse(driftGb, ownDrift);
     }
-    // Surface node-level corrections against the user they belong to.
-    const rowDrift = ownDrift + (nodeDriftByUser[userId] || 0);
+    // Surface node-level corrections against the user they belong to. Taking the
+    // worse of the two rather than their sum: a missed applyClaimDelta skips the
+    // node row and the user row together, so adding them would report one
+    // discrepancy at twice its size.
+    const rowDrift = worse(ownDrift, nodeDriftByUser[userId] || 0);
     delete nodeDriftByUser[userId];
 
     row.set("claims_gb", want.claims);

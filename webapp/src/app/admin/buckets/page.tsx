@@ -470,16 +470,10 @@ export default function AdminBucketsPage() {
           }
           currentGb={quotaTarget.bucket.quota_gb ?? 0}
           garageGb={quotaTarget.audit?.garage_quota_gb ?? null}
-          ownerGrantedGb={
-            userById.get(quotaTarget.bucket.user)?.net_granted_gb ?? 0
-          }
-          // The owner's other buckets — this one's own quota is being replaced,
-          // so counting it would double-charge them against their own grant.
-          ownerOtherAllocatedGb={Math.max(
-            (userById.get(quotaTarget.bucket.user)?.allocated_gb ?? 0) -
-              (quotaTarget.bucket.quota_gb ?? 0),
-            0
-          )}
+          // The dialog reads the owner's position itself. `users` here is one
+          // 200-row page, so an owner past it would otherwise show a grant of 0
+          // and the dialog would reject every quota as over-grant.
+          ownerId={quotaTarget.bucket.user}
           onApplied={refresh}
         />
       )}
