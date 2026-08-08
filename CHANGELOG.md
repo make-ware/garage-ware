@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.0](https://github.com/make-ware/garage-ware/compare/v1.5.1...v1.6.0) (2026-08-08)
+
+
+### Features
+
+* **dashboard:** reuse admin bucket card, metrics, and sortable table ([1f2e905](https://github.com/make-ware/garage-ware/commit/1f2e90522027aab3f378061a9468984474a86c32))
+* show app version next to the app name in the nav bar ([a870ffa](https://github.com/make-ware/garage-ware/commit/a870ffad7fcf090c95ff7a16bfa078699d76462a))
+
+
+### Bug Fixes
+
+* improve homepage ([9f9d2fe](https://github.com/make-ware/garage-ware/commit/9f9d2fedf0f19bcc6973842e946a526e0702e315))
+
 ## [1.5.1](https://github.com/make-ware/garage-ware/compare/v1.5.0...v1.5.1) (2026-08-08)
 
 
