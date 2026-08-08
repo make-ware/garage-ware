@@ -14,6 +14,19 @@ export const BucketSchema = z
     garage_bucket_id: TextField().min(1).max(128),
     name: TextField().min(1).max(63),
     quota_gb: NumberField({ min: 0 }).default(0),
+    // Admin override for Garage's per-bucket `maxObjects` cap. Authoritative
+    // when > 0; 0 / unset means "derive from GARAGE_AVG_OBJECT_SIZE_MB", which
+    // is the historical behaviour and stays the default.
+    //
+    // There is deliberately no way to express "deliberately uncapped": Garage
+    // treats 0 and null identically, so a stored 0 could never be told apart
+    // from an absent override anyway.
+    //
+    // Not to be confused with `max_objects` below. That mirrors whatever Garage
+    // currently enforces; this is what we intend it to enforce, and it is the
+    // value `describeQuotaDrift` measures the two against — which is what stops
+    // a deliberate cap from reading as drift forever.
+    object_quota: NumberField({ min: 0 }).int().optional(),
     // Last-known usage + quota snapshot from Garage, in raw Garage units. Cache
     // only — not authoritative. Refreshed by webapp route handlers on dashboard
     // reads; consumed by the daily bucket-usage-alerts cron in
@@ -41,6 +54,11 @@ export const BucketInputSchema = z.object({
       'Bucket name must be S3-compatible: lowercase, digits, dot/hyphen, no leading/trailing special chars'
     ),
   quota_gb: z.number().min(0).default(0),
+  // Optional here purely as insurance: `BucketMutator.validateInput` parses
+  // through this schema, and zod strips unknown keys silently — so the day
+  // something creates a bucket through the mutator, an override would vanish
+  // without an error. Nothing sets it at create time today.
+  object_quota: z.number().int().min(0).optional(),
 });
 
 export const BucketCollection = defineCollection({

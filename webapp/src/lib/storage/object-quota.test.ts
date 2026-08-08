@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { avgObjectSizeBytes, maxObjectsForQuotaGib } from './object-quota';
+import {
+  avgObjectSizeBytes,
+  effectiveMaxObjectsFor,
+  maxObjectsForQuotaGib,
+} from './object-quota';
 import { MEGABYTE, gibToBytes } from './units';
 
 const ENV = 'GARAGE_AVG_OBJECT_SIZE_MB';
@@ -45,5 +49,49 @@ describe('maxObjectsForQuotaGib', () => {
   it('floors to a whole number and allows at least 1', () => {
     process.env[ENV] = '1000000'; // 1 TB average — larger than a tiny quota
     expect(maxObjectsForQuotaGib(0.000001)).toBe(1);
+  });
+
+  it('ignores an override — this is the derivation, not the effective cap', () => {
+    process.env[ENV] = '1';
+    expect(maxObjectsForQuotaGib(1)).toBe(Math.floor(gibToBytes(1) / MEGABYTE));
+  });
+});
+
+describe('effectiveMaxObjectsFor', () => {
+  it('returns the override even when no average is configured', () => {
+    expect(effectiveMaxObjectsFor({ quota_gb: 10, object_quota: 500 })).toBe(
+      500
+    );
+  });
+
+  it('lets the override win over a differing derivation', () => {
+    process.env[ENV] = '1';
+    expect(effectiveMaxObjectsFor({ quota_gb: 1, object_quota: 500 })).toBe(
+      500
+    );
+  });
+
+  it('falls back to the derivation when the override is 0', () => {
+    process.env[ENV] = '1';
+    expect(effectiveMaxObjectsFor({ quota_gb: 1, object_quota: 0 })).toBe(
+      maxObjectsForQuotaGib(1)
+    );
+  });
+
+  it('falls back to the derivation when the override is absent', () => {
+    process.env[ENV] = '1';
+    expect(effectiveMaxObjectsFor({ quota_gb: 1 })).toBe(
+      maxObjectsForQuotaGib(1)
+    );
+  });
+
+  it('returns null with neither an override nor an average', () => {
+    expect(effectiveMaxObjectsFor({ quota_gb: 1 })).toBeNull();
+  });
+
+  it('applies an override to a bucket with no size quota', () => {
+    expect(effectiveMaxObjectsFor({ quota_gb: 0, object_quota: 500 })).toBe(
+      500
+    );
   });
 });

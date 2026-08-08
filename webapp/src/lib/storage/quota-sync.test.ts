@@ -11,10 +11,11 @@ import {
 
 const AVG_ENV = 'GARAGE_AVG_OBJECT_SIZE_MB';
 
-function makePbBucket(quota_gb: number): Bucket {
+function makePbBucket(quota_gb: number, object_quota?: number): Bucket {
   return {
     id: 'pb-bucket-1',
     quota_gb,
+    object_quota,
     user: 'user-1',
     garage_bucket_id: 'garage-1',
     name: 'my-bucket',
@@ -124,12 +125,66 @@ describe('describeQuotaDrift', () => {
     expect(drift.sizeDrifted).toBe(true);
     expect(drift.objectsDrifted).toBe(true);
   });
+
+  it('does not flag an override Garage already enforces', () => {
+    // The case the override field exists for: a deliberate cap must stop
+    // reading as drift, or every bulk reconcile would revert it.
+    const drift = describeQuotaDrift(
+      makePbBucket(1, 500),
+      makeGarageInfo(gibToBytes(1), 500)
+    );
+    expect(drift.objectsDrifted).toBe(false);
+    expect(drift.objectQuotaOverridden).toBe(true);
+    expect(drift.expectedMaxObjects).toBe(500);
+    expect(drift.drifted).toBe(false);
+  });
+
+  it('measures against the override, not the derivation', () => {
+    process.env[AVG_ENV] = '1'; // 1 GiB would otherwise derive 1073
+    const drift = describeQuotaDrift(
+      makePbBucket(1, 500),
+      makeGarageInfo(gibToBytes(1), 1073)
+    );
+    expect(drift.expectedMaxObjects).toBe(500);
+    expect(drift.objectsDrifted).toBe(true);
+    expect(drift.objectQuotaOverridden).toBe(true);
+  });
+
+  it('treats an object_quota of 0 as "derive", not "cap at zero"', () => {
+    process.env[AVG_ENV] = '1';
+    const expected = Math.floor(gibToBytes(1) / 1_000_000);
+    const drift = describeQuotaDrift(
+      makePbBucket(1, 0),
+      makeGarageInfo(gibToBytes(1), expected)
+    );
+    expect(drift.objectQuotaOverridden).toBe(false);
+    expect(drift.expectedMaxObjects).toBe(expected);
+    expect(drift.objectsDrifted).toBe(false);
+  });
+
+  it('expects a cap from an override even with no size quota', () => {
+    const drift = describeQuotaDrift(
+      makePbBucket(0, 500),
+      makeGarageInfo(0, 0)
+    );
+    expect(drift.sizeDrifted).toBe(false);
+    expect(drift.expectedMaxObjects).toBe(500);
+    expect(drift.objectsDrifted).toBe(true);
+  });
 });
 
 describe('quotaHasDrifted stays size-only', () => {
   it('ignores object-cap drift, so a page load never rewrites a live limit', () => {
     process.env[AVG_ENV] = '1';
     const pb = makePbBucket(1);
+    const garage = makeGarageInfo(gibToBytes(1), 7);
+    expect(describeQuotaDrift(pb, garage).objectsDrifted).toBe(true);
+    expect(quotaHasDrifted(pb, garage)).toBe(false);
+  });
+
+  it('ignores a drifted override too', () => {
+    // A GET must never rewrite a live limit — override or not.
+    const pb = makePbBucket(1, 500);
     const garage = makeGarageInfo(gibToBytes(1), 7);
     expect(describeQuotaDrift(pb, garage).objectsDrifted).toBe(true);
     expect(quotaHasDrifted(pb, garage)).toBe(false);
