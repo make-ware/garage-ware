@@ -78,6 +78,11 @@ export function NavigationBar({ className }: NavigationBarProps) {
         <div className="mr-4 flex">
           <Link href="/" className="mr-6 flex items-center space-x-2">
             <span className="font-bold text-xl">GarageHQ Console</span>
+            {process.env.NEXT_PUBLIC_APP_VERSION && (
+              <span className="text-xs text-muted-foreground">
+                v{process.env.NEXT_PUBLIC_APP_VERSION}
+              </span>
+            )}
           </Link>
         </div>
 
