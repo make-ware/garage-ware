@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.0](https://github.com/make-ware/garage-ware/compare/v1.4.13...v1.5.0) (2026-08-08)
+
+
+### Features
+
+* Add storage ledger audit trail and balance roll-ups ([b084435](https://github.com/make-ware/garage-ware/commit/b08443561fb0ea056a5bcfe7fd0db1742596b21d))
+* **claims:** add claim audit trail and share the storage accounting ([50493e4](https://github.com/make-ware/garage-ware/commit/50493e4426361108e9ed602a1e21c40a706e25dd))
+* **claims:** add claim audit trail and share the storage accounting ([2fabfd5](https://github.com/make-ware/garage-ware/commit/2fabfd5da1282e2ddf4a39a9430e05edab50dbe6))
+* **storage:** materialize balance roll-ups and audit bucket quota drift ([87e48c8](https://github.com/make-ware/garage-ware/commit/87e48c83ada953ef91007a6cc5eec2022ec2b502))
+
+
+### Bug Fixes
+
+* **admin:** read the bucket owner's grant instead of a truncated user page ([8a094b3](https://github.com/make-ware/garage-ware/commit/8a094b341fa0dc4781d372b58fb0dd5cbc02764e))
+* **balances:** stop rebuild drift from cancelling itself out ([6dd2247](https://github.com/make-ware/garage-ware/commit/6dd22477447c80815ca356811df69741d3ee185a))
+* **buckets:** only count a reconcile as synced when it wrote something ([f6d9182](https://github.com/make-ware/garage-ware/commit/f6d9182b21fb111fa5046633a5305a74a00a8002))
+* **hooks:** commit audit and balance writes with the record they describe ([8f62faa](https://github.com/make-ware/garage-ware/commit/8f62faae517c4d739ec3a1289b42168fe1058815))
+* **storage:** page getUserBalances to exhaustion ([af52479](https://github.com/make-ware/garage-ware/commit/af5247957d7ebc6d4b5859657f3dcdefc56603f7))
+
 ## [1.4.13](https://github.com/make-ware/garage-ware/compare/v1.4.12...v1.4.13) (2026-07-20)
 
 
