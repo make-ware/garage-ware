@@ -7,6 +7,7 @@ import {
   ArrowLeftRight,
   Coins,
   Database,
+  Gauge,
   HardDrive,
   History,
   Key,
@@ -23,6 +24,7 @@ const links = [
   { href: '/admin/ledger', label: 'Ledger', icon: History },
   { href: '/admin/transfers', label: 'Transfers', icon: ArrowLeftRight },
   { href: '/admin/buckets', label: 'Buckets', icon: HardDrive },
+  { href: '/admin/quota', label: 'Quota', icon: Gauge },
   { href: '/admin/keys', label: 'Keys', icon: Key },
 ];
 
