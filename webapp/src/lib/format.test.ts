@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatGib, formatStorage } from './format';
+import {
+  formatBytes,
+  formatGib,
+  formatPbDate,
+  formatPbDateTime,
+  formatSignedStorage,
+  formatStorage,
+} from './format';
 import { GIGABYTE, PETABYTE, TERABYTE, tbToGib } from './storage/units';
 
 describe('formatBytes (decimal SI units)', () => {
@@ -58,5 +65,58 @@ describe('formatGib (binary GiB → decimal GB/TB)', () => {
   it('formatStorage is the same as formatGib', () => {
     expect(formatStorage).toBe(formatGib);
     expect(formatStorage(tbToGib(2.5))).toBe('2.5 TB');
+  });
+});
+
+describe('formatSignedStorage', () => {
+  it('prefixes a positive amount with +', () => {
+    expect(formatSignedStorage(tbToGib(2))).toBe('+2 TB');
+  });
+
+  it('prefixes a negative amount with - and formats the magnitude', () => {
+    // The sign is the whole point of a ledger entry: never let a reclaim
+    // render as though it were a grant.
+    expect(formatSignedStorage(-tbToGib(0.5))).toBe('-500 GB');
+  });
+
+  it('renders zero as +0 B rather than an empty string', () => {
+    expect(formatSignedStorage(0)).toBe('+0 B');
+  });
+});
+
+describe('formatPbDate', () => {
+  it("parses PocketBase's space-separated timestamp", () => {
+    // PocketBase emits "YYYY-MM-DD HH:mm:ss.sssZ"; a bare `new Date()` on that
+    // string is not portable, so the space has to become a "T" first.
+    const formatted = formatPbDate('2026-03-14 09:30:00.000Z');
+    expect(formatted).not.toBe('2026-03-14 09:30:00.000Z');
+    expect(formatted).toMatch(/2026/);
+  });
+
+  it('accepts a plain ISO timestamp too', () => {
+    expect(formatPbDate('2026-03-14T09:30:00.000Z')).toMatch(/2026/);
+  });
+
+  it('returns an em dash for a missing value', () => {
+    expect(formatPbDate(undefined)).toBe('—');
+    expect(formatPbDate(null)).toBe('—');
+    expect(formatPbDate('')).toBe('—');
+  });
+
+  it('passes unparseable input through unchanged rather than showing "Invalid Date"', () => {
+    expect(formatPbDate('not a date')).toBe('not a date');
+  });
+});
+
+describe('formatPbDateTime', () => {
+  it('includes the time of day', () => {
+    const formatted = formatPbDateTime('2026-03-14 09:30:00.000Z');
+    expect(formatted).toMatch(/2026/);
+    expect(formatted).toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it('handles missing and unparseable values the same way', () => {
+    expect(formatPbDateTime(undefined)).toBe('—');
+    expect(formatPbDateTime('nonsense')).toBe('nonsense');
   });
 });

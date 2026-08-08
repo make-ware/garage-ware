@@ -3,10 +3,13 @@ import type { Bucket } from '@garage-ware/shared';
 import type { GarageBucket } from '@/lib/garage/schemas';
 import { gibToBytes } from './units';
 import {
+  describeQuotaDrift,
   quotaHasDrifted,
   syncQuotaToPb,
   syncUsageToPbBackground,
 } from './quota-sync';
+
+const AVG_ENV = 'GARAGE_AVG_OBJECT_SIZE_MB';
 
 function makePbBucket(quota_gb: number): Bucket {
   return {
@@ -23,11 +26,14 @@ function makePbBucket(quota_gb: number): Bucket {
   };
 }
 
-function makeGarageInfo(maxSize: number | null): GarageBucket {
+function makeGarageInfo(
+  maxSize: number | null,
+  maxObjects: number | null = null
+): GarageBucket {
   return {
     id: 'garage-1',
     globalAliases: [],
-    quotas: { maxSize, maxObjects: null },
+    quotas: { maxSize, maxObjects },
   };
 }
 
@@ -37,6 +43,97 @@ function makeMockPb(updateFn = vi.fn()) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env[AVG_ENV];
+});
+
+describe('describeQuotaDrift', () => {
+  it('reports no drift when size matches and neither side caps objects', () => {
+    const drift = describeQuotaDrift(
+      makePbBucket(10),
+      makeGarageInfo(gibToBytes(10))
+    );
+    expect(drift.sizeDrifted).toBe(false);
+    expect(drift.objectsDrifted).toBe(false);
+    expect(drift.drifted).toBe(false);
+    expect(drift.expectedMaxObjects).toBeNull();
+  });
+
+  it('reports size drift with both sides in bytes', () => {
+    const drift = describeQuotaDrift(
+      makePbBucket(10),
+      makeGarageInfo(gibToBytes(20))
+    );
+    expect(drift.sizeDrifted).toBe(true);
+    expect(drift.pbSizeBytes).toBe(gibToBytes(10));
+    expect(drift.garageSizeBytes).toBe(gibToBytes(20));
+    expect(drift.drifted).toBe(true);
+  });
+
+  it('keeps the 1-byte tolerance for GiB round-tripping', () => {
+    const drift = describeQuotaDrift(
+      makePbBucket(10),
+      makeGarageInfo(gibToBytes(10) + 1)
+    );
+    expect(drift.sizeDrifted).toBe(false);
+  });
+
+  it('reports object-cap drift even when the size agrees', () => {
+    // The case nothing caught before: GARAGE_AVG_OBJECT_SIZE_MB changed, so
+    // every existing bucket is left on an object cap that no longer derives
+    // from its quota, and no read path recomputes it.
+    process.env[AVG_ENV] = '1';
+    const drift = describeQuotaDrift(
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(1), 500)
+    );
+    expect(drift.sizeDrifted).toBe(false);
+    expect(drift.objectsDrifted).toBe(true);
+    expect(drift.garageMaxObjects).toBe(500);
+    expect(drift.expectedMaxObjects).toBe(1073);
+    expect(drift.drifted).toBe(true);
+  });
+
+  it('reports no object drift when the cap already matches the derivation', () => {
+    process.env[AVG_ENV] = '1';
+    const expected = Math.floor(gibToBytes(1) / 1_000_000);
+    const drift = describeQuotaDrift(
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(1), expected)
+    );
+    expect(drift.objectsDrifted).toBe(false);
+    expect(drift.drifted).toBe(false);
+  });
+
+  it('treats a cap set with no average configured as drift', () => {
+    // No average means "no cap expected", so a cap that is still set is a
+    // leftover from a previous configuration.
+    const drift = describeQuotaDrift(
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(1), 900)
+    );
+    expect(drift.expectedMaxObjects).toBeNull();
+    expect(drift.objectsDrifted).toBe(true);
+  });
+
+  it('flags both axes at once', () => {
+    process.env[AVG_ENV] = '1';
+    const drift = describeQuotaDrift(
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(5), 12)
+    );
+    expect(drift.sizeDrifted).toBe(true);
+    expect(drift.objectsDrifted).toBe(true);
+  });
+});
+
+describe('quotaHasDrifted stays size-only', () => {
+  it('ignores object-cap drift, so a page load never rewrites a live limit', () => {
+    process.env[AVG_ENV] = '1';
+    const pb = makePbBucket(1);
+    const garage = makeGarageInfo(gibToBytes(1), 7);
+    expect(describeQuotaDrift(pb, garage).objectsDrifted).toBe(true);
+    expect(quotaHasDrifted(pb, garage)).toBe(false);
+  });
 });
 
 describe('quotaHasDrifted', () => {

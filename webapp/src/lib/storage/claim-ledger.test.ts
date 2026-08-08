@@ -57,18 +57,94 @@ function matchesFilter(
   });
 }
 
-function fakePb(): TypedPocketBase {
+/**
+ * Derive the balance rows the guard now reads from the ledger the tests set up.
+ *
+ * The cases below are written in terms of claims and buckets because that is
+ * what they are about; materializing here mirrors what the PocketBase hooks in
+ * pb_hooks/lib/storage-balance.js do, so the assertions keep their meaning
+ * while exercising the balance-backed code path.
+ */
+function materializeBalances() {
+  const nodes = new Map<string, Record<string, unknown>>();
+  const users = new Map<string, Record<string, unknown>>();
+
+  const userSlot = (user: string) => {
+    let slot = users.get(user);
+    if (!slot) {
+      slot = {
+        id: `ub-${user}`,
+        user,
+        claims_gb: 0,
+        sent_gb: 0,
+        received_gb: 0,
+        allocated_gb: 0,
+      };
+      users.set(user, slot);
+    }
+    return slot;
+  };
+
+  for (const claim of store.StorageClaims) {
+    const key = `${claim.user}::${claim.node_id}`;
+    let row = nodes.get(key);
+    if (!row) {
+      row = {
+        id: `nb-${key}`,
+        user: claim.user,
+        node_id: claim.node_id,
+        claimed_gb: 0,
+        entry_count: 0,
+      };
+      nodes.set(key, row);
+    }
+    row.claimed_gb = (row.claimed_gb as number) + claim.quota_gb;
+    row.entry_count = (row.entry_count as number) + 1;
+    const slot = userSlot(claim.user);
+    slot.claims_gb = (slot.claims_gb as number) + claim.quota_gb;
+  }
+
+  for (const transfer of store.StorageTransfers) {
+    const from = userSlot(transfer.from_user);
+    from.sent_gb = (from.sent_gb as number) + transfer.quota_gb;
+    const to = userSlot(transfer.to_user);
+    to.received_gb = (to.received_gb as number) + transfer.quota_gb;
+  }
+
+  for (const bucket of store.Buckets) {
+    const slot = userSlot(bucket.user);
+    slot.allocated_gb = (slot.allocated_gb as number) + bucket.quota_gb;
+  }
+
   return {
-    collection(name: FakeCollection) {
+    StorageNodeBalances: [...nodes.values()],
+    StorageUserBalances: [...users.values()],
+  };
+}
+
+function fakePb(): TypedPocketBase {
+  const rowsFor = (name: string): Record<string, unknown>[] => {
+    const derived = materializeBalances();
+    if (name in derived) {
+      return derived[name as keyof typeof derived];
+    }
+    return store[name as FakeCollection] as unknown as Record<
+      string,
+      unknown
+    >[];
+  };
+
+  return {
+    collection(name: string) {
       return {
         getList(
           _page: number,
           _perPage: number,
           options?: { filter?: string }
         ) {
-          const items = (
-            store[name] as unknown as Record<string, unknown>[]
-          ).filter((r) => matchesFilter(r, options?.filter));
+          const items = rowsFor(name).filter((r) =>
+            matchesFilter(r, options?.filter)
+          );
           return Promise.resolve({
             items,
             page: 1,
@@ -76,6 +152,14 @@ function fakePb(): TypedPocketBase {
             totalItems: items.length,
             totalPages: 1,
           });
+        },
+        getFirstListItem(filter: string) {
+          const match = rowsFor(name).find((r) => matchesFilter(r, filter));
+          if (!match) {
+            const err = Object.assign(new Error('Not found'), { status: 404 });
+            return Promise.reject(err);
+          }
+          return Promise.resolve(match);
         },
       };
     },

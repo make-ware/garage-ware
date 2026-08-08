@@ -16,6 +16,7 @@ import { ProtectedRoute } from '@/components/auth/protected-route';
 import { useAdminStatus } from '@/hooks/use-admin-status';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
+import { bytesToGib } from '@/lib/storage/units';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
 import {
   Card,
@@ -31,8 +32,6 @@ import { Progress } from '@/components/ui/progress';
 import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import type { AccessKey } from '@garage-ware/shared';
 import type { BucketWithUsage, StorageSummary } from '@/lib/types';
-
-const GIBIBYTE = 1024 ** 3;
 
 interface NodeInfo {
   id: string;
@@ -75,7 +74,7 @@ function StorageDashboard() {
       keys: keysResp.items,
       summary: summaryResp,
       nodeMap,
-      usedGb: usedBytes / GIBIBYTE,
+      usedGb: bytesToGib(usedBytes),
     };
   }
 
@@ -147,32 +146,13 @@ function StorageDashboard() {
 
   const summary = data?.summary;
 
-  // Claims are an append-only ledger, so a node can have several entries.
-  // Roll them up per node — the user cares about their effective claim there,
-  // not the admin's grant history.
-  const claimsByNode = useMemo(() => {
-    const map = new Map<
-      string,
-      { nodeId: string; hostname?: string; zone?: string; claimedGb: number }
-    >();
-    for (const claim of summary?.claims ?? []) {
-      const entry = map.get(claim.node_id);
-      if (entry) {
-        entry.claimedGb += Number(claim.quota_gb) || 0;
-        entry.hostname ??= claim.node_hostname;
-        entry.zone ??= claim.node_zone;
-      } else {
-        map.set(claim.node_id, {
-          nodeId: claim.node_id,
-          hostname: claim.node_hostname,
-          zone: claim.node_zone,
-          claimedGb: Number(claim.quota_gb) || 0,
-        });
-      }
-    }
-    // A node whose entries net to zero is no longer a claim worth listing.
-    return [...map.values()].filter((n) => n.claimedGb !== 0);
-  }, [summary?.claims]);
+  // The per-node breakdown arrives already rolled up — the server reads it from
+  // the materialized balances rather than summing the ledger. A node whose
+  // entries net to zero is no longer a claim worth listing.
+  const claimsByNode = useMemo(
+    () => (summary?.nodeClaims ?? []).filter((n) => n.claimedGb !== 0),
+    [summary?.nodeClaims]
+  );
 
   const netGranted = summary?.netGrantedGb ?? 0;
   const allocated = summary?.allocatedGb ?? 0;
@@ -351,7 +331,7 @@ function StorageDashboard() {
             {data && data.buckets.length > 0 && (
               <ul className="space-y-1">
                 {data.buckets.slice(0, 10).map((b) => {
-                  const usedGb = (b.bytes ?? 0) / GIBIBYTE;
+                  const usedGb = bytesToGib(b.bytes ?? 0);
                   const quotaGb = b.quota_gb ?? 0;
                   return (
                     <li key={b.id}>
@@ -468,10 +448,10 @@ function StorageDashboard() {
                   return (
                     <tr key={node.nodeId} className="border-b last:border-0">
                       <td className="py-2 font-mono">
-                        {node.hostname ?? node.nodeId.slice(0, 12)}
+                        {node.nodeHostname ?? node.nodeId.slice(0, 12)}
                       </td>
                       <td className="py-2 text-muted-foreground">
-                        {node.zone || '—'}
+                        {node.nodeZone || '—'}
                       </td>
                       <td className="py-2 text-muted-foreground">
                         {tags.length > 0 ? tags.join(', ') : '—'}

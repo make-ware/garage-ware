@@ -139,6 +139,9 @@ Two parallel back ends, two different auth boundaries:
 | `Buckets` | `user`, `garage_bucket_id`, `name`, `quota_gb`, `bytes`, `objects`, `max_size`, `max_objects`, `usage_updated_at` | Maps a Garage bucket to its owning PB user; `quota_gb` is mirrored to Garage's per-bucket quota and slices the user's total claim. `bytes`/`objects`/`max_size`/`max_objects`/`usage_updated_at` are a usage cache refreshed on dashboard reads, consumed by the daily alert cron. `max_size` (bytes) mirrors `quota_gb`; `max_objects` (count, 0 = no cap) is the Garage `maxObjects` quota derived from `GARAGE_AVG_OBJECT_SIZE_MB`. |
 | `StorageClaims` | `user`, `node_id`, `node_hostname`, `node_zone`, `quota_gb`, `note` | **Append-only ledger** of per-node grants, admin-written. One row is one signed adjustment (`quota_gb` may be negative to reclaim), not a state snapshot — a user's effective claim on a node is the sum of their rows for it, and their total claim is the sum across all nodes. `note` records why (e.g. "upgraded to 8TB disk"). `(user, node_id)` is indexed but deliberately **not unique**. |
 | `StorageTransfers` | `from_user`, `to_user`, `quota_gb`, `note` | **Append-only ledger** of user→user handoffs of already-granted capacity. `quota_gb` is always positive (min 0.001) and flows `from_user → to_user`; there is no update path, and deleting a row is how a recipient "returns" it. Node-agnostic by design — a transfer carries no `node_id`. |
+| `StorageClaimAudit` | `action`, `claim_id`, `user_id`, `user_email`, `node_id`, `node_hostname`, `node_zone`, `previous_gb`, `new_gb`, `delta_gb`, `note`, `actor_id`, `actor_email`, `actor_type`, `source` | **Immutable audit trail** of every mutation to `StorageClaims`, written by the hooks in [pocketbase/pb_hooks/main.pb.js](pocketbase/pb_hooks/main.pb.js). Admin-readable; all three write rules are `null`, since the hooks write through the Go/JSVM layer, which bypasses collection rules. Every reference is a **`TextField`, not a relation** — `StorageClaims.user` cascades from Users, so a relation would erase the trail exactly when it matters; `claim_id` is expected to dangle after its entry is deleted. See [Claim audit trail](#claim-audit-trail). |
+| `StorageNodeBalances` | `user`, `node_id`, `claimed_gb`, `entry_count`, `node_hostname`, `node_zone`, `recomputed_at` | **Materialized roll-up** of the claim ledger, one row per `(user, node)`. A cache, hook-maintained. Unlike the audit collection, `user` **cascades** and `(user, node_id)` **is unique** — this is derived data, and letting the DB enforce one row per pair turns a hook bug into a loud error. See [Storage balances](#storage-balances). |
+| `StorageUserBalances` | `user`, `claims_gb`, `sent_gb`, `received_gb`, `allocated_gb`, `recomputed_at`, `last_drift_gb` | Node-agnostic half of the same cache: transfers in/out and what the user's buckets reserve. `claims_gb` is the **unfiltered** cross-node sum and is *not* the granted figure — see the warning in [Storage balances](#storage-balances). |
 
 **PB write rules are not `null` — the Route-Handler funnel is convention, not enforcement.** `AccessKeys`/`Buckets` allow `user = @request.auth.id || <admin>` on create/update/delete, `StorageClaims` is admin-only, `StorageTransfers` lets the sender create and the recipient delete. So PB would happily *accept* a direct SDK write from the browser — and every quota invariant and every Garage-side sync would be skipped. All app writes go through `/next-api/garage/*`; keep it that way, and don't read the permissive rules as license to write from a component.
 
@@ -146,14 +149,26 @@ For `AccessKeys`/`Buckets`, a handler writes PB first, calls Garage, and rolls b
 
 #### Storage accounting
 
-Two helpers own the arithmetic — call them instead of summing rows yourself:
+**One formula, one implementation.** `computeStorageSummary()` in [webapp/src/lib/storage/ledger-math.ts](webapp/src/lib/storage/ledger-math.ts) is the only place the net-granted arithmetic exists. That module is deliberately the *second* file under `lib/storage/` without `import 'server-only'` (alongside `units.ts`), because the admin console and the dashboard need the same roll-ups client-side — and when they each hand-rolled their own, they disagreed about whether a claim on a decommissioned node counts. It does not. Anything that sums a ledger, values a node, or rolls entries up per node belongs here, not in a component:
+
+- `computeStorageSummary(claims, sent, received, allocatedGb, layout?)` — the whole position.
+- `rollUpClaimsByUserNode` / `rollUpClaimsByNode` — signed entries collapsed per pair or per node, newest-first history included, plus a `presentInLayout` flag.
+- `nodeUsableGbFrom(capacityBytes, rf)` / `nodeUsableGbInLayout(layout, nodeId, rf)` — `capacity / replicationFactor`.
+- `filterPresentClaims`, `presentNodeIdSet`, `sumClaimsByNode`, `sumClaimsByUserNode`, `sumTransfers`, `userNodeKey`.
+
+- `computeSummaryFromBalances(nodeBalances, userBalance, layout?)` — the same position from the materialized roll-ups. **It must always agree with `computeStorageSummary`**; that equivalence is asserted directly in [ledger-math.test.ts](webapp/src/lib/storage/ledger-math.test.ts) and is what makes the cache safe to read.
+
+Three server-side helpers wrap it with the fetching. All of them read the **balances**, not the ledgers:
 
 - `getUserGrantedGb(pb, userId, { onlyPresent, layout })` — [webapp/src/lib/storage/claims.ts](webapp/src/lib/storage/claims.ts). Net granted GB: claims + received − sent. `onlyPresent: true` (which every validator passes) drops claims on nodes missing from the live layout, so decommissioned hardware can't back a bucket; transfers are never filtered, since they aren't node-scoped.
-- `getUserStorageSummary(pb, userId, layout?)` — [webapp/src/lib/storage/summary.ts](webapp/src/lib/storage/summary.ts). The whole position in one object (`claimsGb`, `sentGb`, `receivedGb`, `netGrantedGb`, `allocatedGb`, `availableGb` plus the raw rows). This is the read path for the dashboard and admin views.
+- `getUserStorageSummary(pb, userId, layout?)` — [webapp/src/lib/storage/summary.ts](webapp/src/lib/storage/summary.ts). The whole position in one object (`claimsGb`, `sentGb`, `receivedGb`, `netGrantedGb`, `allocatedGb`, `availableGb`, plus `nodeClaims` and the transfer rows). This is the read path for the dashboard and admin views.
+- `getStorageSummariesForUsers(pb, userIds, layout?)` — same summary for many users, in 2 queries regardless of user count. Backs `GET /next-api/garage/users`. Use it for any list view; the per-user helper in a loop is both slow and, historically, how the admin list drifted. It returns no transfer *rows* — a list view wants totals.
 
-The per-row aggregates they build on live on the mutators — `StorageClaimMutator.sumByUser/sumByNode/sumByUserAndNode`, `StorageTransferMutator.sumSentByUser/sumReceivedByUser`, `BucketMutator.sumAllocatedGb` — so a new guard rarely needs a fresh query.
+The fetching lives in [webapp/src/lib/storage/balances.ts](webapp/src/lib/storage/balances.ts) (`getUserBalances`, `getNodeClaimedGb`, `getUserNodeClaimedGb`, `getAllBalances`).
 
-From the browser, don't reassemble a user's position out of PB reads: `GET /next-api/garage/storage-summary` returns `getUserStorageSummary()` for the caller, or for `?userId=` when the caller is an admin. Same `?userId=`-or-self, admin-gated shape is used by `/next-api/garage/transfers`.
+The old per-row aggregates on the mutators — `StorageClaimMutator.sumByUser/sumByNode/sumByUserAndNode`, `StorageTransferMutator.sumSentByUser/sumReceivedByUser`, `BucketMutator.sumAllocatedGb` — still exist but **nothing in the accounting path uses them any more**, because each reads a single page (200–1000 rows) of a collection that only grows. Don't reach for them in a new guard; read a balance instead.
+
+From the browser, don't reassemble a user's position out of PB reads: `GET /next-api/garage/storage-summary` returns `getUserStorageSummary()` for the caller, or for `?userId=` when the caller is an admin. Same `?userId=`-or-self, admin-gated shape is used by `/next-api/garage/transfers`. `GET /next-api/garage/users` (admin) returns each user's full position as `net_granted_gb` / `allocated_gb` / `available_gb` — **not** a raw claim sum. Because it needs the layout to value claims, it fails when Garage is unreachable, the same way `/storage-summary` does; being unavailable beats being quietly wrong.
 
 **Four storage invariants:**
 - Per user: `sum(bucket.quota_gb for user) ≤ netGranted(user)` — checked anywhere either side of that inequality moves: the bucket handlers (allocation up), `assertClaimDeltaAllowed` (claim down), and both transfer handlers (capacity out or clawed back).
@@ -165,9 +180,49 @@ Because ledger rows are signed, the first three checks reduce to the same questi
 
 A claim on a node absent from the layout can only be wound down, never grown. The `onlyPresent` filter already values such claims at 0, so retiring one never strands a bucket.
 
-Reversing a grant should normally **append a negative entry**, not delete the original — DELETE exists to fix mistyped entries and rewrites history. Both the admin claims table and the user dashboard roll entries up per `(user, node)` / per node before display, so the ledger never leaks into the UI as duplicate node rows.
+Reversing a grant should normally **append a negative entry**, not delete the original — DELETE exists to fix mistyped entries and rewrites history. Both the admin claims table and the user dashboard roll entries up per `(user, node)` / per node before display (via `rollUpClaimsByUserNode` / `rollUpClaimsByNode`), so the ledger never leaks into the UI as duplicate node rows. The admin "Set claim" action takes a new *total* and appends `target − current` for the same reason: restating a position must not mean rewriting how it was reached.
 
 Per-node claims are an *accounting* construct, not data placement — Garage spreads each bucket's data across all storage nodes per its layout, so a claim doesn't pin a user's bytes to a node. Transfers lean on that: because they're node-agnostic, moving capacity between users changes neither side's per-node sums, so the node-capacity invariant is untouched and `sum(claims on node)` stays the honest measure of what a node has promised.
+
+#### Claim audit trail
+
+`StorageClaims` is append-only, but only over the rows that *currently exist* — a PATCH rewrites an amount and a DELETE removes an entry, and neither leaves a trace. `StorageClaimAudit` is that trace, and the hooks at the top of [pocketbase/pb_hooks/main.pb.js](pocketbase/pb_hooks/main.pb.js) write it.
+
+- **Hooks, not route handlers.** The handlers already know the actor and the before/after, so writing it there would be simpler — but the hooks also catch writes made through the PocketBase admin UI or a direct SDK call, which is precisely what an audit trail is for.
+- **`*Request` hooks specifically.** Only `RecordRequestEvent` carries `e.auth` (it embeds `RequestEvent`); `onRecordAfter*Success` gets a `RecordEvent` with no actor. The cost is that request hooks don't fire for cascade deletes, so a fourth hook on `Users` snapshots the user's claims and email *before* `e.next()` and writes them as `source: 'cascade'` *after* it succeeds.
+- **`e.app`, never `$app`.** Inside a request hook `e.app` is the transactional app, so the audit row commits or rolls back with the change it describes. A failed audit write is deliberately allowed to propagate: a log that silently drops entries is worse than a request that fails loudly.
+- **Helpers must be `require`d inside each handler.** Goja runs every callback in a fresh executor, so top-level declarations in `main.pb.js` are invisible to them — the shared builder lives in [pocketbase/pb_hooks/lib/claim-audit.js](pocketbase/pb_hooks/lib/claim-audit.js), a plain `.js` (not `.pb.js`, which PocketBase would load as a hook file in its own right).
+- `delta_gb` is signed and directly comparable to the `deltaGb` handed to `assertClaimDeltaAllowed`: create is `+amount`, delete is `−amount`, update is `after − before`.
+
+Read it via `GET /next-api/garage/claim-audit` (admin-only; filters `userId`, `nodeId`, `claimId`, `action`, paged). Surfaced at `/admin/ledger` and inline in each expanded `(user, node)` row on `/admin/claims`.
+
+#### Storage balances
+
+`StorageNodeBalances` / `StorageUserBalances` are a **cache** of the two ledgers, so reading a position costs O(nodes) instead of O(ledger entries). The ledgers only grow; every per-user sum used to read one page of one, which is a silent wrong answer waiting on row count — and those sums backed `assertClaimDeltaAllowed`, the guard on every claim mutation.
+
+**Why per `(user, node)` and not one net figure per user.** A claim on a node that has left the layout must count as zero, and a PocketBase hook cannot reach Garage to learn which nodes those are. Keeping the breakdown lets the layout filter stay where it can be applied correctly — at read time, in `computeSummaryFromBalances`. A hook-written `net_granted_gb` would silently keep counting decommissioned hardware. For the same reason `StorageUserBalances.claims_gb` is the *unfiltered* cross-node sum and must never be used as the grant; it exists to detect drift.
+
+**Maintenance** — all writes go through [pocketbase/pb_hooks/lib/storage-balance.js](pocketbase/pb_hooks/lib/storage-balance.js):
+
+- The claim hooks do double duty: audit row **and** balance update, in the same handler after the same `e.next()`, on the same transactional `e.app`. Splitting them would only create a way for them to disagree.
+- `StorageTransfers` (create/delete) and `Buckets` (create/update/delete) have their own hooks. The Buckets update hook skips rows where `quota_gb` didn't move — most Buckets writes are the usage-cache refresh on every dashboard load.
+- **Cascades are the subtle part.** `StorageTransfers` cascades from *both* parties, so deleting a user silently removes transfers the counterparty is still owed — and no transfer hook fires. The `Users` delete hook unwinds the survivor's side inline; leaving it to the nightly rebuild would let them over-allocate in the meantime.
+- **Backfill lives in the migration** ([1786122444_created_StorageUserBalances.js](pocketbase/pb_migrations/1786122444_created_StorageUserBalances.js)), *not* an `onBootstrap` hook. Migrations run **after** bootstrap fires, so a hook-based backfill finds no collections on exactly the upgrade boot that has data to backfill — verified the hard way. Don't move it.
+- A nightly cron (`storage-balance-rebuild`) and `POST /next-api/garage/storage-balances/rebuild` (admin, proxied to a superuser-only PB route added with `routerAdd`) both call the same `rebuildAll`. One implementation on purpose: a second one in TypeScript could disagree with the hooks it is meant to be auditing.
+
+A non-zero `corrected`/`last_drift_gb` from a rebuild is **a bug, not routine maintenance** — it means an incremental hook missed a write path. Node-level corrections are folded into the owning user's `last_drift_gb` so the affected user is identifiable.
+
+#### Bucket quota drift
+
+`Buckets.quota_gb` and Garage's `quotas.maxSize` are written by separate calls in `PATCH /next-api/garage/buckets/[id]` with no rollback, so a failure between them leaves the two disagreeing.
+
+`describeQuotaDrift()` in [quota-sync.ts](webapp/src/lib/storage/quota-sync.ts) compares **both** axes. The object-count one had never been checked: `maxObjects` derives from `GARAGE_AVG_OBJECT_SIZE_MB`, so changing that setting leaves every existing bucket on a stale cap with nothing to notice. `quotaHasDrifted()` stays deliberately size-only because it drives the automatic read-path self-heal — quietly rewriting a live object limit on a page load is not something a GET should do.
+
+- `GET /next-api/garage/buckets/quota-audit` (admin) — every bucket with both sides and the drift flags. A bucket whose Garage fetch fails is `status: 'unknown'`, never `ok`: not knowing is not the same as agreeing.
+- `POST /next-api/garage/buckets/reconcile` (admin) — `direction: 'adopt-garage'` (default, the historical behaviour) or `'push-pb'`, which is what repairs a half-applied PATCH where adopting would discard the admin's actual change. Optional `includeObjects` and `bucketIds`.
+- Surfaced on `/admin/buckets`, with a per-bucket **Set quota** dialog behind the OTP gate.
+
+> **The OTP gate is client-side only.** `authWithOTP` runs in the browser and its only effect on app code is a React boolean; no route handler reads an OTP, so a `curl` with an ordinary session token bypasses it — for bucket delete, key revoke, key create, permission toggles, and now the admin quota override. It guards against a careless click, not a stolen session. Making it real means sending `otpId` + code with the request and verifying server-side. Don't mistake the dialog for enforcement.
 
 ### Admin gate
 
@@ -192,7 +247,7 @@ Tests for the client are in [webapp/src/lib/garage/garage-client.test.ts](webapp
 
 ## Adding a collection
 
-1. Create `shared/src/schema/<name>.ts` using `defineCollection()` + zod field helpers from `pocketbase-zod-schema` (`TextField`, `RelationField`, `BoolField`, `NumberField`, etc.). Export the collection, the `Schema`, the `InputSchema`, and inferred types. See existing schemas (`user.ts`, `admin.ts`, `access-key.ts`, `bucket.ts`) for the pattern, or `storage-claim.ts` / `storage-transfer.ts` for an append-only ledger (deliberately non-unique index; transfers also set `updateRule: null`, since a handoff is corrected by deleting it, not editing it).
+1. Create `shared/src/schema/<name>.ts` using `defineCollection()` + zod field helpers from `pocketbase-zod-schema` (`TextField`, `RelationField`, `BoolField`, `NumberField`, etc.). Export the collection, the `Schema`, the `InputSchema`, and inferred types. See existing schemas (`user.ts`, `admin.ts`, `access-key.ts`, `bucket.ts`) for the pattern, or `storage-claim.ts` / `storage-transfer.ts` for an append-only ledger (deliberately non-unique index; transfers also set `updateRule: null`, since a handoff is corrected by deleting it, not editing it). `storage-claim-audit.ts` is the pattern for a hook-written, API-immutable log: all write rules `null`, `SelectField` for closed enums, and plain `TextField` in place of relations so rows outlive what they describe.
 2. Re-export from [shared/src/schema.ts](shared/src/schema.ts).
 3. Create `shared/src/mutators/<name>.ts` extending `BaseMutator<T, TInput>` — implement `getCollection()` and `validateInput()`. Re-export from [shared/src/mutators/index.ts](shared/src/mutators/index.ts).
 4. Add a collection overload in [webapp/src/lib/types.ts](webapp/src/lib/types.ts).
@@ -230,5 +285,7 @@ In Docker, build with `NEXT_PUBLIC_POCKETBASE_URL=/` (same-origin) — the PB JS
 ## Notes
 
 [docs/](docs/) is vendored upstream reference material, not docs about this app — `PB_*.md` for PocketBase (auth, hooks, crons, filters, realtime, SSR) and `GarageHQ_*` for the cluster, including the full [admin API OpenAPI spec](docs/GarageHQ_OPENAPI.json). Check there before guessing at a PB rule syntax or a Garage endpoint shape; the one file that *is* about this app's design is [docs/PB_SSR.md](docs/PB_SSR.md).
+
+PocketBase's JSVM typings only exist at `pocketbase/pb_data/types.d.ts`, which the binary writes on first start — so hook signatures can't be checked until you've run PB once. `yarn setup && yarn workspace @garage-ware/pb dev` gets you the file; grep it before trusting any remembered hook API, since v0.23 reshaped all of them.
 
 ESLint config at the repo root ignores `pocketbase/**` and `scripts/**` ([eslint.config.mjs](eslint.config.mjs)). The lint rule `react-hooks/set-state-in-effect` is enabled and strict — define an inner async function inside `useEffect`, do all `setState` calls inside its async callbacks (with a `cancelled` flag) rather than in the effect body or in helpers called synchronously from it. See [webapp/src/app/dashboard/buckets/page.tsx](webapp/src/app/dashboard/buckets/page.tsx) for the canonical pattern.

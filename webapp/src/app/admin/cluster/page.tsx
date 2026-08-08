@@ -20,11 +20,8 @@ import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
 import { bytesToGib } from '@/lib/storage/units';
-import type { ClusterHealth, ClusterLayout, ClusterStatus } from '@/lib/garage';
-
-interface LayoutResponse extends ClusterLayout {
-  replicationFactor: number;
-}
+import type { ClusterHealth, ClusterStatus } from '@/lib/garage';
+import type { LayoutResponse } from '@/lib/admin-types';
 
 export default function ClusterDetailPage() {
   const [health, setHealth] = useState<ClusterHealth | null>(null);

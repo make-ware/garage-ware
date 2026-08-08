@@ -14,12 +14,7 @@ import { Input } from '@/components/ui/input';
 import { api } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-
-interface AdminUser {
-  id: string;
-  email: string;
-  name?: string;
-}
+import type { AdminUserRef } from '@/lib/admin-types';
 
 interface ImportToUserDialogProps {
   open: boolean;
@@ -38,7 +33,7 @@ export function ImportToUserDialog({
   confirmLabel = 'Import',
   onConfirm,
 }: ImportToUserDialogProps) {
-  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [users, setUsers] = useState<AdminUserRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
@@ -50,7 +45,7 @@ export function ImportToUserDialog({
     const load = async () => {
       setLoading(true);
       try {
-        const resp = await api<{ items: AdminUser[] }>(
+        const resp = await api<{ items: AdminUserRef[] }>(
           '/next-api/garage/users'
         );
         if (cancelled) return;

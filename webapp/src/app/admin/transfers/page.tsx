@@ -32,16 +32,10 @@ import {
 } from '@/components/ui/table';
 import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import { api } from '@/lib/api-client';
-import { formatStorage } from '@/lib/format';
+import { formatPbDate, formatStorage } from '@/lib/format';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
+import type { AdminUser } from '@/lib/admin-types';
 import type { StorageTransfer } from '@garage-ware/shared';
-
-interface AdminUser {
-  id: string;
-  email: string;
-  name?: string;
-  granted_gb: number;
-}
 
 function AdminTransfersView() {
   const params = useSearchParams();
@@ -273,7 +267,7 @@ function AdminTransfersView() {
                         {t.note || '—'}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-xs">
-                        {new Date(t.created).toLocaleDateString()}
+                        {formatPbDate(t.created)}
                       </TableCell>
                       <TableCell className="text-right">
                         <ConfirmDeleteDialog

@@ -8,6 +8,7 @@ import {
   Coins,
   Database,
   HardDrive,
+  History,
   Key,
   Users,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ const links = [
   { href: '/admin/cluster', label: 'Cluster', icon: Database },
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/claims', label: 'Claims', icon: Coins },
+  { href: '/admin/ledger', label: 'Ledger', icon: History },
   { href: '/admin/transfers', label: 'Transfers', icon: ArrowLeftRight },
   { href: '/admin/buckets', label: 'Buckets', icon: HardDrive },
   { href: '/admin/keys', label: 'Keys', icon: Key },

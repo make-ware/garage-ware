@@ -2,21 +2,82 @@ import 'server-only';
 import type { Bucket } from '@garage-ware/shared';
 import type { GarageBucket } from '@/lib/garage/schemas';
 import type { TypedPocketBase } from '@/lib/types';
+import { maxObjectsForQuotaGib } from '@/lib/storage/object-quota';
 import { bytesToGib, gibToBytes } from '@/lib/storage/units';
+
+/** Byte tolerance absorbing GiB ↔ bytes rounding noise. */
+const BYTE_EPSILON = 1;
+
+/** A full comparison of what we think a bucket's quota is against Garage. */
+export interface QuotaDrift {
+  /** PocketBase's `quota_gb`, in bytes. */
+  pbSizeBytes: number;
+  /** Garage's `quotas.maxSize`. */
+  garageSizeBytes: number;
+  sizeDrifted: boolean;
+  /** Garage's `quotas.maxObjects` (0 when uncapped). */
+  garageMaxObjects: number;
+  /**
+   * What `maxObjects` *should* be for this quota under the current
+   * GARAGE_AVG_OBJECT_SIZE_MB. Null when no average is configured, which means
+   * "no cap expected" rather than "expected zero".
+   */
+  expectedMaxObjects: number | null;
+  objectsDrifted: boolean;
+  /** True if either side disagrees. */
+  drifted: boolean;
+}
+
+/**
+ * Compare a bucket's stored quota against the live Garage one, on both axes.
+ *
+ * The object-count axis is the one nothing checked before. `maxObjects` is
+ * derived from the byte quota via GARAGE_AVG_OBJECT_SIZE_MB, so changing that
+ * setting silently leaves every existing bucket on its old cap — no read path
+ * recomputes it, and `quotaHasDrifted` never looked. Reporting it is not the
+ * same as fixing it: an object cap is a live limit, so repairing it stays an
+ * explicit admin action rather than a side effect of someone loading a page.
+ */
+export function describeQuotaDrift(
+  pbRecord: Bucket,
+  garageInfo: GarageBucket
+): QuotaDrift {
+  const pbSizeBytes = gibToBytes(pbRecord.quota_gb ?? 0);
+  const garageSizeBytes = garageInfo.quotas?.maxSize ?? 0;
+  const sizeDrifted = Math.abs(garageSizeBytes - pbSizeBytes) > BYTE_EPSILON;
+
+  const garageMaxObjects = garageInfo.quotas?.maxObjects ?? 0;
+  const expectedMaxObjects = maxObjectsForQuotaGib(pbRecord.quota_gb ?? 0);
+  // With no average configured we expect no cap at all, so a cap that is
+  // already set is still a disagreement worth surfacing.
+  const objectsDrifted = (expectedMaxObjects ?? 0) !== garageMaxObjects;
+
+  return {
+    pbSizeBytes,
+    garageSizeBytes,
+    sizeDrifted,
+    garageMaxObjects,
+    expectedMaxObjects,
+    objectsDrifted,
+    drifted: sizeDrifted || objectsDrifted,
+  };
+}
 
 /**
  * True when the byte-level difference exceeds 1. The 1-byte tolerance absorbs
  * floating-point noise from the GiB ↔ bytes round-trip (gibToBytes rounds to
  * the nearest integer, so a clean GiB value always round-trips to 0 diff).
  * Quotas of 0 / null are both treated as 0 bytes — no false positives.
+ *
+ * Size only, deliberately: this drives the automatic read-path self-heal, and
+ * quietly rewriting a bucket's object cap behind the owner's back is not
+ * something a page load should do. Use `describeQuotaDrift` to see both axes.
  */
 export function quotaHasDrifted(
   pbRecord: Bucket,
   garageInfo: GarageBucket
 ): boolean {
-  const garageBytes = garageInfo.quotas?.maxSize ?? 0;
-  const pbBytes = gibToBytes(pbRecord.quota_gb ?? 0);
-  return Math.abs(garageBytes - pbBytes) > 1;
+  return describeQuotaDrift(pbRecord, garageInfo).sizeDrifted;
 }
 
 /** Writes the Garage quota back to PocketBase when drift is detected. */
