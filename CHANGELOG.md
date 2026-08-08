@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.5.1](https://github.com/make-ware/garage-ware/compare/v1.5.0...v1.5.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **admin:** give quota drift its own page, grouped by user ([d0d32d4](https://github.com/make-ware/garage-ware/commit/d0d32d4bf1054bdf93085e2774c20ed30fe83b55))
+* **admin:** slim the buckets table and make it sortable ([9cccaba](https://github.com/make-ware/garage-ware/commit/9cccaba186dc0c28d92a3bede43f4881b108f093))
+* **buckets:** apply the object override on write and reconcile ([4e0c3da](https://github.com/make-ware/garage-ware/commit/4e0c3daddf0e37ed6cff76a974c79194091db37e))
+* **buckets:** let an object quota be set, not only derived ([c7dc63a](https://github.com/make-ware/garage-ware/commit/c7dc63a60d4fdc2944fb4ea4329ced977c3c6733))
+
 ## [1.5.0](https://github.com/make-ware/garage-ware/compare/v1.4.13...v1.5.0) (2026-08-08)
 
 
