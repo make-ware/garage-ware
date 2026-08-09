@@ -1,4 +1,4 @@
-import { GarageClient, cluster } from '@/lib/garage';
+import { getCachedLayout } from '@/lib/garage/cached';
 import { getUserStorageSummary } from '@/lib/storage/summary';
 import {
   HttpError,
@@ -22,8 +22,11 @@ export async function GET(req: Request) {
       targetUserId = requestedUserId;
     }
 
-    const garage = GarageClient.fromEnv();
-    const layout = await cluster.getLayout(garage);
+    // Cached: the layout is only used here to value claims for display, and
+    // this runs on every dashboard load. A minute-old layout means a node that
+    // has just left the cluster keeps counting for up to a minute *on screen*;
+    // every path that spends or grants capacity still reads it live.
+    const layout = await getCachedLayout();
 
     const summary = await getUserStorageSummary(pb, targetUserId, layout);
     return Response.json(summary);

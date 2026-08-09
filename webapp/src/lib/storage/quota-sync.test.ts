@@ -1,13 +1,23 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Bucket } from '@garage-ware/shared';
 import type { GarageBucket } from '@/lib/garage/schemas';
 import { gibToBytes } from './units';
 import {
   describeQuotaDrift,
   quotaHasDrifted,
+  refreshBucketsFromGarageBackground,
   syncQuotaToPb,
   syncUsageToPbBackground,
 } from './quota-sync';
+
+// Hoisted so the factory below can close over it: vi.mock runs before the
+// module body, and a plain `const` would still be in its temporal dead zone.
+const garageMock = vi.hoisted(() => ({ getBucketInfo: vi.fn() }));
+
+vi.mock('@/lib/garage', () => ({
+  GarageClient: { fromEnv: () => ({}) },
+  buckets: { getBucketInfo: garageMock.getBucketInfo },
+}));
 
 const AVG_ENV = 'GARAGE_AVG_OBJECT_SIZE_MB';
 
@@ -298,5 +308,96 @@ describe('syncUsageToPbBackground', () => {
     expect(payload.objects).toBe(0);
     expect(payload.max_size).toBe(0);
     expect(payload.max_objects).toBe(0);
+  });
+});
+
+/**
+ * `GET /buckets` now answers from the cached columns and refreshes them behind
+ * the response, so this pass has to be genuinely fire-and-forget: it must never
+ * reject, and one bucket Garage cannot answer for must not cost the others
+ * their refresh.
+ */
+describe('refreshBucketsFromGarageBackground', () => {
+  function bucketNamed(id: string): Bucket {
+    return { ...makePbBucket(10), id, garage_bucket_id: `garage-${id}` };
+  }
+
+  beforeEach(() => {
+    garageMock.getBucketInfo.mockReset();
+  });
+
+  it('does nothing at all for an empty list', () => {
+    refreshBucketsFromGarageBackground(makeMockPb(), []);
+    expect(garageMock.getBucketInfo).not.toHaveBeenCalled();
+  });
+
+  it('writes the usage cache for every bucket it can read', async () => {
+    const mockUpdate = vi.fn().mockResolvedValue({});
+    garageMock.getBucketInfo.mockImplementation(
+      async (_garage: unknown, { id }: { id: string }) => ({
+        id,
+        globalAliases: [],
+        bytes: 42,
+        objects: 7,
+        quotas: { maxSize: gibToBytes(10), maxObjects: 0 },
+      })
+    );
+
+    refreshBucketsFromGarageBackground(makeMockPb(mockUpdate), [
+      bucketNamed('a'),
+      bucketNamed('b'),
+    ]);
+
+    await vi.waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(2));
+    expect(mockUpdate.mock.calls.map(([id]) => id).sort()).toEqual(['a', 'b']);
+    const [, payload] = mockUpdate.mock.calls[0];
+    expect(payload.bytes).toBe(42);
+    expect(payload.objects).toBe(7);
+    expect(typeof payload.usage_updated_at).toBe('string');
+  });
+
+  it('heals size drift on the same pass, off the response path', async () => {
+    // The read-path self-heal that used to run before the response. Same write,
+    // later moment: a quota update as well as the usage snapshot.
+    const mockUpdate = vi.fn().mockResolvedValue({});
+    garageMock.getBucketInfo.mockResolvedValue({
+      id: 'garage-a',
+      globalAliases: [],
+      quotas: { maxSize: gibToBytes(20), maxObjects: null },
+    });
+
+    refreshBucketsFromGarageBackground(makeMockPb(mockUpdate), [
+      bucketNamed('a'),
+    ]);
+
+    await vi.waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(2));
+    const payloads = mockUpdate.mock.calls.map(([, p]) => p);
+    expect(payloads).toContainEqual({ quota_gb: 20 });
+  });
+
+  it('skips a bucket Garage cannot answer for, and still refreshes the rest', async () => {
+    const mockUpdate = vi.fn().mockResolvedValue({});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    garageMock.getBucketInfo.mockImplementation(
+      async (_garage: unknown, { id }: { id: string }) => {
+        if (id === 'garage-a') throw new Error('quorum unavailable');
+        return {
+          id,
+          globalAliases: [],
+          bytes: 1,
+          objects: 1,
+          quotas: { maxSize: gibToBytes(10), maxObjects: 0 },
+        };
+      }
+    );
+
+    refreshBucketsFromGarageBackground(makeMockPb(mockUpdate), [
+      bucketNamed('a'),
+      bucketNamed('b'),
+    ]);
+
+    await vi.waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
+    expect(mockUpdate.mock.calls[0][0]).toBe('b');
+    expect(errors).toHaveBeenCalled();
   });
 });

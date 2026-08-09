@@ -10,3 +10,4 @@ export * from './schema/storage-user-balance.js';
 export * from './schema/storage-transfer.js';
 export * from './schema/storage-invite.js';
 export * from './schema/node-metric.js';
+export * from './schema/garage-cluster-cache.js';

@@ -1,5 +1,6 @@
 import 'server-only';
 import type { Bucket } from '@garage-ware/shared';
+import { GarageClient, buckets } from '@/lib/garage';
 import type { GarageBucket } from '@/lib/garage/schemas';
 import type { TypedPocketBase } from '@/lib/types';
 import { effectiveMaxObjectsFor } from '@/lib/storage/object-quota';
@@ -147,4 +148,50 @@ export function syncUsageToPbBackground(
     .catch((err) =>
       console.error('[usage-sync] write failed:', pbRecord.id, err)
     );
+}
+
+/**
+ * Refresh the usage cache for a set of buckets off the response path.
+ *
+ * `GET /next-api/garage/buckets` used to await one `GetBucketInfo` per bucket
+ * before it could answer, then write the results into the cache columns it was
+ * not reading. Serving the columns and refreshing them behind the response
+ * gives the same freshness — the next load sees this pass — without the wait.
+ *
+ * Deliberately ungated by any TTL. The daily `bucket-usage-alerts` cron is
+ * DB-only and relies on dashboard reads to keep these columns current, so
+ * every GET still refreshes; only the waiting went away. The size-drift
+ * self-heal (`syncQuotaToPbBackground`) moves here with it — the same write it
+ * always made, now off the critical path.
+ *
+ * Never throws, and never rejects: a bucket Garage cannot answer for is logged
+ * and skipped, leaving its cached row as the last thing we knew.
+ */
+export function refreshBucketsFromGarageBackground(
+  pb: TypedPocketBase,
+  items: readonly Bucket[]
+): void {
+  if (items.length === 0) return;
+
+  void (async () => {
+    const garage = GarageClient.fromEnv();
+    const settled = await Promise.allSettled(
+      items.map((b) =>
+        buckets.getBucketInfo(garage, { id: b.garage_bucket_id })
+      )
+    );
+    items.forEach((item, i) => {
+      const result = settled[i];
+      if (result.status !== 'fulfilled') {
+        console.error(
+          '[usage-sync] refresh failed:',
+          item.garage_bucket_id,
+          result.reason
+        );
+        return;
+      }
+      syncQuotaToPbBackground(pb, item, result.value);
+      syncUsageToPbBackground(pb, item, result.value);
+    });
+  })().catch((err) => console.error('[usage-sync] refresh pass failed:', err));
 }

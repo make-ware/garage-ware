@@ -1,5 +1,4 @@
-import { GarageClient } from '@/lib/garage';
-import { cluster } from '@/lib/garage';
+import { getCachedHealth } from '@/lib/garage/cached';
 import { errorResponse, requireAdmin } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -7,8 +6,9 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   try {
     await requireAdmin(req);
-    const garage = GarageClient.fromEnv();
-    const health = await cluster.getHealth(garage);
+    // Cached — a display read of cluster health, on the same short TTL as
+    // status for the same reason.
+    const health = await getCachedHealth();
     return Response.json(health);
   } catch (err) {
     return errorResponse(err);

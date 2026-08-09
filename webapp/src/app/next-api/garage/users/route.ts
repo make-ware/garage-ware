@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { BucketMutator } from '@garage-ware/shared/mutators';
-import { GarageClient, buckets, cluster } from '@/lib/garage';
+import { GarageClient, buckets } from '@/lib/garage';
+import { getCachedLayout } from '@/lib/garage/cached';
 import { getStorageSummariesForUsers } from '@/lib/storage/summary';
 import {
   errorResponse,
@@ -46,7 +47,10 @@ export async function GET(req: Request) {
     // The layout is needed to value claims: one on a node that has left the
     // cluster backs nothing, and must not be counted here either — otherwise
     // this list disagrees with what each user sees on their own dashboard.
-    const layout = await cluster.getLayout(garage);
+    // Cached, and deliberately the same cached layout `/storage-summary`
+    // reads, so the two cannot disagree by being fetched a moment apart. The
+    // per-bucket usage fan-out above is still live.
+    const layout = await getCachedLayout();
     const summaries = await getStorageSummariesForUsers(
       pb,
       result.items.map((u) => u.id),

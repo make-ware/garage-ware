@@ -7,11 +7,8 @@ import { formatStorage } from '@/lib/format';
 import { getUserGrantedGb } from '@/lib/storage/claims';
 import { gibToBytes } from '@/lib/storage/units';
 import { maxObjectsForQuotaGib } from '@/lib/storage/object-quota';
-import {
-  syncQuotaToPbBackground,
-  syncUsageToPbBackground,
-} from '@/lib/storage/quota-sync';
-import type { BucketWithUsage } from '@/lib/types';
+import { refreshBucketsFromGarageBackground } from '@/lib/storage/quota-sync';
+import type { BucketWithUsage, TypedPocketBase } from '@/lib/types';
 import {
   HttpError,
   errorResponse,
@@ -23,33 +20,73 @@ export const dynamic = 'force-dynamic';
 
 const CreateBody = BucketInputSchema.pick({ name: true, quota_gb: true });
 
-async function enrichWithUsage(
+/**
+ * Answer from the usage columns already on each Bucket row, and refresh them
+ * behind the response.
+ *
+ * These columns have always existed — `bytes`, `objects`, `max_objects`,
+ * `usage_updated_at` — but this handler used to write them and then not read
+ * them, awaiting one `GetBucketInfo` per bucket before it could answer. Reading
+ * what is already there makes the steady-state load zero Garage calls deep,
+ * and the background pass keeps the numbers a page-load old, which is all they
+ * ever were.
+ *
+ * The one case that still blocks is a bucket with no `usage_updated_at` at all:
+ * nothing has ever synced it, so there is no cached value to serve, and an
+ * imported bucket can hold real data on its very first render. Reporting zero
+ * there would be a wrong answer rather than a slightly old one. Failures fall
+ * back to the bare record, exactly as before.
+ */
+async function withUsage(
   items: Bucket[],
-  pb: import('@/lib/types').TypedPocketBase
+  pb: TypedPocketBase
 ): Promise<BucketWithUsage[]> {
   if (items.length === 0) return items;
-  const garage = GarageClient.fromEnv();
-  const settled = await Promise.allSettled(
-    items.map((b) => buckets.getBucketInfo(garage, { id: b.garage_bucket_id }))
-  );
-  return items.map((item, i) => {
-    const result = settled[i];
-    if (result.status === 'fulfilled') {
-      syncQuotaToPbBackground(pb, item, result.value);
-      syncUsageToPbBackground(pb, item, result.value);
-      return {
+
+  const unsynced = items.filter((b) => !b.usage_updated_at);
+  const live = new Map<string, BucketWithUsage>();
+  if (unsynced.length > 0) {
+    const garage = GarageClient.fromEnv();
+    const settled = await Promise.allSettled(
+      unsynced.map((b) =>
+        buckets.getBucketInfo(garage, { id: b.garage_bucket_id })
+      )
+    );
+    unsynced.forEach((item, i) => {
+      const result = settled[i];
+      if (result.status !== 'fulfilled') {
+        console.error(
+          '[buckets] usage fetch failed:',
+          item.garage_bucket_id,
+          result.reason
+        );
+        return;
+      }
+      live.set(item.id, {
         ...item,
         bytes: result.value.bytes ?? 0,
         objects: result.value.objects ?? 0,
         maxObjects: result.value.quotas?.maxObjects ?? null,
-      };
-    }
-    console.error(
-      '[buckets] usage fetch failed:',
-      item.garage_bucket_id,
-      result.reason
-    );
-    return item;
+      });
+    });
+  }
+
+  // Unconditional: the daily bucket-usage-alerts cron is DB-only and depends
+  // on dashboard reads to keep these columns fresh, so every GET still
+  // refreshes them — just not before answering.
+  refreshBucketsFromGarageBackground(pb, items);
+
+  return items.map((item) => {
+    const fetched = live.get(item.id);
+    if (fetched) return fetched;
+    if (!item.usage_updated_at) return item;
+    return {
+      ...item,
+      bytes: item.bytes ?? 0,
+      objects: item.objects ?? 0,
+      // The column stores 0 for "no cap"; the API contract is null.
+      maxObjects: item.max_objects ? item.max_objects : null,
+    };
   });
 }
 
@@ -74,15 +111,15 @@ export async function GET(req: Request) {
           ['user']
         );
         return Response.json({
-          items: await enrichWithUsage(result.items, pb),
+          items: await withUsage(result.items, pb),
         });
       }
       const result = await bucketMutator.listByUser(requestedUserId!);
-      return Response.json({ items: await enrichWithUsage(result.items, pb) });
+      return Response.json({ items: await withUsage(result.items, pb) });
     }
 
     const result = await bucketMutator.listByUser(user.id);
-    return Response.json({ items: await enrichWithUsage(result.items, pb) });
+    return Response.json({ items: await withUsage(result.items, pb) });
   } catch (err) {
     return errorResponse(err);
   }

@@ -13,6 +13,7 @@ import type { StorageUserBalance } from '../schema/storage-user-balance';
 import type { StorageTransfer } from '../schema/storage-transfer';
 import type { StorageInvite } from '../schema/storage-invite';
 import type { NodeMetric } from '../schema/node-metric';
+import type { GarageClusterCache } from '../schema/garage-cluster-cache';
 
 // Typed PocketBase interface
 export interface TypedPocketBase extends PocketBase {
@@ -31,6 +32,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
   collection(idOrName: 'StorageInvites'): RecordService<StorageInvite>;
   collection(idOrName: 'NodeMetrics'): RecordService<NodeMetric>;
+  collection(idOrName: 'GarageClusterCache'): RecordService<GarageClusterCache>;
 }
 
 // PocketBase response types

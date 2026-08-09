@@ -67,6 +67,17 @@ const { claimInvitesForUser, normaliseEmail } =
 
 const LAYOUT = { roles: [] } as unknown as ClusterLayout;
 
+/**
+ * The layout arrives as a thunk so the quiet path — nothing pending, which is
+ * every dashboard load after the first — never reaches Garage at all. Counting
+ * calls is the point of the indirection, so the fake counts them.
+ */
+let layoutCalls = 0;
+const getLayout = async (): Promise<ClusterLayout> => {
+  layoutCalls += 1;
+  return LAYOUT;
+};
+
 function invite(partial: Partial<StorageInvite>): StorageInvite {
   return {
     id: 'i1',
@@ -84,6 +95,7 @@ beforeEach(() => {
   fake.invites = [];
   fake.transfers = [];
   fake.available = new Map();
+  layoutCalls = 0;
 });
 
 describe('normaliseEmail', () => {
@@ -102,7 +114,7 @@ describe('claimInvitesForUser', () => {
     const result = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(result.claimedGb).toBe(500);
@@ -128,7 +140,7 @@ describe('claimInvitesForUser', () => {
     const result = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(fake.transfers).toHaveLength(0);
@@ -159,7 +171,7 @@ describe('claimInvitesForUser', () => {
     const result = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(result.claimed.map((c) => c.invite.id)).toEqual(['older']);
@@ -185,7 +197,7 @@ describe('claimInvitesForUser', () => {
     const result = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(result.claimedGb).toBe(250);
@@ -214,7 +226,7 @@ describe('claimInvitesForUser', () => {
     const result = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(result.claimed.map((c) => c.invite.id)).toEqual(['fine']);
@@ -229,7 +241,7 @@ describe('claimInvitesForUser', () => {
     const result = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(fake.transfers).toHaveLength(0);
@@ -237,25 +249,48 @@ describe('claimInvitesForUser', () => {
     expect(fake.invites[0].status).toBe('failed');
   });
 
-  it('is a no-op when nothing is waiting', async () => {
+  it('is a no-op when nothing is waiting, without asking for the layout', async () => {
+    // The whole reason the layout is a thunk. This is every dashboard load
+    // after the first, and it used to open with a live GetClusterLayout.
     const result = await claimInvitesForUser(
       'newuser',
       'nobody@example.com',
-      LAYOUT
+      getLayout
     );
     expect(result).toEqual({ claimed: [], failed: [], claimedGb: 0 });
     expect(fake.transfers).toHaveLength(0);
+    expect(layoutCalls).toBe(0);
+  });
+
+  it('fetches the layout once for a whole pass, not once per invite', async () => {
+    // Every invite in one pass is settled against the same view of the
+    // cluster — and one round trip, however many are waiting.
+    fake.invites = [
+      invite({ id: 'a', quota_gb: 100, created: '2026-08-01 10:00:00.000Z' }),
+      invite({
+        id: 'b',
+        quota_gb: 150,
+        from_user: 'other',
+        created: '2026-08-02 10:00:00.000Z',
+      }),
+    ];
+    fake.available.set('sender', 1000);
+    fake.available.set('other', 1000);
+
+    await claimInvitesForUser('newuser', 'newcomer@example.com', getLayout);
+
+    expect(layoutCalls).toBe(1);
   });
 
   it('is idempotent — a second pass finds nothing left pending', async () => {
     fake.invites = [invite({ id: 'i1', quota_gb: 100 })];
     fake.available.set('sender', 1000);
 
-    await claimInvitesForUser('newuser', 'newcomer@example.com', LAYOUT);
+    await claimInvitesForUser('newuser', 'newcomer@example.com', getLayout);
     const second = await claimInvitesForUser(
       'newuser',
       'newcomer@example.com',
-      LAYOUT
+      getLayout
     );
 
     expect(second.claimedGb).toBe(0);

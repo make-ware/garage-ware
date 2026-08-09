@@ -87,10 +87,30 @@ export async function requireAdmin(req: Request): Promise<{
 }
 
 /**
+ * The one superuser client, kept alive between requests.
+ *
+ * `authWithPassword` runs a bcrypt verification server-side — tens of
+ * milliseconds — and several handlers on the dashboard's critical path need
+ * privileged reads (transfer labels, invite pickup, the Garage cluster cache,
+ * whose collection rules are all null). Minting a fresh client per call paid
+ * that cost every time, for a token that stays valid for days.
+ *
+ * Safe to share: `autoCancellation(false)` means one request cannot abort
+ * another's in-flight call, and nothing per-request is stored on the instance —
+ * caller identity lives on the separate client `getServerUser` builds.
+ */
+let superuserPb: TypedPocketBase | null = null;
+/** In flight while authenticating, so N parallel misses cost one bcrypt. */
+let superuserAuth: Promise<TypedPocketBase> | null = null;
+
+/**
  * Authenticate as a PocketBase superuser using env credentials. Used for
  * trusted admin-only operations that must bypass collection rules.
  */
 export async function getPbAsSuperuser(): Promise<TypedPocketBase> {
+  if (superuserPb?.authStore.isValid) return superuserPb;
+  if (superuserAuth) return superuserAuth;
+
   const email = process.env.POCKETBASE_ADMIN_EMAIL;
   const password = process.env.POCKETBASE_ADMIN_PASSWORD;
   if (!email || !password) {
@@ -99,14 +119,26 @@ export async function getPbAsSuperuser(): Promise<TypedPocketBase> {
       'POCKETBASE_ADMIN_EMAIL/PASSWORD not configured for privileged operation'
     );
   }
-  const pb = new PocketBase(PB_URL);
-  pb.autoCancellation(false);
+
+  superuserAuth = (async () => {
+    const pb = new PocketBase(PB_URL);
+    pb.autoCancellation(false);
+    try {
+      await pb.collection('_superusers').authWithPassword(email, password);
+    } catch {
+      throw new HttpError(500, 'Failed to authenticate PocketBase superuser');
+    }
+    return pb as unknown as TypedPocketBase;
+  })();
+
   try {
-    await pb.collection('_superusers').authWithPassword(email, password);
-  } catch {
-    throw new HttpError(500, 'Failed to authenticate PocketBase superuser');
+    superuserPb = await superuserAuth;
+    return superuserPb;
+  } finally {
+    // Cleared either way: a failed auth must not be handed to the next caller,
+    // and a successful one is served from `superuserPb` from here on.
+    superuserAuth = null;
   }
-  return pb as unknown as TypedPocketBase;
 }
 
 /** Convert thrown HttpError into a Response; rethrow others. */

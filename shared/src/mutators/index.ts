@@ -10,3 +10,4 @@ export * from './storage-user-balance';
 export * from './storage-transfer';
 export * from './storage-invite';
 export * from './node-metric';
+export * from './garage-cluster-cache';

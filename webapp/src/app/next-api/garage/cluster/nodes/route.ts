@@ -1,4 +1,8 @@
-import { GarageClient, cluster } from '@/lib/garage';
+import {
+  getCachedLayout,
+  getCachedReplicationFactor,
+  getCachedStatus,
+} from '@/lib/garage/cached';
 import { errorResponse, getServerUser } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -6,11 +10,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   try {
     await getServerUser(req);
-    const garage = GarageClient.fromEnv();
+    // Cached: this is the dashboard's critical path, and all three of these
+    // were live admin-API calls on every load — `GetClusterStatus` fans out to
+    // every peer. Display only; nothing here decides whether capacity exists.
     const [layout, replicationFactor, status] = await Promise.all([
-      cluster.getLayout(garage),
-      cluster.getReplicationFactor(garage),
-      cluster.getStatus(garage),
+      getCachedLayout(),
+      getCachedReplicationFactor(),
+      getCachedStatus(),
     ]);
     const diskByNode = new Map(
       status.nodes.map((n) => [

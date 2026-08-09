@@ -15,6 +15,7 @@ import type {
   StorageTransfer,
   StorageInvite,
   NodeMetric,
+  GarageClusterCache,
 } from '@garage-ware/shared';
 import type { NodeClaimPosition } from '@/lib/storage/ledger-math';
 
@@ -34,6 +35,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
   collection(idOrName: 'StorageInvites'): RecordService<StorageInvite>;
   collection(idOrName: 'NodeMetrics'): RecordService<NodeMetric>;
+  collection(idOrName: 'GarageClusterCache'): RecordService<GarageClusterCache>;
 }
 
 /**

@@ -131,11 +131,19 @@ export interface ClaimResult {
  * on. Nothing here can push a user past the "may only give away unallocated
  * capacity" invariant — the same `availableGb` that guards a direct transfer
  * guards each conversion.
+ *
+ * The layout arrives as a thunk rather than a value because the overwhelmingly
+ * common call has nothing pending, and fetching the layout to discover that
+ * put a live Garage round trip in front of every dashboard load. It stays a
+ * *live* fetch when it does happen: this writes transfers, so it is a
+ * validator, and a validator must not spend capacity against a cached layout.
+ * Awaited once, outside the loop — every invite in one pass is settled against
+ * the same view of the cluster.
  */
 export async function claimInvitesForUser(
   userId: string,
   email: string,
-  layout: ClusterLayout
+  getLayout: () => Promise<ClusterLayout>
 ): Promise<ClaimResult> {
   const superuserPb = await getPbAsSuperuser();
   const invites = new StorageInviteMutator(superuserPb);
@@ -143,6 +151,8 @@ export async function claimInvitesForUser(
 
   const result: ClaimResult = { claimed: [], failed: [], claimedGb: 0 };
   if (pending.items.length === 0) return result;
+
+  const layout = await getLayout();
 
   // Oldest first: whoever promised first gets paid first when the sender can
   // no longer cover everything they promised.

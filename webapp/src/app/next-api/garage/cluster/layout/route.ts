@@ -1,4 +1,7 @@
-import { GarageClient, cluster } from '@/lib/garage';
+import {
+  getCachedLayout,
+  getCachedReplicationFactor,
+} from '@/lib/garage/cached';
 import { errorResponse, requireAdmin } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -6,10 +9,11 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   try {
     await requireAdmin(req);
-    const garage = GarageClient.fromEnv();
+    // Cached — an admin display of the layout. Mutation paths that must not
+    // act on a stale layout call `cluster.getLayout` directly.
     const [layout, replicationFactor] = await Promise.all([
-      cluster.getLayout(garage),
-      cluster.getReplicationFactor(garage),
+      getCachedLayout(),
+      getCachedReplicationFactor(),
     ]);
     return Response.json({ ...layout, replicationFactor });
   } catch (err) {
