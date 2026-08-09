@@ -30,7 +30,6 @@
     "format": "yarn workspaces foreach -A run format",
     "format:check": "yarn workspaces foreach -A run format:check",
     "clean": "yarn workspaces foreach -R run clean && rm -rf pocketbase/pocketbase",
-    "typegen": "yarn workspace @garage-ware/shared typegen",
     "check:refs": "node scripts/check-tracked-inputs.mjs",
     "precommit": "yarn run check:refs && yarn run build:shared && yarn run lint && yarn run typecheck && yarn run format && yarn run test",
     "db:migrate": "yarn workspace @garage-ware/shared migrate:generate",

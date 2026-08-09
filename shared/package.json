@@ -48,8 +48,7 @@
     "test:watch": "echo 'No tests yet'",
     "test:coverage": "echo 'No tests yet'",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "typegen": "pocketbase-typegen --url http://localhost:8090 --out src/types/pocketbase.ts"
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "pocketbase": "^0.26.9",
@@ -64,7 +63,6 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.4",
     "nodemon": "^3.1.14",
-    "pocketbase-typegen": "^1.5.0",
     "prettier": "^3.9.6",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
