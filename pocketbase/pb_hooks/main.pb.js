@@ -619,3 +619,66 @@ cronAdd("bucket-usage-alerts", "0 9 * * *", () => {
     `[bucket-usage-alerts] emailed ${emailedUsers} user(s), checked ${checkedBuckets} bucket(s), skipped ${skippedBuckets}, errors=${errors}`
   );
 });
+
+// ---------------------------------------------------------------------------
+// Per-node metrics time-series (NodeMetrics).
+//
+// Every 15 minutes: two calls to the central Garage admin API (GetClusterStatus,
+// GetNodeStatistics?node=*) become one NodeMetrics row per node — uptime,
+// data/metadata partition space, resync queue/errors. The scrape needs
+// GARAGE_ADMIN_URL + GARAGE_ADMIN_TOKEN in the PB process env (the pb dev
+// script sources ../webapp/.env; Docker passes them with `docker run -e`) and
+// warns-and-skips when they are absent, like APP_PUBLIC_URL above. The same
+// run prunes rows older than NODE_METRICS_RETENTION_DAYS (default 90).
+
+cronAdd("node-metrics-scrape", "*/15 * * * *", () => {
+  const { scrapeOnce } = require(`${__hooks}/lib/node-metrics.js`);
+  try {
+    const result = scrapeOnce($app, { prune: true });
+    if (result.skipped) return; // scrapeOnce already warned
+    console.log(
+      `[node-metrics] recorded ${result.recorded} node(s), statsFailed=${result.statsFailed}, pruned=${result.pruned}, errors=${result.errors}`
+    );
+  } catch (err) {
+    console.error("[node-metrics] scrape failed:", err);
+  }
+});
+
+// Scrape on demand. Superuser-only, proxied by the admin-gated Next.js route
+// at /next-api/garage/node-metrics/scrape — same shape as the storage-balances
+// rebuild above, and the same reason: one implementation, shared with the
+// cron. Skips the prune so a manual "record a sample now" stays cheap. 503 on
+// a skipped run lets the UI say "env not configured" instead of a fake OK.
+routerAdd(
+  "POST",
+  "/api/node-metrics/scrape",
+  (e) => {
+    const { scrapeOnce } = require(`${__hooks}/lib/node-metrics.js`);
+    const result = scrapeOnce(e.app, { prune: false });
+    return e.json(result.skipped ? 503 : 200, result);
+  },
+  $apis.requireSuperuserAuth()
+);
+
+// Bucketed history for the /dashboard/metrics charts, proxied by the Next.js
+// route at /next-api/garage/node-metrics, which any signed-in user may call
+// (this endpoint itself stays superuser-only). The aggregation lives here
+// rather than in the webapp because the raw window is large (30d ≈ 23k rows)
+// and this read is in-process, while the webapp would have to page it over
+// HTTP. Number fields that were recorded as "no reading" (see the NodeMetrics
+// migration) come out of here as real JSON nulls.
+routerAdd(
+  "GET",
+  "/api/node-metrics/history",
+  (e) => {
+    const { RANGES, historyFor } = require(`${__hooks}/lib/node-metrics.js`);
+    const range = e.request.url.query().get("range") || "24h";
+    if (!RANGES[range]) {
+      return e.json(400, {
+        message: `unknown range "${range}" — expected one of: ${Object.keys(RANGES).join(", ")}`,
+      });
+    }
+    return e.json(200, historyFor(e.app, range));
+  },
+  $apis.requireSuperuserAuth()
+);

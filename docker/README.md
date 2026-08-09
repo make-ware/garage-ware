@@ -132,6 +132,8 @@ no default; `GARAGE_S3_REGION` defaults to `us-east-1`.
 
 `APP_PUBLIC_URL` is read by the PocketBase daily `bucket-usage-alerts` cron to build absolute CTA links in alert emails. If unset, the cron skips sending and logs a warning.
 
+`GARAGE_ADMIN_URL` / `GARAGE_ADMIN_TOKEN` are also read by the PocketBase `node-metrics-scrape` cron (every 15 minutes, feeds the `/dashboard/metrics` charts) — supervisord children inherit the container env, so the `-e` flags above cover it. If unset, that cron skips and logs a warning. `NODE_METRICS_RETENTION_DAYS` (optional, default 90, `0` = keep forever) bounds how much metrics history the cron keeps; add it as another `-e` flag to change it.
+
 See [.env.example](../.env.example) for the full list.
 
 ## Logs

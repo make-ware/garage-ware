@@ -2,7 +2,14 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Menu, LogOut, Settings, HardDrive, KeyRound } from 'lucide-react';
+import {
+  Menu,
+  LogOut,
+  Settings,
+  HardDrive,
+  KeyRound,
+  ChartLine,
+} from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
@@ -57,6 +64,7 @@ export function NavigationBar({ className }: NavigationBarProps) {
     { href: '/dashboard', label: 'Dashboard', icon: HardDrive },
     { href: '/dashboard/buckets', label: 'Buckets', icon: HardDrive },
     { href: '/dashboard/keys', label: 'Access Keys', icon: KeyRound },
+    { href: '/dashboard/metrics', label: 'Metrics', icon: ChartLine },
     { href: '/profile', label: 'Profile', icon: Settings },
   ];
 

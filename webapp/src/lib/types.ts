@@ -14,6 +14,7 @@ import type {
   StorageUserBalance,
   StorageTransfer,
   StorageInvite,
+  NodeMetric,
 } from '@garage-ware/shared';
 import type { NodeClaimPosition } from '@/lib/storage/ledger-math';
 
@@ -32,6 +33,7 @@ export interface TypedPocketBase extends PocketBase {
   ): RecordService<StorageUserBalance>;
   collection(idOrName: 'StorageTransfers'): RecordService<StorageTransfer>;
   collection(idOrName: 'StorageInvites'): RecordService<StorageInvite>;
+  collection(idOrName: 'NodeMetrics'): RecordService<NodeMetric>;
 }
 
 /**
@@ -73,4 +75,37 @@ export interface StorageSummary {
   netGrantedGb: number;
   allocatedGb: number;
   availableGb: number;
+}
+
+/** One node's identity as `GET /next-api/garage/node-metrics` reports it. */
+export interface MetricNode {
+  node_id: string;
+  node_hostname: string;
+  node_zone: string;
+}
+
+/**
+ * One (node, time-bucket) aggregate from the metrics history. `null` means
+ * "no valid reading in this bucket" — a chart gap, never a zero (see the
+ * NodeMetrics schema notes in shared/src/schema/node-metric.ts).
+ */
+export interface MetricPoint {
+  t: number;
+  node_id: string;
+  samples: number;
+  uptime_pct: number;
+  resync_queue_length: number | null;
+  resync_errored_blocks: number | null;
+  data_total_bytes: number | null;
+  data_available_bytes: number | null;
+  meta_total_bytes: number | null;
+  meta_available_bytes: number | null;
+}
+
+/** `GET /next-api/garage/node-metrics` — bucketed per-node history. */
+export interface NodeMetricsHistory {
+  range: string;
+  bucketSeconds: number;
+  nodes: MetricNode[];
+  points: MetricPoint[];
 }

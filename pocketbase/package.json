@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "./pocketbase serve",
+    "dev": "sh -c 'set -a; [ -f ../webapp/.env ] && . ../webapp/.env; set +a; exec ./pocketbase serve'",
     "build": "echo 'PocketBase workspace - no build needed'",
     "test": "echo 'PocketBase workspace - no tests needed'",
     "test:watch": "echo 'PocketBase workspace - no tests needed'",

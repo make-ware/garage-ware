@@ -40,12 +40,21 @@ function ChartContainer({
   className,
   children,
   config,
+  initialDimension = { width: 512, height: 256 },
   ...props
 }: React.ComponentProps<'div'> & {
   config: ChartConfig;
   children: React.ComponentProps<
     typeof RechartsPrimitive.ResponsiveContainer
   >['children'];
+  /**
+   * Recharts initializes its measured size to -1×-1 and only corrects it
+   * after the first ResizeObserver tick, so without a positive seed every
+   * chart mount logs a dev warning ("width(-1) and height(-1) of chart
+   * should be greater than 0"). Any positive size silences it; the real
+   * measurement takes over a frame later.
+   */
+  initialDimension?: { width: number; height: number };
 }) {
   const uniqueId = React.useId();
   const chartId = `chart-${id || uniqueId.replace(/:/g, '')}`;
@@ -62,7 +71,9 @@ function ChartContainer({
         {...props}
       >
         <ChartStyle id={chartId} config={config} />
-        <RechartsPrimitive.ResponsiveContainer>
+        <RechartsPrimitive.ResponsiveContainer
+          initialDimension={initialDimension}
+        >
           {children}
         </RechartsPrimitive.ResponsiveContainer>
       </div>
@@ -119,7 +130,9 @@ function ChartTooltipContent({
   color,
   nameKey,
   labelKey,
-}: TooltipContentProps<string | number, string | number> &
+}: // Partial: recharts injects payload/active/coordinate/… into the element
+// passed as `content` at render time, so callers construct it without them.
+Partial<TooltipContentProps<string | number, string | number>> &
   React.ComponentProps<'div'> & {
     hideLabel?: boolean;
     hideIndicator?: boolean;

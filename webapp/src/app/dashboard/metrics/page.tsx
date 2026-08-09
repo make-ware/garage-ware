@@ -1,0 +1,517 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { ArrowLeft } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
+import { toast } from 'sonner';
+import { ProtectedRoute } from '@/components/auth/protected-route';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from '@/components/ui/chart';
+import { useAdminStatus } from '@/hooks/use-admin-status';
+import { api, ApiError } from '@/lib/api-client';
+import type { MetricNode, MetricPoint, NodeMetricsHistory } from '@/lib/types';
+import { formatBytes } from '@/lib/format';
+
+const RANGES = ['6h', '24h', '7d', '30d'] as const;
+type Range = (typeof RANGES)[number];
+
+// The validated 8-slot categorical palette (see the dataviz reference
+// palette): identical hues in both columns, each stepped for its surface.
+// The ORDER is the CVD-safety mechanism — do not reorder or extend without
+// re-running the validator; both columns pass every gate against this app's
+// card surfaces (dark #0f172b, light #ffffff). Slots are assigned to nodes
+// sorted by node_id, so a node keeps its color across ranges and reloads.
+const PALETTE: Array<{ light: string; dark: string }> = [
+  { light: '#2a78d6', dark: '#3987e5' }, // blue
+  { light: '#eb6834', dark: '#d95926' }, // orange
+  { light: '#1baf7a', dark: '#199e70' }, // aqua
+  { light: '#eda100', dark: '#c98500' }, // yellow
+  { light: '#e87ba4', dark: '#d55181' }, // magenta
+  { light: '#008300', dark: '#008300' }, // green
+  { light: '#4a3aa7', dark: '#9085e9' }, // violet
+  { light: '#e34948', dark: '#e66767' }, // red
+];
+
+const compactNumber = new Intl.NumberFormat('en', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+
+/** Chart series key for a node — short, and CSS-var safe (hex id). */
+function nodeKeyFor(node: MetricNode): string {
+  return `n${node.node_id.slice(0, 8)}`;
+}
+
+function nodeLabelFor(node: MetricNode): string {
+  return node.node_hostname || `${node.node_id.slice(0, 12)}…`;
+}
+
+/** One row per time bucket, `${nodeKey}` → plotted value (absent = gap). */
+type ChartRow = { t: number } & Record<string, number>;
+
+/**
+ * Pivot the long-format points into recharts rows for one metric. `pick`
+ * returning null keeps the key off the row entirely, which recharts renders
+ * as a gap (with connectNulls off) rather than a zero — the difference
+ * between "no reading" and "queue is empty".
+ */
+function pivot(
+  points: MetricPoint[],
+  keyById: Map<string, string>,
+  pick: (p: MetricPoint) => number | null,
+  extras?: (p: MetricPoint) => Record<string, number> | null
+): ChartRow[] {
+  const byT = new Map<number, ChartRow>();
+  for (const p of points) {
+    const key = keyById.get(p.node_id);
+    if (!key) continue;
+    let row = byT.get(p.t);
+    if (!row) {
+      row = { t: p.t };
+      byT.set(p.t, row);
+    }
+    const value = pick(p);
+    if (value !== null) row[key] = value;
+    if (extras) {
+      const extra = extras(p);
+      if (extra) {
+        for (const [suffix, v] of Object.entries(extra)) {
+          row[`${key}__${suffix}`] = v;
+        }
+      }
+    }
+  }
+  return [...byT.values()].sort((a, b) => a.t - b.t);
+}
+
+function usedPct(
+  total: number | null,
+  available: number | null
+): number | null {
+  if (total === null || total <= 0) return null;
+  return (100 * (total - (available ?? 0))) / total;
+}
+
+interface MetricChartProps {
+  title: string;
+  description: string;
+  data: ChartRow[];
+  config: ChartConfig;
+  nodeKeys: string[];
+  range: Range;
+  yDomain?: [number, number];
+  /** Formats the plotted value in tooltips and the Y axis. */
+  formatValue: (value: number) => string;
+  /** Extra tooltip detail per series, from the row's `${key}__*` fields. */
+  formatDetail?: (row: ChartRow, key: string) => string | null;
+  /** stepAfter suits 0/100 uptime samples; monotone everything else. */
+  curve?: 'monotone' | 'stepAfter';
+}
+
+function MetricChart({
+  title,
+  description,
+  data,
+  config,
+  nodeKeys,
+  range,
+  yDomain,
+  formatValue,
+  formatDetail,
+  curve = 'monotone',
+}: MetricChartProps) {
+  const formatTick = (t: number) =>
+    range === '6h' || range === '24h'
+      ? new Date(t).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {data.length === 0 ? (
+          <p className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+            No data in this range.
+          </p>
+        ) : (
+          <ChartContainer config={config} className="aspect-auto h-64 w-full">
+            <LineChart data={data} margin={{ left: 4, right: 12, top: 4 }}>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="t"
+                type="number"
+                scale="time"
+                domain={['dataMin', 'dataMax']}
+                tickLine={false}
+                axisLine={false}
+                minTickGap={48}
+                tickFormatter={formatTick}
+              />
+              <YAxis
+                domain={yDomain ?? ['auto', 'auto']}
+                tickLine={false}
+                axisLine={false}
+                width={48}
+                tickFormatter={(v: number) => formatValue(v)}
+              />
+              <ChartTooltip
+                content={
+                  <ChartTooltipContent
+                    labelFormatter={(_, payload) => {
+                      const t = payload?.[0]?.payload?.t;
+                      return typeof t === 'number'
+                        ? new Date(t).toLocaleString([], {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : '';
+                    }}
+                    formatter={(value, name, item) => {
+                      const key = String(name);
+                      const detail = formatDetail
+                        ? formatDetail(item.payload as ChartRow, key)
+                        : null;
+                      return (
+                        <div className="flex w-full items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+                            style={{ backgroundColor: item.color }}
+                          />
+                          <span className="flex-1 text-muted-foreground">
+                            {config[key]?.label ?? key}
+                          </span>
+                          <span className="font-mono font-medium tabular-nums text-foreground">
+                            {formatValue(Number(value))}
+                            {detail ? (
+                              <span className="text-muted-foreground">
+                                {' '}
+                                · {detail}
+                              </span>
+                            ) : null}
+                          </span>
+                        </div>
+                      );
+                    }}
+                  />
+                }
+              />
+              <ChartLegend
+                content={<ChartLegendContent className="flex-wrap" />}
+              />
+              {nodeKeys.map((key) => (
+                <Line
+                  key={key}
+                  dataKey={key}
+                  type={curve}
+                  stroke={`var(--color-${key})`}
+                  strokeWidth={2}
+                  dot={false}
+                  connectNulls={false}
+                  isAnimationActive={false}
+                />
+              ))}
+            </LineChart>
+          </ChartContainer>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetricsView() {
+  const { isAdmin } = useAdminStatus();
+  const [range, setRange] = useState<Range>('24h');
+  const [history, setHistory] = useState<NodeMetricsHistory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [scraping, setScraping] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const result = await api<NodeMetricsHistory>(
+          '/next-api/garage/node-metrics',
+          { query: { range } }
+        );
+        if (cancelled) return;
+        setHistory(result);
+        setError(null);
+      } catch (err) {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : 'Failed to load');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [range, refreshKey]);
+
+  const scrapeNow = async () => {
+    setScraping(true);
+    try {
+      const result = await api<{ recorded: number; statsFailed: number }>(
+        '/next-api/garage/node-metrics/scrape',
+        { method: 'POST' }
+      );
+      toast.success(
+        `Recorded ${result.recorded} node sample${result.recorded === 1 ? '' : 's'}` +
+          (result.statsFailed > 0
+            ? ` (${result.statsFailed} without resync stats)`
+            : '')
+      );
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError && err.status === 503
+          ? 'PocketBase is missing GARAGE_ADMIN_URL/GARAGE_ADMIN_TOKEN — the scraper cannot reach the cluster.'
+          : err instanceof Error
+            ? err.message
+            : 'Scrape failed'
+      );
+    } finally {
+      setScraping(false);
+    }
+  };
+
+  // The API sorts nodes by node_id; slot i of the palette belongs to node i,
+  // so colors are stable as long as the node set is. Nodes beyond the 8
+  // validated slots are not charted (a 9th hue is never generated) — with
+  // more than 8 nodes this page needs faceting instead.
+  const nodes = useMemo(
+    () => (history?.nodes ?? []).slice(0, PALETTE.length),
+    [history]
+  );
+  const hiddenNodes = (history?.nodes.length ?? 0) - nodes.length;
+
+  const keyById = useMemo(
+    () => new Map(nodes.map((n) => [n.node_id, nodeKeyFor(n)])),
+    [nodes]
+  );
+  const nodeKeys = useMemo(() => nodes.map(nodeKeyFor), [nodes]);
+
+  const chartConfig = useMemo(() => {
+    const config: ChartConfig = {};
+    nodes.forEach((node, i) => {
+      config[nodeKeyFor(node)] = {
+        label: nodeLabelFor(node),
+        theme: PALETTE[i],
+      };
+    });
+    return config;
+  }, [nodes]);
+
+  const points = useMemo(() => history?.points ?? [], [history]);
+
+  const uptimeData = useMemo(
+    () => pivot(points, keyById, (p) => p.uptime_pct),
+    [points, keyById]
+  );
+  const dataSpaceData = useMemo(
+    () =>
+      pivot(
+        points,
+        keyById,
+        (p) => usedPct(p.data_total_bytes, p.data_available_bytes),
+        (p) =>
+          p.data_total_bytes && p.data_total_bytes > 0
+            ? {
+                used: p.data_total_bytes - (p.data_available_bytes ?? 0),
+                total: p.data_total_bytes,
+              }
+            : null
+      ),
+    [points, keyById]
+  );
+  const metaSpaceData = useMemo(
+    () =>
+      pivot(
+        points,
+        keyById,
+        (p) => usedPct(p.meta_total_bytes, p.meta_available_bytes),
+        (p) =>
+          p.meta_total_bytes && p.meta_total_bytes > 0
+            ? {
+                used: p.meta_total_bytes - (p.meta_available_bytes ?? 0),
+                total: p.meta_total_bytes,
+              }
+            : null
+      ),
+    [points, keyById]
+  );
+  const resyncQueueData = useMemo(
+    () => pivot(points, keyById, (p) => p.resync_queue_length),
+    [points, keyById]
+  );
+  const resyncErroredData = useMemo(
+    () => pivot(points, keyById, (p) => p.resync_errored_blocks),
+    [points, keyById]
+  );
+
+  const pct = (v: number) => `${v.toFixed(v >= 100 ? 0 : 1)}%`;
+  const count = (v: number) => compactNumber.format(v);
+  const spaceDetail = (row: ChartRow, key: string) => {
+    const used = row[`${key}__used`];
+    const total = row[`${key}__total`];
+    if (used === undefined || total === undefined) return null;
+    return `${formatBytes(used)} / ${formatBytes(total)}`;
+  };
+
+  const hasData = points.length > 0;
+
+  return (
+    <div className="container mx-auto max-w-6xl space-y-6 px-4 py-8">
+      <Link
+        href="/dashboard"
+        className="text-sm text-muted-foreground hover:underline inline-flex items-center"
+      >
+        <ArrowLeft className="mr-1 h-4 w-4" /> Back to dashboard
+      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold">Cluster metrics</h1>
+          <p className="text-sm text-muted-foreground">
+            Per-node history, sampled every 15 minutes from the Garage admin
+            API.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border">
+            {RANGES.map((r) => (
+              <Button
+                key={r}
+                variant={r === range ? 'secondary' : 'ghost'}
+                size="sm"
+                className="rounded-none first:rounded-l-md last:rounded-r-md"
+                onClick={() => setRange(r)}
+              >
+                {r}
+              </Button>
+            ))}
+          </div>
+          {isAdmin && (
+            <Button size="sm" onClick={scrapeNow} disabled={scraping}>
+              {scraping ? 'Scraping…' : 'Scrape now'}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <p className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </p>
+      )}
+
+      {hiddenNodes > 0 && (
+        <p className="text-sm text-muted-foreground">
+          Showing the first {PALETTE.length} of {history?.nodes.length} nodes —
+          the color palette caps out; additional nodes are not charted.
+        </p>
+      )}
+
+      {loading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : !hasData ? (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+            No samples recorded yet. Metrics appear after the first scheduled
+            scrapes (every 15 minutes)
+            {isAdmin
+              ? ' — or use “Scrape now” to record one immediately.'
+              : '.'}
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-6">
+          <MetricChart
+            title="Uptime"
+            description="Share of samples in each interval where the node was connected"
+            data={uptimeData}
+            config={chartConfig}
+            nodeKeys={nodeKeys}
+            range={range}
+            yDomain={[0, 100]}
+            formatValue={pct}
+            curve="stepAfter"
+          />
+          <MetricChart
+            title="Data space used"
+            description="Data partition fill per node (used / total in the tooltip)"
+            data={dataSpaceData}
+            config={chartConfig}
+            nodeKeys={nodeKeys}
+            range={range}
+            yDomain={[0, 100]}
+            formatValue={pct}
+            formatDetail={spaceDetail}
+          />
+          <MetricChart
+            title="Metadata space used"
+            description="Metadata partition fill per node (used / total in the tooltip)"
+            data={metaSpaceData}
+            config={chartConfig}
+            nodeKeys={nodeKeys}
+            range={range}
+            yDomain={[0, 100]}
+            formatValue={pct}
+            formatDetail={spaceDetail}
+          />
+          <MetricChart
+            title="Resync queue"
+            description="Blocks waiting to resynchronize, per node"
+            data={resyncQueueData}
+            config={chartConfig}
+            nodeKeys={nodeKeys}
+            range={range}
+            formatValue={count}
+          />
+          <MetricChart
+            title="Resync errored blocks"
+            description="Blocks whose resync is failing, per node"
+            data={resyncErroredData}
+            config={chartConfig}
+            nodeKeys={nodeKeys}
+            range={range}
+            formatValue={count}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function MetricsPage() {
+  return (
+    <ProtectedRoute>
+      <MetricsView />
+    </ProtectedRoute>
+  );
+}
