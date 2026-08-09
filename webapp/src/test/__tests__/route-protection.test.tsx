@@ -39,6 +39,7 @@ describe('Property Test: Route Protection', () => {
       forward: vi.fn(),
       refresh: vi.fn(),
       prefetch: vi.fn(),
+      bfcacheId: '',
     });
   });
 

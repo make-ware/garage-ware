@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -76,13 +76,6 @@ export function ChangeBucketQuotaDialog({
     error: positionError,
     loading,
   } = useOwnerPosition(ownerId, open);
-
-  useEffect(() => {
-    if (!open) {
-      setTyped('');
-      setSubmitting(false);
-    }
-  }, [open]);
 
   const targetObjects = objectsText.trim() === '' ? 0 : Number(objectsText);
 

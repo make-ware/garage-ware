@@ -1,6 +1,13 @@
-/// <reference path="./pb_data/types.d.ts" />
 // PocketBase JavaScript Hooks
 // Documentation: https://pocketbase.io/docs/js-overview/
+//
+// Editor typings for the JSVM globals ($app, $os, $http, onRecordCreateRequest,
+// ...) come from ../jsconfig.json, which pulls in pb_data/types.d.ts once the
+// binary has written it. Do NOT re-add a triple-slash reference to that file
+// here or in pb_hooks/lib/*: pb_data/ is gitignored, and webapp tests import
+// from pb_hooks/lib, so the dangling reference fails tsc (TS6053) on any
+// checkout that has never run PocketBase — CI included. `yarn check:refs`
+// guards this.
 
 // ---------------------------------------------------------------------------
 // StorageClaims audit trail

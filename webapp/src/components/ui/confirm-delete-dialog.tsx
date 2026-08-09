@@ -46,18 +46,22 @@ export function ConfirmDeleteDialog({
   const [typed, setTyped] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
 
-  React.useEffect(() => {
-    if (!open) {
+  // Clear the challenge on the way out. The dialog stays mounted behind its
+  // trigger, so this rides on the close event rather than an effect watching
+  // `open` — which also keeps it correct when the parent controls `open`.
+  function handleOpenChange(next: boolean) {
+    if (!next) {
       setTyped('');
       setSubmitting(false);
     }
-  }, [open]);
+    setOpen(next);
+  }
 
   async function handleConfirm() {
     setSubmitting(true);
     try {
       await onConfirm();
-      setOpen(false);
+      handleOpenChange(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
       setSubmitting(false);
@@ -67,7 +71,7 @@ export function ConfirmDeleteDialog({
   const matches = typed === confirmText;
 
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
+    <AlertDialog open={open} onOpenChange={handleOpenChange}>
       {trigger && <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>}
       <AlertDialogContent>
         <AlertDialogHeader>

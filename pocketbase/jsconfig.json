@@ -1,0 +1,27 @@
+{
+  // Editor-only project for the Goja hook/migration sources. It exists so the
+  // JSVM typings reach those files WITHOUT a `/// <reference path=...>` line in
+  // each one: pb_data/ is gitignored runtime state (the binary writes types.d.ts
+  // on first start), and a tracked file pointing at an untracked one breaks any
+  // tsc run that pulls it in — webapp/src/lib/metrics/node-metrics-lib.test.ts
+  // imports pb_hooks/lib/node-metrics.js across the workspace boundary, so a
+  // fresh CI checkout failed `next build` with TS6053 "File ... not found".
+  //
+  // The include entry below is a wildcard on purpose: a pattern that matches
+  // nothing is silently ignored, so a checkout that has never run PocketBase
+  // still opens cleanly, just without hook typings. Run PB once to get them.
+  "compilerOptions": {
+    "target": "ES2017",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    // Goja is not Node: leaving @types/node in scope would make `process` and
+    // `Buffer` autocomplete in a hook that would blow up on them at runtime.
+    "types": []
+  },
+  "include": ["pb_data/*.d.ts", "pb_hooks/**/*.js", "pb_migrations/**/*.js"],
+  "exclude": ["node_modules", "pb_data/backups", "pb_data/storage"]
+}

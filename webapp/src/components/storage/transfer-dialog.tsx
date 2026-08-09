@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -50,14 +50,17 @@ export function TransferDialog({
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Re-seed each time it opens, so a cancelled attempt is not half-remembered.
-  useEffect(() => {
-    if (open) {
+  // Clear on the way out, so a cancelled attempt is not half-remembered the
+  // next time it opens. The dialog stays mounted between opens, so this rides
+  // on the close event rather than an effect watching `open`.
+  function handleOpenChange(next: boolean) {
+    if (!next) {
       setEmail('');
       setAmountGb(0);
       setNote('');
     }
-  }, [open]);
+    onOpenChange(next);
+  }
 
   // Pending invites promise capacity without reserving it, so the server takes
   // them off the top. Show the same figure the server will check against.
@@ -92,7 +95,7 @@ export function TransferDialog({
           ? `Invite sent to ${email.trim()} — the storage lands when they sign up`
           : `${formatStorage(amountGb)} transferred to ${email.trim()}`
       );
-      onOpenChange(false);
+      handleOpenChange(false);
       await onSent();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Transfer failed');
@@ -102,7 +105,7 @@ export function TransferDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
@@ -164,7 +167,7 @@ export function TransferDialog({
             <Button
               type="button"
               variant="ghost"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
             >
               Cancel
             </Button>

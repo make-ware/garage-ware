@@ -39,18 +39,21 @@ export function OtpConfirmDeleteDialog({
   const [typed, setTyped] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
 
-  React.useEffect(() => {
-    if (!open) {
+  // Clear the challenge on the way out; the dialog stays mounted behind its
+  // trigger, so this belongs on the close event rather than in an effect.
+  function handleOpenChange(next: boolean) {
+    if (!next) {
       setTyped('');
       setSubmitting(false);
     }
-  }, [open]);
+    setOpen(next);
+  }
 
   async function handleConfirm() {
     setSubmitting(true);
     try {
       await onConfirm();
-      setOpen(false);
+      handleOpenChange(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
       setSubmitting(false);
@@ -62,7 +65,7 @@ export function OtpConfirmDeleteDialog({
   return (
     <OtpGatedDialog
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={handleOpenChange}
       actionLabel={otpActionLabel}
       trigger={trigger}
     >
@@ -88,7 +91,7 @@ export function OtpConfirmDeleteDialog({
       <DialogFooter>
         <Button
           variant="outline"
-          onClick={() => setOpen(false)}
+          onClick={() => handleOpenChange(false)}
           disabled={submitting}
         >
           Cancel

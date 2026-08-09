@@ -84,6 +84,8 @@ function AdminClaimsView() {
   const [formUser, setFormUser] = useState<string>('');
   const [formNode, setFormNode] = useState<string>('');
   const [formQuotaGib, setFormQuotaGib] = useState<number>(0);
+  // Which (user, node, seed) the amount field was last seeded for; see below.
+  const [seededKey, setSeededKey] = useState<string | null>(null);
   const [formNote, setFormNote] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -185,26 +187,35 @@ function AdminClaimsView() {
   // the adjustment rather than the new total. The offer is snapped down to the
   // input's own precision so the number in the box is exactly the number that
   // gets posted.
-  useEffect(() => {
-    if (!formNode) return;
-    const hasExisting =
-      formUser && effectiveByUserNode.has(userNodeKey(formUser, formNode));
-    if (hasExisting) {
-      setFormQuotaGib(0);
-      return;
-    }
-    const usableGb =
-      nodeUsableGbInLayout(layout, formNode, replicationFactor) ?? 0;
-    const allocatedGb = claimsByNode.get(formNode) ?? 0;
-    setFormQuotaGib(snapGibForInput(Math.max(usableGb - allocatedGb, 0)));
-  }, [
-    formUser,
-    formNode,
-    layout,
-    replicationFactor,
-    claimsByNode,
-    effectiveByUserNode,
-  ]);
+  //
+  // Adjusted during render rather than from an effect. The seed depends on the
+  // live layout as well as the selection, so an effect showed one frame of the
+  // previous pair's number before correcting itself; keying on the seed value
+  // means a reload that does not move the number leaves the admin's typing be.
+  const seedHasExisting = Boolean(
+    formUser &&
+    formNode &&
+    effectiveByUserNode.has(userNodeKey(formUser, formNode))
+  );
+  const seedQuotaGib = !formNode
+    ? null
+    : seedHasExisting
+      ? 0
+      : snapGibForInput(
+          Math.max(
+            (nodeUsableGbInLayout(layout, formNode, replicationFactor) ?? 0) -
+              (claimsByNode.get(formNode) ?? 0),
+            0
+          )
+        );
+  const seedKey =
+    seedQuotaGib === null
+      ? null
+      : `${formUser}\u0000${formNode}\u0000${seedQuotaGib}`;
+  if (seedQuotaGib !== null && seedKey !== seededKey) {
+    setSeededKey(seedKey);
+    setFormQuotaGib(seedQuotaGib);
+  }
 
   // Load a row's audit trail the first time it is expanded. Cheap per row, and
   // the alternative — fetching the whole trail up front — scales with cluster
@@ -728,6 +739,9 @@ function AdminClaimsView() {
 
       {setClaimTarget && (
         <SetClaimDialog
+          // Keyed by the (user, node) pair the dialog is editing: a new target
+          // remounts it, so targetGb re-seeds from currentGb by construction.
+          key={`${setClaimTarget.group.userId}:${setClaimTarget.group.nodeId}`}
           open
           onOpenChange={(open) => {
             if (!open) setSetClaimTarget(null);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -49,12 +49,15 @@ export function InviteUserDialog({
     resolver: zodResolver(InviteSchema),
   });
 
-  useEffect(() => {
-    if (!open) {
+  // The dialog stays mounted between opens, so the form is cleared on the way
+  // out rather than by an effect watching `open`.
+  function handleOpenChange(next: boolean) {
+    if (!next) {
       reset();
       setSubmitting(false);
     }
-  }, [open, reset]);
+    onOpenChange(next);
+  }
 
   const onSubmit = async (data: InviteData) => {
     setSubmitting(true);
@@ -65,7 +68,7 @@ export function InviteUserDialog({
       });
       toast.success(`Invitation sent to ${data.email}`);
       await onInvited?.();
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Invite failed';
       // Surface a duplicate-email conflict on the field it belongs to.
@@ -81,7 +84,7 @@ export function InviteUserDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Invite user</DialogTitle>
@@ -130,7 +133,7 @@ export function InviteUserDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={submitting}
             >
               Cancel

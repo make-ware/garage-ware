@@ -55,10 +55,30 @@ function KeysView() {
     setKeys(result.items);
   }
 
+  // The initial load is inlined rather than calling refresh() straight from the
+  // effect body: every setState has to sit inside an async callback, behind a
+  // cancelled flag, so a unmount mid-flight cannot write to a dead component.
   useEffect(() => {
-    refresh()
-      .catch((err) => toast.error(err.message))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const result = await api<{ items: AccessKey[] }>(
+          '/next-api/garage/keys'
+        );
+        if (!cancelled) setKeys(result.items);
+      } catch (err) {
+        if (!cancelled)
+          toast.error(
+            err instanceof Error ? err.message : 'Failed to load keys'
+          );
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function createKey(e: React.FormEvent) {

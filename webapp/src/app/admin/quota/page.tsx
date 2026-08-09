@@ -534,6 +534,10 @@ export default function AdminQuotaPage() {
 
       {quotaTarget && (
         <ChangeBucketQuotaDialog
+          // Keyed by bucket so switching rows remounts the dialog and its
+          // fields re-seed from the new bucket's props, rather than an effect
+          // writing over state the initialisers already set.
+          key={quotaTarget.id}
           open
           onOpenChange={(open) => {
             if (!open) setQuotaTarget(null);

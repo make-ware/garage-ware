@@ -132,7 +132,7 @@ export async function POST(req: Request) {
     // to leave a clean state the admin can retry.
     try {
       await pb.collection('Users').requestPasswordReset(email);
-    } catch (err) {
+    } catch {
       try {
         await pb.collection('Users').delete(created.id);
       } catch (rollbackErr) {

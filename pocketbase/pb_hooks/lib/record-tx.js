@@ -1,4 +1,3 @@
-/// <reference path="../../pb_data/types.d.ts" />
 //
 // Run a record request hook's body inside a single transaction that the record
 // write itself joins.

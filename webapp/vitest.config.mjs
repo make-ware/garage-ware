@@ -19,23 +19,23 @@ export default defineConfig({
     alias: [
       {
         find: 'server-only',
-        replacement: path.resolve(__dirname, './src/test/server-only-stub.ts'),
+        replacement: path.resolve(import.meta.dirname, './src/test/server-only-stub.ts'),
       },
       {
         find: '@garage-ware/shared/mutators',
-        replacement: path.resolve(__dirname, '../shared/src/mutators/index.ts'),
+        replacement: path.resolve(import.meta.dirname, '../shared/src/mutators/index.ts'),
       },
       {
         find: '@garage-ware/shared/schema',
-        replacement: path.resolve(__dirname, '../shared/src/schema.ts'),
+        replacement: path.resolve(import.meta.dirname, '../shared/src/schema.ts'),
       },
       {
         find: '@garage-ware/shared',
-        replacement: path.resolve(__dirname, '../shared'),
+        replacement: path.resolve(import.meta.dirname, '../shared'),
       },
       {
         find: '@',
-        replacement: path.resolve(__dirname, './src'),
+        replacement: path.resolve(import.meta.dirname, './src'),
       },
     ],
   },

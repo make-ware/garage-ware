@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -55,13 +55,6 @@ export function SetClaimDialog({
   const [targetGb, setTargetGb] = useState(currentGb);
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
-
-  // Re-seed whenever the dialog opens for a (possibly different) row.
-  useEffect(() => {
-    if (!open) return;
-    setTargetGb(currentGb);
-    setNote('');
-  }, [open, currentGb, userId, nodeId]);
 
   const deltaGb = targetGb - currentGb;
   // Growing is bounded by what the node has left; shrinking is bounded at zero,

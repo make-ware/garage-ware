@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useRouter } from 'next/navigation';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { RegisterSchema } from '@garage-ware/shared/schema';
 import type { RegisterData } from '@garage-ware/shared/schema';
@@ -60,12 +61,13 @@ export function SignupForm({
 }: SignupFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const { signup } = useAuth();
+  const router = useRouter();
 
   const {
     register,
     handleSubmit,
     formState: { errors },
-    watch,
+    control,
     setError,
   } = useForm<RegisterData>({
     resolver: zodResolver(RegisterSchema),
@@ -73,7 +75,14 @@ export function SignupForm({
     defaultValues: defaultEmail ? { email: defaultEmail } : undefined,
   });
 
-  const watchedPassword = watch('password', '');
+  // useWatch rather than the form's watch(): watch() returns a fresh function
+  // each render, which React Compiler cannot memoize, so it bails out of
+  // optimising the whole component.
+  const watchedPassword = useWatch({
+    control,
+    name: 'password',
+    defaultValue: '',
+  });
   const passwordStrength = calculatePasswordStrength(watchedPassword);
 
   const onSubmit = async (data: RegisterData) => {
@@ -90,10 +99,11 @@ export function SignupForm({
 
       if (onSuccess) {
         onSuccess();
-      } else if (redirectTo) {
-        window.location.href = redirectTo;
       } else {
-        window.location.href = '/';
+        // Client-side navigation, as every other auth form here does — a full
+        // document load would throw away the session the signup just put in
+        // memory and make the app re-bootstrap it.
+        router.push(redirectTo ?? '/');
       }
     } catch (error: unknown) {
       console.error('Signup failed:', error);

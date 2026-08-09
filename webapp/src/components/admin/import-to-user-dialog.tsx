@@ -65,12 +65,15 @@ export function ImportToUserDialog({
     };
   }, [open]);
 
-  useEffect(() => {
-    if (!open) {
+  // Selection and search are cleared on the way out; the dialog stays mounted
+  // between opens, so this belongs on the close event, not in an effect.
+  function handleOpenChange(next: boolean) {
+    if (!next) {
       setSelected(null);
       setSearch('');
     }
-  }, [open]);
+    onOpenChange(next);
+  }
 
   const needle = search.trim().toLowerCase();
   const filtered = needle
@@ -86,7 +89,7 @@ export function ImportToUserDialog({
     setSubmitting(true);
     try {
       await onConfirm(selected);
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Import failed');
     } finally {
@@ -95,7 +98,7 @@ export function ImportToUserDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -142,7 +145,7 @@ export function ImportToUserDialog({
         <DialogFooter>
           <Button
             variant="outline"
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleOpenChange(false)}
             disabled={submitting}
           >
             Cancel
