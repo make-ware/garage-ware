@@ -327,6 +327,8 @@ Tests for the client are in [webapp/src/lib/garage/garage-client.test.ts](webapp
 
 [docker/Dockerfile](docker/Dockerfile) builds a single container with Supervisor running PocketBase + Next.js + Nginx (reverse proxy on :80). All runtime state lives under a single `/data` volume — back up by snapshotting that one directory. See [docker/README.md](docker/README.md). Garage itself runs separately; the container only needs to reach `GARAGE_ADMIN_URL` over the network.
 
+**The builder stage mirrors the repo layout; only the runner renames `pocketbase/` to `pb/`.** `next build` type-checks `webapp/src/lib/metrics/node-metrics-lib.test.ts`, which imports `../../../../pocketbase/pb_hooks/lib/node-metrics.js` across the workspace boundary — staging the hooks straight to `pb/` in the builder made that a TS2307 and failed the image build while `yarn build` stayed green locally. The runtime path `/app/pb` is baked into [docker/supervisord.conf](docker/supervisord.conf), so the rename has to happen, just later. [.dockerignore](.dockerignore) keeps the host's `node_modules`, `.next`, `pb_data`, and host-arch `pocketbase/pocketbase` out of the context — CI checkouts have none of these, so a build that only ever ran in CI won't tell you they're a problem.
+
 Nginx routing inside the container:
 
 | Path | Backend |

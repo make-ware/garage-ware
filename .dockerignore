@@ -1,0 +1,18 @@
+# The image builds its own dependencies and artifacts; anything the host already
+# has must not ride along in the build context. node_modules in particular would
+# overwrite the linux/$TARGETARCH install from the deps stage with host-arch
+# native binaries, and pocketbase/pocketbase would replace the downloaded
+# PocketBase binary with the host's.
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+pocketbase/pocketbase
+pocketbase/pb_data
+data
+.git
+.github
+.yarn/cache
+.yarn/install-state.gz
+**/*.log
+**/.DS_Store

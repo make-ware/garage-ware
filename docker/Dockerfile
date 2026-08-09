@@ -42,15 +42,20 @@ RUN corepack enable && corepack prepare yarn@4.12.0 --activate
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/.yarn ./.yarn
-COPY --from=deps /app/pocketbase/pocketbase ./pb/pocketbase
 
-# Copy workspace files
+# Copy workspace files. The build tree must mirror the repo layout, not the
+# runtime one: webapp/src/lib/metrics/node-metrics-lib.test.ts imports
+# ../../../../pocketbase/pb_hooks/lib/node-metrics.js across the workspace
+# boundary, and `next build` type-checks it, so staging the hooks at pb/ here
+# left that import unresolvable (TS2307) and failed the build. The pocketbase/
+# -> pb/ rename happens in the runner stage instead.
 COPY package.json yarn.lock .yarnrc.yml* ./
 COPY webapp ./webapp
 COPY shared ./shared
-# Source lives at pb/ at runtime; pocketbase/ stub satisfies yarn workspace resolution
-COPY pocketbase ./pb
-COPY pocketbase/package.json ./pocketbase/
+COPY pocketbase ./pocketbase
+# Binary last: a local build context can carry a host-arch pocketbase/pocketbase
+# (yarn setup writes one), and the image needs the linux/$TARGETARCH download.
+COPY --from=deps /app/pocketbase/pocketbase ./pocketbase/pocketbase
 
 # Build shared package first (required by webapp)
 RUN yarn workspace @garage-ware/shared build
@@ -93,11 +98,11 @@ RUN mkdir -p /var/log/supervisor /var/run /etc/supervisor/conf.d && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx /var/run/nginx
 
 # Copy PocketBase binary
-COPY --from=builder --chown=nextjs:nodejs /app/pb/pocketbase ./pb/pocketbase
+COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/pocketbase ./pb/pocketbase
 
 # Copy PocketBase hooks and migrations
-COPY --from=builder --chown=nextjs:nodejs /app/pb/pb_hooks ./pb/pb_hooks
-COPY --from=builder --chown=nextjs:nodejs /app/pb/pb_migrations ./pb/pb_migrations
+COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/pb_hooks ./pb/pb_hooks
+COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/pb_migrations ./pb/pb_migrations
 
 # Single /data volume holds all runtime state (PocketBase DB, file uploads,
 # any future app-level dynamic storage). Bake the directory + ownership in so
@@ -115,7 +120,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.yarn ./.yarn
 # Copy workspace package.json files
 COPY --from=builder --chown=nextjs:nodejs /app/webapp/package.json ./webapp/
 COPY --from=builder --chown=nextjs:nodejs /app/shared/package.json ./shared/
-COPY --from=builder --chown=nextjs:nodejs /app/pb/package.json ./pb/
+COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/package.json ./pb/
 # Root package.json declares workspace "pocketbase" — this stub satisfies Yarn's resolution
 COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/package.json ./pocketbase/
 
