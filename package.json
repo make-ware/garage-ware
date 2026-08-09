@@ -18,7 +18,7 @@
     "pocketbase"
   ],
   "scripts": {
-    "setup": "node scripts/setup-pocketbase.js",
+    "setup": "node pocketbase/scripts/setup-pocketbase.js",
     "dev": "concurrently \"yarn workspace @garage-ware/webapp dev\" \"yarn workspace @garage-ware/shared dev\" \"yarn workspace @garage-ware/pb dev\"",
     "build": "yarn workspaces foreach -A run build",
     "build:shared": "yarn workspace @garage-ware/shared build",
@@ -41,7 +41,7 @@
     "@typescript-eslint/parser": "^8.59.2",
     "concurrently": "^9.2.1",
     "eslint": "^9.39.4",
-    "prettier": "^3.8.3",
+    "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   }
 }

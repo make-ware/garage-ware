@@ -22,7 +22,7 @@ RUN yarn install --immutable
 # matching PocketBase's release naming. POCKETBASE_ARCH override stays for
 # manual `docker build` invocations that aren't using buildx.
 ARG TARGETARCH
-ARG POCKETBASE_VERSION=0.35.1
+ARG POCKETBASE_VERSION=0.39.10
 ARG POCKETBASE_ARCH
 RUN PB_ARCH="${POCKETBASE_ARCH:-${TARGETARCH}}" && \
     mkdir -p /app/pocketbase && \

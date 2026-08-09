@@ -37,9 +37,7 @@ interface FakeUserBalance {
 }
 
 type FakeCollection =
-  | 'StorageTransfers'
-  | 'StorageNodeBalances'
-  | 'StorageUserBalances';
+  'StorageTransfers' | 'StorageNodeBalances' | 'StorageUserBalances';
 
 const store: {
   StorageTransfers: FakeTransfer[];

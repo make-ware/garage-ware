@@ -4,6 +4,7 @@ import {
   getCachedStatus,
 } from '@/lib/garage/cached';
 import { errorResponse, getServerUser } from '@/lib/auth/server';
+import type { ClusterNodeItem, ClusterNodesResponse } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,26 +19,35 @@ export async function GET(req: Request) {
       getCachedReplicationFactor(),
       getCachedStatus(),
     ]);
-    const diskByNode = new Map(
-      status.nodes.map((n) => [
-        n.id,
-        n.dataPartition
-          ? { free: n.dataPartition.available, total: n.dataPartition.total }
-          : null,
-      ])
-    );
-    const items = layout.roles.map((r) => {
-      const disk = diskByNode.get(r.id) ?? null;
+    const statusByNode = new Map(status.nodes.map((n) => [n.id, n]));
+    // This payload is served to any signed-in user. `addr` is deliberately
+    // never emitted — node network addresses stay server-side, the same
+    // reason GarageClusterCache is superuser-only. Hostname/zone/fill levels
+    // are fine (see the node-metrics route docblock).
+    const items: ClusterNodeItem[] = layout.roles.map((r) => {
+      const s = statusByNode.get(r.id);
       return {
         id: r.id,
         zone: r.zone,
         tags: r.tags ?? [],
         capacity: r.capacity ?? null,
-        diskFreeBytes: disk?.free ?? null,
-        diskTotalBytes: disk?.total ?? null,
+        hostname: s?.hostname ?? null,
+        isUp: s?.isUp ?? null,
+        draining: s?.draining ?? null,
+        garageVersion: s?.garageVersion ?? null,
+        lastSeenSecsAgo: s?.lastSeenSecsAgo ?? null,
+        diskFreeBytes: s?.dataPartition?.available ?? null,
+        diskTotalBytes: s?.dataPartition?.total ?? null,
+        metaFreeBytes: s?.metadataPartition?.available ?? null,
+        metaTotalBytes: s?.metadataPartition?.total ?? null,
       };
     });
-    return Response.json({ items, replicationFactor });
+    const body: ClusterNodesResponse = {
+      items,
+      replicationFactor,
+      layoutVersion: layout.version,
+    };
+    return Response.json(body);
   } catch (err) {
     return errorResponse(err);
   }

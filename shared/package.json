@@ -52,7 +52,7 @@
     "typegen": "pocketbase-typegen --url http://localhost:8090 --out src/types/pocketbase.ts"
   },
   "dependencies": {
-    "pocketbase": "^0.26.8",
+    "pocketbase": "^0.26.9",
     "pocketbase-zod-schema": "^1.0.2",
     "zod": "^4.4.3"
   },
@@ -61,14 +61,14 @@
     "@types/node": "^20.19.39",
     "@typescript-eslint/eslint-plugin": "^8.59.2",
     "@typescript-eslint/parser": "^8.59.2",
-    "@vitest/coverage-v8": "^2.1.9",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.4",
     "nodemon": "^3.1.14",
     "pocketbase-typegen": "^1.5.0",
-    "prettier": "^3.8.3",
+    "prettier": "^3.9.6",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.10"
   },
   "packageManager": "yarn@4.12.0"
 }

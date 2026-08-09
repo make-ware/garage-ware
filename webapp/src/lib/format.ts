@@ -8,30 +8,67 @@ import {
   toFixedFloor,
 } from '@/lib/storage/units';
 
-type FormatOpts = { decimals?: number };
+type FormatOpts = {
+  decimals?: number;
+  /**
+   * `'floor'` (the default) never overstates; `'nearest'` is for observational
+   * readings only — see {@link formatCapacity}.
+   */
+  round?: 'floor' | 'nearest';
+};
 
 /**
  * Format raw bytes with decimal (SI) units: B / KB / MB / GB / TB / PB.
  *
- * Rounds **down**, never up — see {@link toFixedFloor}. These strings are read
- * back and re-typed by admins granting capacity, so overstating a figure by a
- * rounding step produces a grant the server rejects.
+ * Rounds **down** by default, never up — see {@link toFixedFloor}. These
+ * strings are read back and re-typed by admins granting capacity, so
+ * overstating a figure by a rounding step produces a grant the server rejects.
  */
 export function formatBytes(bytes: number, opts?: FormatOpts): string {
   const d = opts?.decimals ?? 2;
+  // toFixed already rounds to nearest; toFixedFloor is the deliberate default.
+  const fixed = (value: number) =>
+    opts?.round === 'nearest' ? value.toFixed(d) : toFixedFloor(value, d);
   if (!Number.isFinite(bytes)) return `${bytes}`;
   const abs = Math.abs(bytes);
   if (abs >= PETABYTE)
-    return `${stripTrailingZeros(toFixedFloor(bytes / PETABYTE, d))} PB`;
+    return `${stripTrailingZeros(fixed(bytes / PETABYTE))} PB`;
   if (abs >= TERABYTE)
-    return `${stripTrailingZeros(toFixedFloor(bytes / TERABYTE, d))} TB`;
+    return `${stripTrailingZeros(fixed(bytes / TERABYTE))} TB`;
   if (abs >= GIGABYTE)
-    return `${stripTrailingZeros(toFixedFloor(bytes / GIGABYTE, d))} GB`;
+    return `${stripTrailingZeros(fixed(bytes / GIGABYTE))} GB`;
   if (abs >= MEGABYTE)
-    return `${stripTrailingZeros(toFixedFloor(bytes / MEGABYTE, d))} MB`;
+    return `${stripTrailingZeros(fixed(bytes / MEGABYTE))} MB`;
   if (abs >= KILOBYTE)
-    return `${stripTrailingZeros(toFixedFloor(bytes / KILOBYTE, d))} KB`;
+    return `${stripTrailingZeros(fixed(bytes / KILOBYTE))} KB`;
   return `${bytes} B`;
+}
+
+/**
+ * Hardware capacity as the cluster screens show it: one decimal, rounded to
+ * nearest.
+ *
+ * The cluster shows two figures for the same disk and they legitimately
+ * disagree — "declared" is the capacity the operator wrote into the Garage
+ * layout, "reported" is what the filesystem says it has. A 72 TB disk reports
+ * 71.99 TB, and dividing a capacity by the replication factor rarely lands
+ * anywhere round (55 TB at RF 3 is 18.3333…). At two floored decimals that
+ * noise reads as a discrepancy worth chasing; at one rounded decimal both
+ * figures say 72, which is what the operator means by a 72 TB disk.
+ *
+ * Deliberately **not** the default for {@link formatBytes}: rounding to
+ * nearest can overstate by half a step, and every figure an admin might type
+ * back into a grant — the claims table, the quota inputs, a user's balance —
+ * must keep flooring. Nothing on the cluster map is typed anywhere; it is a
+ * read of the hardware.
+ */
+export function formatCapacity(bytes: number): string {
+  return formatBytes(bytes, { decimals: 1, round: 'nearest' });
+}
+
+/** {@link formatCapacity} for a value stored in binary GiB. */
+export function formatCapacityGib(gib: number): string {
+  return formatCapacity(gib * GIBIBYTE);
 }
 
 /** Format a value stored in binary GiB as a decimal GB / TB / PB string. */

@@ -25,9 +25,11 @@ const Query = z.object({
  * Read-only and open to every authenticated user on purpose — cluster health
  * is what a user's own storage rides on, and the payload carries node
  * hostnames, zones, and fill levels but nothing about who stores what. The
- * `NodeMetrics` collection rules stay admin-only, so this route (not a direct
- * PB read) is the only door. Recording a sample is a different question, and
- * `POST .../scrape` keeps its `requireAdmin` gate.
+ * `NodeMetrics` collection list/view rules share that stance (any signed-in
+ * user; the cluster map reads latest rows directly), but *history* stays
+ * behind this route because the aggregation must run server-side. Recording a
+ * sample is a different question, and `POST .../scrape` keeps its
+ * `requireAdmin` gate.
  */
 export async function GET(req: Request) {
   try {

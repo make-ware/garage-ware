@@ -68,10 +68,13 @@ export const NodeMetricCollection = defineCollection({
   collectionName: 'NodeMetrics',
   schema: NodeMetricSchema,
   permissions: {
-    // Admins read the history; nobody writes it over the API. The cron writes
-    // via the JSVM (`app.save`), which bypasses collection rules.
-    listRule: '@collection.Admins.user ?= @request.auth.id',
-    viewRule: '@collection.Admins.user ?= @request.auth.id',
+    // Any signed-in user reads the history — cluster health is what a user's
+    // own storage rides on, and a row carries node hostnames, zones, and fill
+    // levels but nothing about who stores what. Nobody writes over the API;
+    // the cron writes via the JSVM (`app.save`), which bypasses collection
+    // rules.
+    listRule: "@request.auth.id != ''",
+    viewRule: "@request.auth.id != ''",
     createRule: null,
     updateRule: null,
     deleteRule: null,

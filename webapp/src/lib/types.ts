@@ -111,3 +111,34 @@ export interface NodeMetricsHistory {
   nodes: MetricNode[];
   points: MetricPoint[];
 }
+
+/**
+ * One layout node as `GET /next-api/garage/cluster/nodes` reports it: the
+ * layout role joined with the node's live status. Status fields are `null`
+ * when the node is in the layout but absent from `GetClusterStatus` — an
+ * unknown, distinct from down. The payload deliberately carries no `addr`;
+ * node network addresses never reach the browser (the same reason
+ * `GarageClusterCache` is superuser-only).
+ */
+export interface ClusterNodeItem {
+  id: string;
+  zone: string;
+  tags: string[];
+  capacity: number | null;
+  hostname: string | null;
+  isUp: boolean | null;
+  draining: boolean | null;
+  garageVersion: string | null;
+  lastSeenSecsAgo: number | null;
+  diskFreeBytes: number | null;
+  diskTotalBytes: number | null;
+  metaFreeBytes: number | null;
+  metaTotalBytes: number | null;
+}
+
+/** `GET /next-api/garage/cluster/nodes` — any signed-in user. */
+export interface ClusterNodesResponse {
+  items: ClusterNodeItem[];
+  replicationFactor: number;
+  layoutVersion: number;
+}

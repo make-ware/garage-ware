@@ -2,7 +2,14 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowRight, HardDrive, KeyRound, Server, Shield } from 'lucide-react';
+import {
+  ArrowRight,
+  ChartLine,
+  HardDrive,
+  KeyRound,
+  Server,
+  Shield,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { useAdminStatus } from '@/hooks/use-admin-status';
@@ -378,6 +385,18 @@ function StorageDashboard() {
               </table>
             )}
           </CardContent>
+          <CardFooter className="flex gap-2 border-t pt-4">
+            <Link href="/dashboard/cluster" className="flex-1">
+              <Button variant="outline" className="w-full">
+                <Server className="mr-2 h-4 w-4" /> Cluster
+              </Button>
+            </Link>
+            <Link href="/dashboard/metrics" className="flex-1">
+              <Button variant="outline" className="w-full">
+                <ChartLine className="mr-2 h-4 w-4" /> Metrics
+              </Button>
+            </Link>
+          </CardFooter>
         </Card>
       </div>
 

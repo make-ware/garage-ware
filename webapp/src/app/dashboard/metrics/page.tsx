@@ -25,7 +25,7 @@ import {
 import { useAdminStatus } from '@/hooks/use-admin-status';
 import { api, ApiError } from '@/lib/api-client';
 import type { MetricNode, MetricPoint, NodeMetricsHistory } from '@/lib/types';
-import { formatBytes } from '@/lib/format';
+import { formatCapacity } from '@/lib/format';
 
 const RANGES = ['6h', '24h', '7d', '30d'] as const;
 type Range = (typeof RANGES)[number];
@@ -381,7 +381,7 @@ function MetricsView() {
     const used = row[`${key}__used`];
     const total = row[`${key}__total`];
     if (used === undefined || total === undefined) return null;
-    return `${formatBytes(used)} / ${formatBytes(total)}`;
+    return `${formatCapacity(used)} / ${formatCapacity(total)}`;
   };
 
   const hasData = points.length > 0;

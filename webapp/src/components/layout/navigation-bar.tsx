@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import {
   Menu,
   LogOut,
@@ -9,6 +10,7 @@ import {
   HardDrive,
   KeyRound,
   ChartLine,
+  Server,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -38,6 +40,7 @@ interface NavigationBarProps {
 export function NavigationBar({ className }: NavigationBarProps) {
   const { user, isAuthenticated, logout, isLoading } = useAuth();
   const isMobile = useIsMobile();
+  const pathname = usePathname();
 
   // Helper function to get user initials for avatar fallback
   const getUserInitials = (name?: string, email?: string) => {
@@ -59,12 +62,20 @@ export function NavigationBar({ className }: NavigationBarProps) {
     logout();
   };
 
+  // Primary sections, shown inline in the desktop bar
+  const primaryLinks = [
+    { href: '/dashboard', label: 'Dashboard' },
+    { href: '/dashboard/metrics', label: 'Metrics' },
+    { href: '/dashboard/cluster', label: 'Cluster' },
+  ];
+
   // Navigation links for authenticated users
   const authenticatedLinks = [
     { href: '/dashboard', label: 'Dashboard', icon: HardDrive },
     { href: '/dashboard/buckets', label: 'Buckets', icon: HardDrive },
     { href: '/dashboard/keys', label: 'Access Keys', icon: KeyRound },
     { href: '/dashboard/metrics', label: 'Metrics', icon: ChartLine },
+    { href: '/dashboard/cluster', label: 'Cluster', icon: Server },
     { href: '/profile', label: 'Profile', icon: Settings },
   ];
 
@@ -97,7 +108,25 @@ export function NavigationBar({ className }: NavigationBarProps) {
         {/* Desktop Navigation */}
         <div className="flex flex-1 items-center justify-between space-x-2 md:justify-end">
           <div className="w-full flex-1 md:w-auto md:flex-none">
-            {/* Additional navigation items can go here */}
+            {!isMobile && isAuthenticated && (
+              <nav className="flex items-center gap-1">
+                {primaryLinks.map((link) => (
+                  <Button
+                    key={link.href}
+                    variant="ghost"
+                    size="sm"
+                    asChild
+                    className={cn(
+                      pathname === link.href
+                        ? 'text-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    <Link href={link.href}>{link.label}</Link>
+                  </Button>
+                ))}
+              </nav>
+            )}
           </div>
 
           {/* Desktop Auth Navigation */}

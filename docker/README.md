@@ -38,7 +38,7 @@ Pin a specific PocketBase release at build time:
 
 ```bash
 docker build -f docker/Dockerfile \
-  --build-arg POCKETBASE_VERSION=0.35.1 \
+  --build-arg POCKETBASE_VERSION=0.39.10 \
   --build-arg POCKETBASE_ARCH=amd64 \
   -t garage-ware .
 ```

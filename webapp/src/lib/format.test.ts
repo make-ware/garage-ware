@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatBytes,
+  formatCapacity,
+  formatCapacityGib,
   formatGib,
   formatPbDate,
   formatPbDateTime,
@@ -59,6 +61,30 @@ describe('formatBytes (decimal SI units)', () => {
     expect(formatBytes(500_000)).toBe('500 KB');
     expect(formatBytes(2_500_000)).toBe('2.5 MB');
     expect(formatBytes(900)).toBe('900 B');
+  });
+});
+
+describe('formatCapacity (cluster screens)', () => {
+  it('closes the gap between a declared capacity and the disk that reports it', () => {
+    // The pair that motivated this: a 72 TB node whose filesystem reports
+    // 71.99 TB. Both must read as the same disk.
+    expect(formatCapacity(72 * TERABYTE)).toBe('72 TB');
+    expect(formatCapacity(71.988 * TERABYTE)).toBe('72 TB');
+  });
+
+  it('keeps one decimal, rounded to nearest', () => {
+    expect(formatCapacity(18.333_333 * TERABYTE)).toBe('18.3 TB');
+    expect(formatCapacity(18.36 * TERABYTE)).toBe('18.4 TB');
+    expect(formatCapacity(38.31 * TERABYTE)).toBe('38.3 TB');
+  });
+
+  it('does not change the default, which still floors at two decimals', () => {
+    expect(formatBytes(71.988 * TERABYTE)).toBe('71.98 TB');
+    expect(formatBytes(18.36 * TERABYTE)).toBe('18.36 TB');
+  });
+
+  it('formatCapacityGib takes binary GiB', () => {
+    expect(formatCapacityGib(tbToGib(24))).toBe('24 TB');
   });
 });
 

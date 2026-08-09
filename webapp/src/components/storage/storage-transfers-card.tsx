@@ -302,7 +302,11 @@ export function StorageTransfersCard({
       </CardContent>
 
       <CardFooter className="border-t pt-4">
-        <Button onClick={onTransfer} disabled={sendableGb <= 0}>
+        <Button
+          variant="outline"
+          onClick={onTransfer}
+          disabled={sendableGb <= 0}
+        >
           <ArrowLeftRight className="mr-2 h-4 w-4" />
           Transfer or invite
         </Button>
