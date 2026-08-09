@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.7.0](https://github.com/make-ware/garage-ware/compare/v1.6.0...v1.7.0) (2026-08-09)
+
+
+### Features
+
+* add cluster layout ([e492f11](https://github.com/make-ware/garage-ware/commit/e492f115f4737c47d75cf468f0a197c3aaf127fb))
+* add garage api cache ([900c86b](https://github.com/make-ware/garage-ware/commit/900c86b3df0a91ff9dd9bdf3ebf4b4d1a41daa0a))
+
+
+### Bug Fixes
+
+* add invite system ([a8e6a58](https://github.com/make-ware/garage-ware/commit/a8e6a58394c82c63888b2fe829dbd67564b66437))
+* add metrics page ([0f5b9d3](https://github.com/make-ware/garage-ware/commit/0f5b9d3b4298c46effa0f8705d455bbb7c4d036d))
+* broken dep ([3ed8284](https://github.com/make-ware/garage-ware/commit/3ed82840f5fe91d82f18ffb88e4b3e83f6b28e76))
+* bump deps ([a7a5c3f](https://github.com/make-ware/garage-ware/commit/a7a5c3f607c0ee2944aec27d12b9ad30495f6cab))
+* deps ([1dc0bee](https://github.com/make-ware/garage-ware/commit/1dc0bee8e7bb1d94f5ee6d248e9431229018de72))
+
 ## [1.6.0](https://github.com/make-ware/garage-ware/compare/v1.5.1...v1.6.0) (2026-08-08)
 
 
