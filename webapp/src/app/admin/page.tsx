@@ -11,6 +11,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api-client';
 import { formatBytes } from '@/lib/format';
+import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
 import type { ClusterHealth, ClusterStatus } from '@/lib/garage';
 import type { LayoutResponse } from '@/lib/admin-types';
 
@@ -115,24 +116,32 @@ export default function AdminOverviewPage() {
         <CardContent>
           {status ? (
             <div className="space-y-2">
-              {status.nodes.map((n) => (
-                <div
-                  key={n.id}
-                  className="flex items-center justify-between rounded border p-3"
-                >
-                  <div>
-                    <div className="font-medium">
-                      {n.hostname || n.id.slice(0, 12)}
+              {status.nodes.map((n) => {
+                // A node absent from the layout has no role, so no tags and no
+                // name — it falls back to its short id, which is correct.
+                const { name } = parseNodeTags(n.role?.tags);
+                return (
+                  <div
+                    key={n.id}
+                    className="flex items-center justify-between rounded border p-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">
+                        {nodeLabel(name, n.id)}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground font-mono">
+                        {/* The short id joins this line only when the line above
+                          is a name — otherwise it would appear twice. */}
+                        {name ? `${shortNodeId(n.id)} · ` : ''}
+                        {n.addr ?? '—'} · {n.role?.zone ?? 'no zone'}
+                      </div>
                     </div>
-                    <div className="text-xs text-muted-foreground font-mono">
-                      {n.addr ?? '—'} · {n.role?.zone ?? 'no zone'}
-                    </div>
+                    <Badge variant={n.isUp ? 'default' : 'destructive'}>
+                      {n.isUp ? 'up' : 'down'}
+                    </Badge>
                   </div>
-                  <Badge variant={n.isUp ? 'default' : 'destructive'}>
-                    {n.isUp ? 'up' : 'down'}
-                  </Badge>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p className="text-muted-foreground">Loading...</p>

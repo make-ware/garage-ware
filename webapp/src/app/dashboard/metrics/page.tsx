@@ -24,8 +24,14 @@ import {
 } from '@/components/ui/chart';
 import { useAdminStatus } from '@/hooks/use-admin-status';
 import { api, ApiError } from '@/lib/api-client';
-import type { MetricNode, MetricPoint, NodeMetricsHistory } from '@/lib/types';
+import type {
+  ClusterNodesResponse,
+  MetricNode,
+  MetricPoint,
+  NodeMetricsHistory,
+} from '@/lib/types';
 import { formatCapacity } from '@/lib/format';
+import { buildNodeNameMap, nodeLabel } from '@/lib/node-label';
 
 const RANGES = ['6h', '24h', '7d', '30d'] as const;
 type Range = (typeof RANGES)[number];
@@ -55,10 +61,6 @@ const compactNumber = new Intl.NumberFormat('en', {
 /** Chart series key for a node — short, and CSS-var safe (hex id). */
 function nodeKeyFor(node: MetricNode): string {
   return `n${node.node_id.slice(0, 8)}`;
-}
-
-function nodeLabelFor(node: MetricNode): string {
-  return node.node_hostname || `${node.node_id.slice(0, 12)}…`;
 }
 
 /** One row per time bucket, `${nodeKey}` → plotted value (absent = gap). */
@@ -245,6 +247,9 @@ function MetricsView() {
   const { isAdmin } = useAdminStatus();
   const [range, setRange] = useState<Range>('24h');
   const [history, setHistory] = useState<NodeMetricsHistory | null>(null);
+  const [nodeNames, setNodeNames] = useState<Map<string, string>>(
+    () => new Map()
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [scraping, setScraping] = useState(false);
@@ -254,12 +259,22 @@ function MetricsView() {
     let cancelled = false;
     const run = async () => {
       try {
-        const result = await api<NodeMetricsHistory>(
-          '/next-api/garage/node-metrics',
-          { query: { range } }
-        );
+        // Node names live in the Garage layout, which this page's metrics come
+        // nowhere near — NodeMetrics rows carry no tags. Fetched alongside and
+        // allowed to fail: this is the page an operator opens when the cluster
+        // looks sick, so an unreachable Garage must cost the labels, not the
+        // charts.
+        const [result, nodes] = await Promise.all([
+          api<NodeMetricsHistory>('/next-api/garage/node-metrics', {
+            query: { range },
+          }),
+          api<ClusterNodesResponse>('/next-api/garage/cluster/nodes').catch(
+            () => null
+          ),
+        ]);
         if (cancelled) return;
         setHistory(result);
+        setNodeNames(buildNodeNameMap(nodes?.items));
         setError(null);
       } catch (err) {
         if (!cancelled)
@@ -321,12 +336,12 @@ function MetricsView() {
     const config: ChartConfig = {};
     nodes.forEach((node, i) => {
       config[nodeKeyFor(node)] = {
-        label: nodeLabelFor(node),
+        label: nodeLabel(nodeNames.get(node.node_id) ?? null, node.node_id),
         theme: PALETTE[i],
       };
     });
     return config;
-  }, [nodes]);
+  }, [nodes, nodeNames]);
 
   const points = useMemo(() => history?.points ?? [], [history]);
 

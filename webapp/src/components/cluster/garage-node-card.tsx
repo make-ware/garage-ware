@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { QuotaFillBar, QuotaFillPct } from '@/components/storage/quota-fill';
 import { formatCapacity } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { nodeLabelFor } from './cluster-groups';
+import { nodeLabel, parseNodeTags } from '@/lib/node-label';
 import type { ClusterNodeItem } from '@/lib/types';
 
 /**
@@ -58,10 +58,15 @@ export function GarageNodeCard({
       : item.isUp
         ? { dot: 'bg-emerald-500', label: 'up' }
         : { dot: 'bg-destructive', label: 'down' };
+  // `rest` drops the tag that supplied the name, so it never shows twice —
+  // and, since the badges are capped at three, so a name badge cannot evict a
+  // real tag like `ssd`. The aria-label uses the full id when unnamed: some
+  // screen readers announce a trailing ellipsis.
+  const { name, rest } = parseNodeTags(item.tags);
   return (
     <button
       type="button"
-      aria-label={`Node ${nodeLabelFor(item)} details`}
+      aria-label={`Node ${name ?? item.id} details`}
       onClick={() => onSelect(item.id)}
       className={cn(
         'w-full min-w-0 overflow-hidden rounded-md border bg-card p-3 text-left text-card-foreground shadow-sm transition-colors',
@@ -75,7 +80,7 @@ export function GarageNodeCard({
           title={status.label}
         />
         <span className="truncate text-sm font-medium">
-          {nodeLabelFor(item)}
+          {nodeLabel(name, item.id)}
         </span>
         {item.draining && (
           <Badge
@@ -113,9 +118,9 @@ export function GarageNodeCard({
         className="mt-2"
       />
 
-      {item.tags.length > 0 && (
+      {rest.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1 overflow-hidden">
-          {item.tags.slice(0, 3).map((tag) => (
+          {rest.slice(0, 3).map((tag) => (
             <Badge key={tag} variant="secondary" className="text-[10px]">
               {tag}
             </Badge>

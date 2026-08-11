@@ -15,6 +15,7 @@ import { ProtectedRoute } from '@/components/auth/protected-route';
 import { useAdminStatus } from '@/hooks/use-admin-status';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
+import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
 import { bytesToGib } from '@/lib/storage/units';
 import { StorageClaimChart } from '@/components/storage/storage-claim-chart';
 import { StorageTransfersCard } from '@/components/storage/storage-transfers-card';
@@ -361,19 +362,24 @@ function StorageDashboard() {
                 </thead>
                 <tbody>
                   {claimsByNode.map((node) => {
-                    const tags = data.nodeMap[node.nodeId]?.tags ?? [];
+                    // `rest` drops the tag the name came from, so it does not
+                    // also appear in the Tags column beside it.
+                    const { name, rest } = parseNodeTags(
+                      data.nodeMap[node.nodeId]?.tags
+                    );
                     return (
                       <tr key={node.nodeId} className="border-b last:border-0">
                         <td className="py-2">
-                          <span className="font-mono">
-                            {node.nodeHostname ?? node.nodeId.slice(0, 12)}
+                          <span className={name ? undefined : 'font-mono'}>
+                            {nodeLabel(name, node.nodeId)}
                           </span>
                           <span className="block text-xs text-muted-foreground">
+                            {name ? `${shortNodeId(node.nodeId)} · ` : ''}
                             {node.nodeZone || 'no zone'}
                           </span>
                         </td>
                         <td className="py-2 text-muted-foreground">
-                          {tags.length > 0 ? tags.join(', ') : '—'}
+                          {rest.length > 0 ? rest.join(', ') : '—'}
                         </td>
                         <td className="py-2 text-right tabular-nums">
                           {formatStorage(node.claimedGb)}

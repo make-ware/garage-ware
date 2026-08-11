@@ -38,6 +38,8 @@ import {
 import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import { api } from '@/lib/api-client';
 import { formatPbDate, formatSignedStorage, formatStorage } from '@/lib/format';
+import { buildNodeNameMap, nodeLabel, shortNodeId } from '@/lib/node-label';
+import { NodeIdentity } from '@/components/cluster/node-identity';
 import type { AdminUser, LayoutResponse } from '@/lib/admin-types';
 import {
   nodeUsableGbInLayout,
@@ -53,15 +55,8 @@ import type { StorageClaim, StorageClaimAudit } from '@garage-ware/shared';
 interface SetClaimTarget {
   group: UserNodeClaimRollup;
   userEmail: string;
-  nodeLabel: string;
+  nodeName: string | null;
   nodeFreeGb: number;
-}
-
-function nodeLabelFor(group: {
-  nodeHostname?: string;
-  nodeId: string;
-}): string {
-  return group.nodeHostname || `${group.nodeId.slice(0, 12)}…`;
 }
 
 function AdminClaimsView() {
@@ -141,6 +136,23 @@ function AdminClaimsView() {
     [claims]
   );
 
+  // Historical claim rows carry only a node_id, so names are resolved against
+  // the layout the page already holds. A node that has left it has no name and
+  // shows its short id.
+  const nodeNames = useMemo(() => buildNodeNameMap(layout?.roles), [layout]);
+
+  // Garage returns roles in its own order. Unsorted hex is unremarkable;
+  // unsorted names read as a bug, so sort by what the picker actually shows.
+  const nodeOptions = useMemo(
+    () =>
+      (layout?.roles ?? [])
+        .map((r) => ({ id: r.id, name: nodeNames.get(r.id) ?? null }))
+        .sort((a, b) =>
+          nodeLabel(a.name, a.id).localeCompare(nodeLabel(b.name, b.id))
+        ),
+    [layout, nodeNames]
+  );
+
   const groups = useMemo(() => {
     const list = rollUpClaimsByUserNode(claims, layout ?? undefined);
     return list.sort((a, b) => {
@@ -148,10 +160,12 @@ function AdminClaimsView() {
       const bEmail = userById.get(b.userId)?.email ?? b.userId;
       return (
         aEmail.localeCompare(bEmail) ||
-        nodeLabelFor(a).localeCompare(nodeLabelFor(b))
+        nodeLabel(nodeNames.get(a.nodeId) ?? null, a.nodeId).localeCompare(
+          nodeLabel(nodeNames.get(b.nodeId) ?? null, b.nodeId)
+        )
       );
     });
-  }, [claims, layout, userById]);
+  }, [claims, layout, userById, nodeNames]);
 
   const visibleGroups = useMemo(
     () =>
@@ -366,9 +380,14 @@ function AdminClaimsView() {
                     <SelectValue placeholder="Pick a node" />
                   </SelectTrigger>
                   <SelectContent>
-                    {layout?.roles.map((r) => (
+                    {nodeOptions.map((r) => (
                       <SelectItem key={r.id} value={r.id}>
-                        {r.id.slice(0, 12)}… ({r.zone})
+                        {nodeLabel(r.name, r.id)}
+                        {r.name ? (
+                          <span className="ml-2 font-mono text-xs text-muted-foreground">
+                            {shortNodeId(r.id)}
+                          </span>
+                        ) : null}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -464,7 +483,7 @@ function AdminClaimsView() {
                   const user = userById.get(group.userId);
                   const isOpen = expanded.has(group.key);
                   const auditEntries = auditByKey.get(group.key);
-                  const nodeLabel = nodeLabelFor(group);
+                  const nodeName = nodeNames.get(group.nodeId) ?? null;
                   return [
                     <TableRow key={group.key}>
                       <TableCell>
@@ -486,13 +505,14 @@ function AdminClaimsView() {
                         </Button>
                       </TableCell>
                       <TableCell>{user?.email ?? group.userId}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {nodeLabel}
-                        {!group.presentInLayout && (
-                          <span className="ml-2 text-destructive">
-                            (not in layout)
-                          </span>
-                        )}
+                      <TableCell>
+                        <NodeIdentity name={nodeName} nodeId={group.nodeId}>
+                          {!group.presentInLayout && (
+                            <span className="ml-2 text-destructive">
+                              (not in layout)
+                            </span>
+                          )}
+                        </NodeIdentity>
                       </TableCell>
                       <TableCell>{group.nodeZone || '—'}</TableCell>
                       <TableCell
@@ -527,7 +547,7 @@ function AdminClaimsView() {
                             setSetClaimTarget({
                               group,
                               userEmail: user?.email ?? group.userId,
-                              nodeLabel,
+                              nodeName,
                               nodeFreeGb: nodeFreeGbFor(group.nodeId),
                             })
                           }
@@ -749,7 +769,7 @@ function AdminClaimsView() {
           userId={setClaimTarget.group.userId}
           userEmail={setClaimTarget.userEmail}
           nodeId={setClaimTarget.group.nodeId}
-          nodeLabel={setClaimTarget.nodeLabel}
+          nodeName={setClaimTarget.nodeName}
           currentGb={setClaimTarget.group.claimedGb}
           nodeFreeGb={setClaimTarget.nodeFreeGb}
           onApplied={refresh}

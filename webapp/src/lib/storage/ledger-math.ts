@@ -76,7 +76,12 @@ export function nodeUsableGbInLayout(
  */
 export interface NodeClaimPosition {
   nodeId: string;
-  nodeHostname?: string;
+  /**
+   * Deliberately no `nodeHostname`. The ledger snapshots one at write time and
+   * never refreshes it, so projecting it here is what let a renamed node keep
+   * showing its old label. Views resolve a node's name from the live layout by
+   * `nodeId` instead — see lib/node-label.ts.
+   */
   nodeZone?: string;
   /** Sum of the ledger entries for this node. */
   claimedGb: number;
@@ -130,7 +135,6 @@ export function rollUpClaimsByUserNode(
         key,
         userId: claim.user,
         nodeId: claim.node_id,
-        nodeHostname: claim.node_hostname,
         nodeZone: claim.node_zone,
         claimedGb: 0,
         presentInLayout: present ? present.has(claim.node_id) : true,
@@ -143,7 +147,6 @@ export function rollUpClaimsByUserNode(
     group.entryCount += 1;
     group.entries.push(claim);
     // The newest entry carries the freshest node metadata.
-    group.nodeHostname ??= claim.node_hostname;
     group.nodeZone ??= claim.node_zone;
   }
 
@@ -171,7 +174,6 @@ export function rollUpClaimsByNode(
     if (!group) {
       group = {
         nodeId: claim.node_id,
-        nodeHostname: claim.node_hostname,
         nodeZone: claim.node_zone,
         claimedGb: 0,
         presentInLayout: present ? present.has(claim.node_id) : true,
@@ -183,7 +185,6 @@ export function rollUpClaimsByNode(
     group.claimedGb += Number(claim.quota_gb) || 0;
     group.entryCount += 1;
     group.entries.push(claim);
-    group.nodeHostname ??= claim.node_hostname;
     group.nodeZone ??= claim.node_zone;
   }
 
@@ -256,7 +257,8 @@ export function nodePositionsFromBalances(
   const present = layout ? presentNodeIdSet(layout) : null;
   return balances.map((b) => ({
     nodeId: b.node_id,
-    nodeHostname: b.node_hostname || undefined,
+    // `node_hostname` is accepted on the input row (it mirrors the DB column)
+    // but deliberately not projected — see NodeClaimPosition.
     nodeZone: b.node_zone || undefined,
     claimedGb: Number(b.claimed_gb) || 0,
     presentInLayout: present ? present.has(b.node_id) : true,

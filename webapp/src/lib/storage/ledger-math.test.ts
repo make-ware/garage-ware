@@ -191,8 +191,10 @@ describe('rollUpClaimsByUserNode', () => {
       claim('u1', 'node-a', 10),
       claim('u1', 'node-a', 5, { node_hostname: 'box1', node_zone: 'dc1' }),
     ]);
-    expect(groups[0].nodeHostname).toBe('box1');
     expect(groups[0].nodeZone).toBe('dc1');
+    // No hostname is projected: a node is identified by its name or short id,
+    // resolved from the live layout rather than this write-time snapshot.
+    expect('nodeHostname' in groups[0]).toBe(false);
   });
 });
 
@@ -519,12 +521,13 @@ describe('nodePositionsFromBalances', () => {
     );
     expect(position).toMatchObject({
       nodeId: 'node-a',
-      nodeHostname: 'box1',
       nodeZone: 'dc1',
       claimedGb: 12,
       entryCount: 3,
       presentInLayout: true,
     });
+    // The row carries a hostname; the position deliberately does not.
+    expect('nodeHostname' in position).toBe(false);
   });
 
   it('normalises empty metadata strings to undefined', () => {
@@ -533,7 +536,6 @@ describe('nodePositionsFromBalances', () => {
     const [position] = nodePositionsFromBalances([
       { node_id: 'node-a', claimed_gb: 1, node_hostname: '', node_zone: '' },
     ]);
-    expect(position.nodeHostname).toBeUndefined();
     expect(position.nodeZone).toBeUndefined();
   });
 });

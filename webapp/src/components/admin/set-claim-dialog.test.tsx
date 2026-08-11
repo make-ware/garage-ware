@@ -31,7 +31,7 @@ function renderDialog(
       userId="user-1"
       userEmail="user@example.com"
       nodeId="node-a"
-      nodeLabel="box1"
+      nodeName="box1"
       currentGb={overrides.currentGb ?? tbToGib(4)}
       nodeFreeGb={overrides.nodeFreeGb ?? tbToGib(10)}
       onApplied={onApplied}
