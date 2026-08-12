@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1](https://github.com/make-ware/garage-ware/compare/v1.8.0...v1.8.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* docker build update ([8bb2f4f](https://github.com/make-ware/garage-ware/commit/8bb2f4fea7bffcac31c8144ad9a631cc95948377))
+* scrape the node partitions and expected size ([763d39b](https://github.com/make-ware/garage-ware/commit/763d39b7e9be587b673ec35d097df5894dfaae60))
+
 ## [1.8.0](https://github.com/make-ware/garage-ware/compare/v1.7.0...v1.8.0) (2026-08-12)
 
 
