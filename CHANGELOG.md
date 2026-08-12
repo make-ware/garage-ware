@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0](https://github.com/make-ware/garage-ware/compare/v1.7.0...v1.8.0) (2026-08-12)
+
+
+### Features
+
+* identify nodes by name or one truncated node id ([1638607](https://github.com/make-ware/garage-ware/commit/1638607b76a9a744f3df6ba41bf58229ec06a994))
+* identify nodes by name or one truncated node id ([efa482d](https://github.com/make-ware/garage-ware/commit/efa482da7c012ae243a3524aa94b835d37358e9e))
+
+
+### Bug Fixes
+
+* resolve docker build failure from pocketbase path rename ([b0200be](https://github.com/make-ware/garage-ware/commit/b0200be10a6ff6cc152643a2b60d226a396ad91b))
+
 ## [1.7.0](https://github.com/make-ware/garage-ware/compare/v1.6.0...v1.7.0) (2026-08-09)
 
 
