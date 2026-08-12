@@ -630,9 +630,12 @@ cronAdd("bucket-usage-alerts", "0 9 * * *", () => {
 // ---------------------------------------------------------------------------
 // Per-node metrics time-series (NodeMetrics).
 //
-// Every 15 minutes: two calls to the central Garage admin API (GetClusterStatus,
-// GetNodeStatistics?node=*) become one NodeMetrics row per node — uptime,
-// data/metadata partition space, resync queue/errors. The scrape needs
+// Every 15 minutes: three calls to the central Garage admin API
+// (GetClusterStatus, GetNodeStatistics?node=*, GetClusterLayout) become one
+// NodeMetrics row per node — uptime, data/metadata partition space, resync
+// queue/errors, block refcount entries, and the partitions the layout assigns
+// the node. Only GetClusterStatus is fatal; the other two clear their gate
+// (node_stats_ok / layout_ok) and the run continues. The scrape needs
 // GARAGE_ADMIN_URL + GARAGE_ADMIN_TOKEN in the PB process env (the pb dev
 // script sources ../webapp/.env; Docker passes them with `docker run -e`) and
 // warns-and-skips when they are absent, like APP_PUBLIC_URL above. The same
@@ -644,7 +647,7 @@ cronAdd("node-metrics-scrape", "*/15 * * * *", () => {
     const result = scrapeOnce($app, { prune: true });
     if (result.skipped) return; // scrapeOnce already warned
     console.log(
-      `[node-metrics] recorded ${result.recorded} node(s), statsFailed=${result.statsFailed}, pruned=${result.pruned}, errors=${result.errors}`
+      `[node-metrics] recorded ${result.recorded} node(s), statsFailed=${result.statsFailed}, layoutFailed=${result.layoutFailed}, pruned=${result.pruned}, errors=${result.errors}`
     );
   } catch (err) {
     console.error("[node-metrics] scrape failed:", err);

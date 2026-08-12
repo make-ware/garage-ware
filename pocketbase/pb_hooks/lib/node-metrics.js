@@ -1,11 +1,17 @@
 //
 // Per-node metrics: scrape, history bucketing, retention.
 //
-// `scrapeOnce` records one NodeMetrics row per cluster node from two calls to
-// the central Garage admin API (GetClusterStatus for connectivity + partition
-// space, GetNodeStatistics?node=* for resync counters). It is shared by the
-// `node-metrics-scrape` cron, and the superuser route POST /api/node-metrics/scrape
-// — one implementation on purpose, like storage-balance.js.
+// `scrapeOnce` records one NodeMetrics row per cluster node from three calls to
+// the central Garage admin API: GetClusterStatus for connectivity + partition
+// space, GetNodeStatistics?node=* for resync counters and the block refcount
+// entry count, and GetClusterLayout for the partitions the layout assigns each
+// node plus the cluster's partition size. That last call is what buys the
+// denominator: a stored partition holds one full replica of that partition's
+// data, so `usedBytes / storedPartitions` is comparable across nodes of wildly
+// different sizes — see webapp/src/lib/metrics/data-coverage.ts. It is shared
+// by the `node-metrics-scrape` cron, and the superuser route
+// POST /api/node-metrics/scrape — one implementation on purpose, like
+// storage-balance.js.
 //
 // `historyFor` backs GET /api/node-metrics/history: it reads a time range
 // in-process (a 30-day window is ~23k rows — cheap here, prohibitive as paged
@@ -22,8 +28,12 @@
 //
 // Null conventions (see shared/src/schema/node-metric.ts): PB number fields
 // cannot hold null, so stored rows use `node_stats_ok` to gate the resync
-// fields and `*_total_bytes === 0` to mean "no partition data". Real nulls
-// only appear in the JSON `historyFor` emits.
+// fields and `rc_entries`, `layout_ok` to gate `stored_partitions` /
+// `partition_size_bytes`, and `*_total_bytes === 0` to mean "no partition
+// data". Under `layout_ok`, `stored_partitions === 0` is a real reading ("this
+// node holds no partitions") — which is why that gate has to exist at all, or
+// a failed layout call would record every node as a gateway. Real nulls only
+// appear in the JSON `historyFor` emits.
 
 const COLLECTION = "NodeMetrics";
 
@@ -66,13 +76,26 @@ function mean(values) {
  *           sorted by node_id so callers get a stable order (stable colors).
  *   points: [{ t, node_id, samples, uptime_pct,
  *              resync_queue_length|null, resync_errored_blocks|null,
+ *              rc_entries|null, stored_partitions|null,
+ *              partition_size_bytes|null,
  *              data_total_bytes|null, data_available_bytes|null,
  *              meta_total_bytes|null, meta_available_bytes|null }]
  *           sorted by t; t is the bucket-start epoch in ms.
  *
- * Per bucket: uptime_pct counts every sample; resync fields average only
- * samples with node_stats_ok (else null — a gap, not a zero); partition
- * fields average only samples whose total > 0 (else null).
+ * Per bucket: uptime_pct counts every sample; the resync fields and rc_entries
+ * average only samples with node_stats_ok (else null — a gap, not a zero); the
+ * two layout fields average only samples with layout_ok, a gate independent of
+ * the partition one (a down node still holds a layout role but reports no
+ * space, and a gateway is the reverse); partition fields average only samples
+ * whose total > 0 (else null).
+ *
+ * Two wrinkles in averaging the layout fields:
+ *   - stored_partitions can come out fractional when a layout change lands
+ *     mid-bucket. That is correct — the node genuinely held N partitions and
+ *     then M.
+ *   - a gateway emits stored_partitions 0, not null. Under layout_ok, 0 is a
+ *     reading ("holds no partitions"), and keeping that apart from "we never
+ *     asked" is the whole justification for the layout_ok gate.
  */
 function bucketHistory(rows, bucketSec) {
   const bucketMs = bucketSec * 1000;
@@ -106,6 +129,9 @@ function bucketHistory(rows, bucketSec) {
         up: 0,
         resyncQueue: [],
         resyncErrored: [],
+        rcEntries: [],
+        storedPartitions: [],
+        partitionSize: [],
         dataTotal: [],
         dataAvail: [],
         metaTotal: [],
@@ -119,6 +145,14 @@ function bucketHistory(rows, bucketSec) {
     if (row.node_stats_ok) {
       agg.resyncQueue.push(row.resync_queue_length || 0);
       agg.resyncErrored.push(row.resync_errored_blocks || 0);
+      agg.rcEntries.push(row.rc_entries || 0);
+    }
+    // Its own gate, deliberately not folded into the partition one below: a
+    // down node still holds a layout role but reports no partition space, and
+    // a gateway reports space but holds no partitions.
+    if (row.layout_ok) {
+      agg.storedPartitions.push(row.stored_partitions || 0);
+      agg.partitionSize.push(row.partition_size_bytes || 0);
     }
     if (row.data_total_bytes > 0) {
       agg.dataTotal.push(row.data_total_bytes);
@@ -145,6 +179,9 @@ function bucketHistory(rows, bucketSec) {
         uptime_pct: (100 * agg.up) / agg.samples,
         resync_queue_length: mean(agg.resyncQueue),
         resync_errored_blocks: mean(agg.resyncErrored),
+        rc_entries: mean(agg.rcEntries),
+        stored_partitions: mean(agg.storedPartitions),
+        partition_size_bytes: mean(agg.partitionSize),
         data_total_bytes: mean(agg.dataTotal),
         data_available_bytes: mean(agg.dataAvail),
         meta_total_bytes: mean(agg.metaTotal),
@@ -174,11 +211,14 @@ function adminGet(baseUrl, token, path) {
 /**
  * Record one sample row per cluster node; optionally prune old rows.
  *
- * Returns { skipped? , recorded, statsFailed, pruned, errors }. `skipped` is
- * set (with a warn log) when GARAGE_ADMIN_URL/TOKEN are absent — the env is
- * optional in dev, so this is a degraded state, not a crash. A failed
- * GetClusterStatus aborts the run (no node identity, nothing to record); a
- * failed GetNodeStatistics only clears node_stats_ok on every row.
+ * Returns { skipped?, recorded, statsFailed, layoutFailed, pruned, errors }.
+ * `skipped` is set (with a warn log) when GARAGE_ADMIN_URL/TOKEN are absent —
+ * the env is optional in dev, so this is a degraded state, not a crash. A
+ * failed GetClusterStatus aborts the run (no node identity, nothing to
+ * record); a failed GetNodeStatistics only clears node_stats_ok on every row,
+ * and a failed GetClusterLayout only clears layout_ok. `layoutFailed` is
+ * additive — existing callers destructure { recorded, statsFailed } and are
+ * unaffected.
  */
 function scrapeOnce(app, opts) {
   const baseUrl = $os.getenv("GARAGE_ADMIN_URL").replace(/\/+$/, "");
@@ -187,7 +227,14 @@ function scrapeOnce(app, opts) {
     console.warn(
       "[node-metrics] GARAGE_ADMIN_URL/GARAGE_ADMIN_TOKEN not set; skipping run"
     );
-    return { skipped: true, recorded: 0, statsFailed: 0, pruned: 0, errors: 0 };
+    return {
+      skipped: true,
+      recorded: 0,
+      statsFailed: 0,
+      layoutFailed: 0,
+      pruned: 0,
+      errors: 0,
+    };
   }
 
   const status = adminGet(baseUrl, token, "/v2/GetClusterStatus");
@@ -203,8 +250,30 @@ function scrapeOnce(app, opts) {
     );
   }
 
+  // Non-fatal in the same shape as the stats call above: without it the rows
+  // still carry uptime and space, they just cannot say how much of the ring
+  // each node was assigned. `layoutOk` is what keeps that absence honest —
+  // see the null conventions at the top of this file.
+  let rolesById = {};
+  let partitionSize = 0;
+  let layoutOk = false;
+  try {
+    const layout = adminGet(baseUrl, token, "/v2/GetClusterLayout");
+    for (const role of (layout && layout.roles) || []) {
+      if (role && role.id) rolesById[role.id] = role;
+    }
+    partitionSize = (layout && layout.partitionSize) || 0;
+    layoutOk = true;
+  } catch (err) {
+    console.warn(
+      "[node-metrics] GetClusterLayout failed; recording rows without partition assignment:",
+      err
+    );
+  }
+
   let recorded = 0;
   let statsFailed = 0;
+  let layoutFailed = 0;
   let errors = 0;
   let pruned = 0;
 
@@ -215,6 +284,7 @@ function scrapeOnce(app, opts) {
       try {
         const stats = statsSuccess[node.id];
         const bm = stats && stats.blockManagerStats;
+        const role = rolesById[node.id];
         const data = node.dataPartition;
         const meta = node.metadataPartition;
 
@@ -226,6 +296,14 @@ function scrapeOnce(app, opts) {
         record.set("node_stats_ok", !!bm);
         record.set("resync_queue_length", bm ? bm.resyncQueueLen : 0);
         record.set("resync_errored_blocks", bm ? bm.resyncErrors : 0);
+        record.set("rc_entries", bm ? bm.rcEntries || 0 : 0);
+        record.set("layout_ok", layoutOk);
+        // `storedPartitions` is integer|null in the spec (null for a gateway),
+        // and the role is absent entirely for a node with no role at all. The
+        // `|| 0` folds both into the 0 that layout_ok makes readable as "holds
+        // no partitions".
+        record.set("stored_partitions", (role && role.storedPartitions) || 0);
+        record.set("partition_size_bytes", partitionSize);
         record.set("data_total_bytes", data ? data.total : 0);
         record.set("data_available_bytes", data ? data.available : 0);
         record.set("meta_total_bytes", meta ? meta.total : 0);
@@ -234,6 +312,7 @@ function scrapeOnce(app, opts) {
 
         recorded++;
         if (!bm) statsFailed++;
+        if (!layoutOk) layoutFailed++;
       } catch (err) {
         errors++;
         console.error("[node-metrics] failed to record node:", node.id, err);
@@ -248,6 +327,7 @@ function scrapeOnce(app, opts) {
   return {
     recorded: recorded,
     statsFailed: statsFailed,
+    layoutFailed: layoutFailed,
     pruned: pruned,
     errors: errors,
   };
@@ -313,6 +393,10 @@ function historyFor(app, rangeKey) {
       node_stats_ok: r.getBool("node_stats_ok"),
       resync_queue_length: r.getFloat("resync_queue_length"),
       resync_errored_blocks: r.getFloat("resync_errored_blocks"),
+      rc_entries: r.getFloat("rc_entries"),
+      layout_ok: r.getBool("layout_ok"),
+      stored_partitions: r.getFloat("stored_partitions"),
+      partition_size_bytes: r.getFloat("partition_size_bytes"),
       data_total_bytes: r.getFloat("data_total_bytes"),
       data_available_bytes: r.getFloat("data_available_bytes"),
       meta_total_bytes: r.getFloat("meta_total_bytes"),

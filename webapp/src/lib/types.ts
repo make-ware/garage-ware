@@ -90,6 +90,14 @@ export interface MetricNode {
  * One (node, time-bucket) aggregate from the metrics history. `null` means
  * "no valid reading in this bucket" — a chart gap, never a zero (see the
  * NodeMetrics schema notes in shared/src/schema/node-metric.ts).
+ *
+ * The stored rows' `layout_ok` / `node_stats_ok` gates do not survive to here:
+ * bucketHistory has already turned a failed reading into a `null`. So
+ * `stored_partitions` is null when *no* sample in the bucket carried a layout
+ * reading — and **0 when the node held no role at all** (a gateway, or one
+ * draining out of an older layout). Distinguishing those two is the whole
+ * reason `layout_ok` exists on the row. It can also come out fractional, when
+ * a layout change landed mid-bucket.
  */
 export interface MetricPoint {
   t: number;
@@ -98,6 +106,12 @@ export interface MetricPoint {
   uptime_pct: number;
   resync_queue_length: number | null;
   resync_errored_blocks: number | null;
+  /** Blocks the node's metadata holds a refcount for. */
+  rc_entries: number | null;
+  /** Partitions the layout assigns this node; 0 means "no role". */
+  stored_partitions: number | null;
+  /** Cluster-wide bytes per partition at sample time. */
+  partition_size_bytes: number | null;
   data_total_bytes: number | null;
   data_available_bytes: number | null;
   meta_total_bytes: number | null;

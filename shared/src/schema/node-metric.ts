@@ -19,11 +19,34 @@ import { z } from 'zod';
  *
  * PocketBase number fields cannot be null (unset reads back as 0), so
  * "no reading" needs explicit conventions — chart code must honor them:
- *   - `node_stats_ok` gates `resync_queue_length` / `resync_errored_blocks`.
- *     A failed GetNodeStatistics call must not chart as "queue dropped to 0".
+ *   - `node_stats_ok` gates `resync_queue_length` / `resync_errored_blocks`
+ *     and `rc_entries` (all three come from the same GetNodeStatistics call,
+ *     so they ride one gate). A failed call must not chart as "queue dropped
+ *     to 0".
+ *   - `layout_ok` gates `stored_partitions` / `partition_size_bytes` (both
+ *     come from GetClusterLayout). Under that gate, `stored_partitions === 0`
+ *     is a *real reading* — "this node holds no partitions", i.e. a gateway,
+ *     or a node draining out of an older layout — which is exactly why the
+ *     gate has to exist: without it a cluster-wide layout failure would write
+ *     0 for every node and read back, forever, as "all gateways, nothing to
+ *     judge".
  *   - Partition fields carry their own sentinel: a real partition always has
  *     total > 0, so `*_total_bytes === 0` means "no partition data" (e.g. a
  *     gateway node). "Used" is derived: total − available.
+ *
+ * `stored_partitions` and `partition_size_bytes` are what makes
+ * webapp/src/lib/metrics/data-coverage.ts possible: a stored partition holds
+ * one full replica of that partition's data whatever the reason it was
+ * assigned, so `usedBytes / stored_partitions` is near-uniform across healthy
+ * storage nodes and a node well below its peers is a node missing data.
+ * `partition_size_bytes` is cluster-wide but denormalized onto every row so a
+ * historical sample stays interpretable after a layout change.
+ *
+ * `rc_entries` is the count of blocks the node's *metadata* says it is
+ * responsible for. Metadata converges on the fast table-sync path while block
+ * data moves on the slow resync path, so "rc normal, bytes low" is the
+ * fingerprint of a wiped data drive with intact metadata — it is what
+ * separates missing data from still rebuilding.
  *
  * The scrape deliberately covers only what the central admin API exposes.
  * Throughput (bytes read/written) and API request/error counters live only on
@@ -43,6 +66,14 @@ export const NodeMetricSchema = z
     node_stats_ok: BoolField(),
     resync_queue_length: NumberField({ min: 0 }).int().default(0),
     resync_errored_blocks: NumberField({ min: 0 }).int().default(0),
+    /** Blocks this node's metadata holds a refcount for (gated by node_stats_ok). */
+    rc_entries: NumberField({ min: 0 }).int().default(0),
+    /** GetClusterLayout succeeded — gates the two layout fields below. */
+    layout_ok: BoolField(),
+    /** Partitions the layout assigns this node; 0 under the gate is a reading. */
+    stored_partitions: NumberField({ min: 0 }).int().default(0),
+    /** Cluster-wide bytes per partition, denormalized (gated by layout_ok). */
+    partition_size_bytes: NumberField({ min: 0 }).int().default(0),
     data_total_bytes: NumberField({ min: 0 }).int().default(0),
     data_available_bytes: NumberField({ min: 0 }).int().default(0),
     meta_total_bytes: NumberField({ min: 0 }).int().default(0),
@@ -58,6 +89,10 @@ export const NodeMetricInputSchema = z.object({
   node_stats_ok: z.boolean(),
   resync_queue_length: z.number().int().min(0).default(0),
   resync_errored_blocks: z.number().int().min(0).default(0),
+  rc_entries: z.number().int().min(0).default(0),
+  layout_ok: z.boolean(),
+  stored_partitions: z.number().int().min(0).default(0),
+  partition_size_bytes: z.number().int().min(0).default(0),
   data_total_bytes: z.number().int().min(0).default(0),
   data_available_bytes: z.number().int().min(0).default(0),
   meta_total_bytes: z.number().int().min(0).default(0),

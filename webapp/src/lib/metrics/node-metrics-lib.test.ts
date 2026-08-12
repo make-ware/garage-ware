@@ -16,6 +16,10 @@ interface Row {
   node_stats_ok: boolean;
   resync_queue_length: number;
   resync_errored_blocks: number;
+  rc_entries: number;
+  layout_ok: boolean;
+  stored_partitions: number;
+  partition_size_bytes: number;
   data_total_bytes: number;
   data_available_bytes: number;
   meta_total_bytes: number;
@@ -30,6 +34,9 @@ interface Point {
   uptime_pct: number;
   resync_queue_length: number | null;
   resync_errored_blocks: number | null;
+  rc_entries: number | null;
+  stored_partitions: number | null;
+  partition_size_bytes: number | null;
   data_total_bytes: number | null;
   data_available_bytes: number | null;
   meta_total_bytes: number | null;
@@ -50,6 +57,10 @@ function row(overrides: Partial<Row> & { created: string }): Row {
     node_stats_ok: true,
     resync_queue_length: 0,
     resync_errored_blocks: 0,
+    rc_entries: 500,
+    layout_ok: true,
+    stored_partitions: 64,
+    partition_size_bytes: 2000,
     data_total_bytes: 1000,
     data_available_bytes: 400,
     meta_total_bytes: 100,
@@ -114,6 +125,84 @@ describe('bucketHistory', () => {
     ) as History;
 
     expect(result.points[0].resync_queue_length).toBe(10);
+  });
+
+  it('averages rc_entries over stats-carrying samples only', () => {
+    // Same gate as the resync counters — one GetNodeStatistics call, so one
+    // gate covers all three.
+    const result = bucketHistory(
+      [
+        row({ created: T0, rc_entries: 100 }),
+        row({ created: T5, node_stats_ok: false, rc_entries: 999999 }),
+      ],
+      900
+    ) as History;
+
+    expect(result.points[0].rc_entries).toBe(100);
+  });
+
+  it('nulls the layout fields when no sample in the bucket has layout_ok', () => {
+    // The whole point of the layout_ok gate: a failed GetClusterLayout must
+    // chart as a gap, not as "this node holds no partitions".
+    const result = bucketHistory(
+      [
+        row({
+          created: T0,
+          layout_ok: false,
+          stored_partitions: 64,
+          partition_size_bytes: 2000,
+        }),
+      ],
+      900
+    ) as History;
+
+    expect(result.points[0].stored_partitions).toBeNull();
+    expect(result.points[0].partition_size_bytes).toBeNull();
+  });
+
+  it('emits 0, not null, stored partitions for a gateway under layout_ok', () => {
+    // The asymmetry that justifies the gate: 0 under layout_ok is a reading —
+    // "this node holds no partitions" — and must not be confused with the gap
+    // above.
+    const result = bucketHistory(
+      [row({ created: T0, layout_ok: true, stored_partitions: 0 })],
+      900
+    ) as History;
+
+    expect(result.points[0].stored_partitions).toBe(0);
+  });
+
+  it('averages a mid-bucket layout change into a fractional partition count', () => {
+    // Correct rather than surprising: the node genuinely held 64 partitions
+    // and then 32.
+    const result = bucketHistory(
+      [
+        row({ created: T0, stored_partitions: 64 }),
+        row({ created: T5, stored_partitions: 32 }),
+      ],
+      900
+    ) as History;
+
+    expect(result.points[0].stored_partitions).toBe(48);
+  });
+
+  it('gates the layout fields independently of the partition-space ones', () => {
+    // A down node keeps its layout role but reports no space; a gateway is
+    // the reverse. One gate could not express both.
+    const result = bucketHistory(
+      [
+        row({
+          created: T0,
+          is_up: false,
+          data_total_bytes: 0,
+          data_available_bytes: 0,
+        }),
+      ],
+      900
+    ) as History;
+
+    expect(result.points[0].data_total_bytes).toBeNull();
+    expect(result.points[0].stored_partitions).toBe(64);
   });
 
   it('nulls partition fields when total is 0 (gateway node convention)', () => {

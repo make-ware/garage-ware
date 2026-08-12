@@ -31,6 +31,14 @@ import type {
   NodeMetricsHistory,
 } from '@/lib/types';
 import { formatCapacity } from '@/lib/format';
+import {
+  assessCoverage,
+  bytesPerPartition,
+  coverageInputFromPoint,
+  latestPointsByNode,
+  MIN_PEER_READINGS,
+  type NodeCoverage,
+} from '@/lib/metrics/data-coverage';
 import { buildNodeNameMap, nodeLabel } from '@/lib/node-label';
 
 const RANGES = ['6h', '24h', '7d', '30d'] as const;
@@ -381,6 +389,32 @@ function MetricsView() {
       ),
     [points, keyById]
   );
+  // Bytes per partition: the series the coverage judgement is drawn from, so
+  // the plotted line and the banner can never disagree. The extras carry the
+  // partition count and — when the layout reported a partition size — the
+  // fraction of the node's own allotment it has filled, which is the one
+  // figure that stays meaningful on a cluster too small for the median guard.
+  const perPartitionData = useMemo(
+    () =>
+      pivot(
+        points,
+        keyById,
+        (p) => bytesPerPartition(coverageInputFromPoint(p)),
+        (p) => {
+          const partitions = p.stored_partitions;
+          if (partitions === null || partitions <= 0) return null;
+          const extra: Record<string, number> = { partitions };
+          const size = p.partition_size_bytes;
+          const total = p.data_total_bytes;
+          if (size && size > 0 && total && total > 0) {
+            const used = Math.max(total - (p.data_available_bytes ?? 0), 0);
+            extra.allotment = (100 * used) / (partitions * size);
+          }
+          return extra;
+        }
+      ),
+    [points, keyById]
+  );
   const resyncQueueData = useMemo(
     () => pivot(points, keyById, (p) => p.resync_queue_length),
     [points, keyById]
@@ -388,6 +422,14 @@ function MetricsView() {
   const resyncErroredData = useMemo(
     () => pivot(points, keyById, (p) => p.resync_errored_blocks),
     [points, keyById]
+  );
+
+  // Deliberately over ALL points, not the palette-capped `nodes` slice: a 9th
+  // node is not charted, but it still has to be flagged.
+  const coverage = useMemo(
+    () =>
+      assessCoverage(latestPointsByNode(points).map(coverageInputFromPoint)),
+    [points]
   );
 
   const pct = (v: number) => `${v.toFixed(v >= 100 ? 0 : 1)}%`;
@@ -398,6 +440,43 @@ function MetricsView() {
     if (used === undefined || total === undefined) return null;
     return `${formatCapacity(used)} / ${formatCapacity(total)}`;
   };
+
+  const perPartitionDetail = (row: ChartRow, key: string) => {
+    const partitions = row[`${key}__partitions`];
+    if (partitions === undefined) return null;
+    const shards = `${count(partitions)} partition${partitions === 1 ? '' : 's'}`;
+    const allotment = row[`${key}__allotment`];
+    return allotment === undefined
+      ? shards
+      : `${shards} · ${pct(allotment)} of allotment`;
+  };
+
+  const coverageNote = (n: NodeCoverage) => {
+    if (n.status === 'rebuilding')
+      return 'Its metadata is still catching up or a resync is running, so this should close on its own.';
+    if (n.entriesPerPartition === null)
+      return 'Resync stats were unavailable for this node, so a rebuild in progress cannot be ruled out — check it.';
+    // A block shortfall well past the per-partition one means the node's own
+    // metadata count is masking the hole; say so, since that is the reading an
+    // operator would otherwise dismiss as a small-node artifact.
+    const masked =
+      n.blockShortfallPct !== null &&
+      n.shortfallPct !== null &&
+      n.blockShortfallPct > n.shortfallPct + 0.02;
+    return (
+      (masked
+        ? 'It claims at least as many blocks as its peers but holds fewer bytes for each of them. '
+        : '') +
+      (n.severe
+        ? 'Its metadata already covers these blocks and nothing is resynchronizing — run `garage repair blocks` on this node.'
+        : 'Its metadata already covers these blocks and nothing is resynchronizing.')
+    );
+  };
+
+  const guardNote =
+    coverage.guard === 'too-few-peers'
+      ? `Comparing data per partition needs at least ${MIN_PEER_READINGS} storage nodes reporting; ${coverage.contributingNodes} ${coverage.contributingNodes === 1 ? 'is' : 'are'}. Nothing here can be judged missing data.`
+      : 'The cluster holds too little data per partition for the comparison to mean anything yet. Nothing here can be judged missing data.';
 
   const hasData = points.length > 0;
 
@@ -465,59 +544,113 @@ function MetricsView() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-6">
-          <MetricChart
-            title="Uptime"
-            description="Share of samples in each interval where the node was connected"
-            data={uptimeData}
-            config={chartConfig}
-            nodeKeys={nodeKeys}
-            range={range}
-            yDomain={[0, 100]}
-            formatValue={pct}
-            curve="stepAfter"
-          />
-          <MetricChart
-            title="Data space used"
-            description="Data partition fill per node (used / total in the tooltip)"
-            data={dataSpaceData}
-            config={chartConfig}
-            nodeKeys={nodeKeys}
-            range={range}
-            yDomain={[0, 100]}
-            formatValue={pct}
-            formatDetail={spaceDetail}
-          />
-          <MetricChart
-            title="Metadata space used"
-            description="Metadata partition fill per node (used / total in the tooltip)"
-            data={metaSpaceData}
-            config={chartConfig}
-            nodeKeys={nodeKeys}
-            range={range}
-            yDomain={[0, 100]}
-            formatValue={pct}
-            formatDetail={spaceDetail}
-          />
-          <MetricChart
-            title="Resync queue"
-            description="Blocks waiting to resynchronize, per node"
-            data={resyncQueueData}
-            config={chartConfig}
-            nodeKeys={nodeKeys}
-            range={range}
-            formatValue={count}
-          />
-          <MetricChart
-            title="Resync errored blocks"
-            description="Blocks whose resync is failing, per node"
-            data={resyncErroredData}
-            config={chartConfig}
-            nodeKeys={nodeKeys}
-            range={range}
-            formatValue={count}
-          />
-        </div>
+        <>
+          {coverage.flagged.length > 0 ? (
+            <div className="space-y-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              <p className="font-medium">
+                {coverage.flagged.length === 1
+                  ? '1 node is holding less data than its peers'
+                  : `${coverage.flagged.length} nodes are holding less data than their peers`}
+              </p>
+              <ul className="space-y-1">
+                {coverage.flagged.map((n) => (
+                  <li key={n.nodeId}>
+                    <span className="font-medium">
+                      {nodeLabel(nodeNames.get(n.nodeId) ?? null, n.nodeId)}
+                    </span>{' '}
+                    is {pct(100 * (n.dataShortfallPct ?? 0))} below the cluster
+                    median
+                    {n.missingBytes !== null
+                      ? ` — about ${formatCapacity(n.missingBytes)} of block data unaccounted for`
+                      : ''}
+                    .
+                    <div className="opacity-90">
+                      {formatCapacity(n.bytesPerPartition ?? 0)} per partition
+                      vs {formatCapacity(coverage.medianBytesPerPartition ?? 0)}
+                      {n.bytesPerEntry !== null &&
+                      coverage.medianBytesPerEntry !== null ? (
+                        <>
+                          {' · '}
+                          {formatCapacity(n.bytesPerEntry)} per claimed block vs{' '}
+                          {formatCapacity(coverage.medianBytesPerEntry)}
+                        </>
+                      ) : null}
+                    </div>
+                    <div className="opacity-90">{coverageNote(n)}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : coverage.guard ? (
+            // Never render nothing when a guard is what silenced the check —
+            // a silent all-clear is the failure mode this exists to prevent.
+            <p className="text-sm text-muted-foreground">{guardNote}</p>
+          ) : null}
+
+          <div className="grid gap-6">
+            <MetricChart
+              title="Uptime"
+              description="Share of samples in each interval where the node was connected"
+              data={uptimeData}
+              config={chartConfig}
+              nodeKeys={nodeKeys}
+              range={range}
+              yDomain={[0, 100]}
+              formatValue={pct}
+              curve="stepAfter"
+            />
+            <MetricChart
+              title="Data space used"
+              description="Data partition fill per node (used / total in the tooltip)"
+              data={dataSpaceData}
+              config={chartConfig}
+              nodeKeys={nodeKeys}
+              range={range}
+              yDomain={[0, 100]}
+              formatValue={pct}
+              formatDetail={spaceDetail}
+            />
+            <MetricChart
+              title="Data per partition"
+              description="Stored bytes divided by the partitions the layout assigns each node — equal-sized shards, so healthy nodes track each other. A line that drops away from the pack is a node missing data."
+              data={perPartitionData}
+              config={chartConfig}
+              nodeKeys={nodeKeys}
+              range={range}
+              formatValue={formatCapacity}
+              formatDetail={perPartitionDetail}
+            />
+            <MetricChart
+              title="Metadata space used"
+              description="Metadata partition fill per node (used / total in the tooltip)"
+              data={metaSpaceData}
+              config={chartConfig}
+              nodeKeys={nodeKeys}
+              range={range}
+              yDomain={[0, 100]}
+              formatValue={pct}
+              formatDetail={spaceDetail}
+            />
+            <MetricChart
+              title="Resync queue"
+              description="Blocks waiting to resynchronize, per node"
+              data={resyncQueueData}
+              config={chartConfig}
+              nodeKeys={nodeKeys}
+              range={range}
+              formatValue={count}
+            />
+            <MetricChart
+              title="Resync errored blocks"
+              description="Blocks whose resync is failing, per node"
+              data={resyncErroredData}
+              config={chartConfig}
+              nodeKeys={nodeKeys}
+              range={range}
+              formatValue={count}
+            />
+          </div>
+        </>
       )}
     </div>
   );
