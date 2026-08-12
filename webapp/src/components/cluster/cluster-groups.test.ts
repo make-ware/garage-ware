@@ -13,7 +13,6 @@ function item(
     zone: 'z1',
     tags: [],
     capacity: null,
-    hostname: null,
     isUp: true,
     draining: false,
     garageVersion: null,
@@ -27,15 +26,15 @@ function item(
 }
 
 describe('nodeLabelFor', () => {
-  it('prefers the hostname', () => {
-    expect(nodeLabelFor({ hostname: 'garage-1', id: 'abcdef' })).toBe(
+  it('prefers the name: tag', () => {
+    expect(nodeLabelFor({ tags: ['ssd', 'name:garage-1'], id: 'abcdef' })).toBe(
       'garage-1'
     );
   });
 
   it('falls back to the shortened id', () => {
-    expect(nodeLabelFor({ hostname: null, id: 'abcdef0123456789abcdef' })).toBe(
-      'abcdef012345…'
+    expect(nodeLabelFor({ tags: [], id: 'abcdef0123456789abcdef' })).toBe(
+      'abcdef01…'
     );
   });
 });
@@ -57,10 +56,25 @@ describe('groupNodesByZone', () => {
 
   it('sorts nodes within a zone by label', () => {
     const [group] = groupNodesByZone([
-      item({ id: 'n1', zone: 'z', hostname: 'zulu' }),
-      item({ id: 'n2', zone: 'z', hostname: 'alpha' }),
+      item({ id: 'n1', zone: 'z', tags: ['name:zulu'] }),
+      item({ id: 'n2', zone: 'z', tags: ['name:alpha'] }),
     ]);
     expect(group.items.map((i) => i.id)).toEqual(['n2', 'n1']);
+  });
+
+  it('interleaves unnamed nodes among named ones by rendered label', () => {
+    // The comparator runs over what is actually shown, so an unnamed node
+    // sorts by its short id rather than collecting at one end.
+    const [group] = groupNodesByZone([
+      item({ id: 'zzzzzzzz1', zone: 'z', tags: ['name:mike'] }),
+      item({ id: 'bbbbbbbb1', zone: 'z' }),
+      item({ id: 'aaaaaaaa1', zone: 'z', tags: ['name:zulu'] }),
+    ]);
+    expect(group.items.map((i) => i.id)).toEqual([
+      'bbbbbbbb1', // "bbbbbbbb…"
+      'zzzzzzzz1', // "mike"
+      'aaaaaaaa1', // "zulu"
+    ]);
   });
 
   it('labels the empty zone as "no zone" but keeps the raw key', () => {
@@ -83,8 +97,8 @@ describe('groupNodesByZone', () => {
 
   it('does not mutate the input array order', () => {
     const items = [
-      item({ id: 'n1', zone: 'z', hostname: 'zulu' }),
-      item({ id: 'n2', zone: 'z', hostname: 'alpha' }),
+      item({ id: 'n1', zone: 'z', tags: ['name:zulu'] }),
+      item({ id: 'n2', zone: 'z', tags: ['name:alpha'] }),
     ];
     groupNodesByZone(items);
     expect(items.map((i) => i.id)).toEqual(['n1', 'n2']);

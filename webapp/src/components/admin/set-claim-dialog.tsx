@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
 import { api } from '@/lib/api-client';
 import { formatSignedStorage, formatStorage } from '@/lib/format';
+import { nodeLabel, shortNodeId } from '@/lib/node-label';
 
 interface Props {
   open: boolean;
@@ -23,7 +24,8 @@ interface Props {
   userId: string;
   userEmail: string;
   nodeId: string;
-  nodeLabel: string;
+  /** The node's name, or null when no `name:` tag supplies one. */
+  nodeName: string | null;
   /** The user's current effective claim on this node, in GiB. */
   currentGb: number;
   /** Unclaimed usable capacity left on the node, in GiB. */
@@ -47,7 +49,7 @@ export function SetClaimDialog({
   userId,
   userEmail,
   nodeId,
-  nodeLabel,
+  nodeName,
   currentGb,
   nodeFreeGb,
   onApplied,
@@ -85,8 +87,14 @@ export function SetClaimDialog({
           ...(note.trim() ? { note: note.trim() } : {}),
         },
       });
+      // Two nodes can carry the same name, and this toast reports a mutation
+      // against one specific node id — so when a name is shown, the short id
+      // is shown with it.
+      const named = nodeName
+        ? `${nodeName} (${shortNodeId(nodeId)})`
+        : shortNodeId(nodeId);
       toast.success(
-        `${userEmail} now claims ${formatStorage(targetGb)} on ${nodeLabel} (${formatSignedStorage(deltaGb)})`
+        `${userEmail} now claims ${formatStorage(targetGb)} on ${named} (${formatSignedStorage(deltaGb)})`
       );
       onOpenChange(false);
       await onApplied();
@@ -105,9 +113,9 @@ export function SetClaimDialog({
             <DialogTitle>Set claim</DialogTitle>
             <DialogDescription>
               Enter what <strong>{userEmail}</strong> should have on{' '}
-              <span className="font-mono text-xs">{nodeLabel}</span> after the
-              change. The difference is appended to the ledger as a single
-              signed entry, so the grant history stays intact.
+              <strong>{nodeLabel(nodeName, nodeId)}</strong> after the change.
+              The difference is appended to the ledger as a single signed entry,
+              so the grant history stays intact.
             </DialogDescription>
           </DialogHeader>
 

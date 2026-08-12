@@ -35,6 +35,8 @@ import {
   formatSignedStorage,
   formatStorage,
 } from '@/lib/format';
+import { buildNodeNameMap, nodeLabel, shortNodeId } from '@/lib/node-label';
+import { NodeIdentity } from '@/components/cluster/node-identity';
 import type { AdminUser, LayoutResponse } from '@/lib/admin-types';
 import {
   CLAIM_AUDIT_ACTIONS,
@@ -67,6 +69,20 @@ function AdminLedgerView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
+
+  // Audit rows are historical and carry only a node_id, so names come from the
+  // layout this page already loads. A node that has left it shows its short id.
+  const nodeNames = useMemo(() => buildNodeNameMap(layout?.roles), [layout]);
+
+  const nodeOptions = useMemo(
+    () =>
+      (layout?.roles ?? [])
+        .map((r) => ({ id: r.id, name: nodeNames.get(r.id) ?? null }))
+        .sort((a, b) =>
+          nodeLabel(a.name, a.id).localeCompare(nodeLabel(b.name, b.id))
+        ),
+    [layout, nodeNames]
+  );
 
   const query = useMemo(() => {
     const q = new URLSearchParams({
@@ -230,9 +246,14 @@ function AdminLedgerView() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={ANY}>Any node</SelectItem>
-                  {layout?.roles.map((r) => (
+                  {nodeOptions.map((r) => (
                     <SelectItem key={r.id} value={r.id}>
-                      {r.id.slice(0, 12)}… ({r.zone})
+                      {nodeLabel(r.name, r.id)}
+                      {r.name ? (
+                        <span className="ml-2 font-mono text-xs text-muted-foreground">
+                          {shortNodeId(r.id)}
+                        </span>
+                      ) : null}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -344,9 +365,11 @@ function AdminLedgerView() {
                               </span>
                             )}
                           </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {entry.node_hostname ||
-                              `${entry.node_id.slice(0, 12)}…`}
+                          <TableCell>
+                            <NodeIdentity
+                              name={nodeNames.get(entry.node_id) ?? null}
+                              nodeId={entry.node_id}
+                            />
                           </TableCell>
                           <TableCell
                             className={`text-right font-mono whitespace-nowrap ${

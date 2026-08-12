@@ -23,7 +23,7 @@ import {
   type PartitionSample,
 } from '@/lib/metrics/node-sample';
 import type { ClusterNodeItem } from '@/lib/types';
-import { nodeLabelFor } from './cluster-groups';
+import { nodeLabel, parseNodeTags } from '@/lib/node-label';
 
 interface NodeDetailsDialogProps {
   /** The node whose details to show; null closes the dialog. */
@@ -156,20 +156,22 @@ function NodeDetailsBody({
       ? item.diskTotalBytes - item.diskFreeBytes
       : null;
   const sample = metric ? describeSample(metric) : null;
+  // The name renders as the title, so it must not repeat as a badge.
+  const { name, rest } = parseNodeTags(item.tags);
 
   return (
     <>
       {/* pr-10 keeps the title clear of the dialog's own close button. */}
       <DialogHeader className="gap-1 border-b p-4 pr-10 text-left">
         <DialogTitle className="truncate text-base">
-          {nodeLabelFor(item)}
+          {nodeLabel(name, item.id)}
         </DialogTitle>
         <DialogDescription className="break-all font-mono text-xs">
           {item.id}
         </DialogDescription>
         <div className="flex flex-wrap items-center gap-1 pt-1">
           <Badge variant="outline">{item.zone || 'no zone'}</Badge>
-          {item.tags.map((tag) => (
+          {rest.map((tag) => (
             <Badge key={tag} variant="secondary">
               {tag}
             </Badge>

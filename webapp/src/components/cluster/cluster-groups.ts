@@ -1,3 +1,4 @@
+import { nodeLabel, parseNodeTags } from '@/lib/node-label';
 import type { ClusterNodeItem } from '@/lib/types';
 
 /**
@@ -27,12 +28,15 @@ export interface ZoneGroup {
   reportedBytes: number;
 }
 
-/** The label idiom used across the app for Garage nodes. */
+/**
+ * The label idiom used across the app for Garage nodes: the node's name from
+ * its `name:` tag, or the short form of its id. See lib/node-label.ts.
+ */
 export function nodeLabelFor(node: {
-  hostname?: string | null;
+  tags?: readonly string[] | null;
   id: string;
 }): string {
-  return node.hostname || `${node.id.slice(0, 12)}…`;
+  return nodeLabel(parseNodeTags(node.tags).name, node.id);
 }
 
 /** Zones sorted alphabetically, nodes sorted by label within each. */

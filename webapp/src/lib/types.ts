@@ -119,13 +119,17 @@ export interface NodeMetricsHistory {
  * unknown, distinct from down. The payload deliberately carries no `addr`;
  * node network addresses never reach the browser (the same reason
  * `GarageClusterCache` is superuser-only).
+ *
+ * It also carries no `hostname`: a node is identified by its name (from a
+ * `name:` tag, see lib/node-label.ts) or by its short id, never by an
+ * OS-reported hostname. The field is left off so the compiler keeps it that
+ * way.
  */
 export interface ClusterNodeItem {
   id: string;
   zone: string;
   tags: string[];
   capacity: number | null;
-  hostname: string | null;
   isUp: boolean | null;
   draining: boolean | null;
   garageVersion: string | null;

@@ -22,8 +22,10 @@ export async function GET(req: Request) {
     const statusByNode = new Map(status.nodes.map((n) => [n.id, n]));
     // This payload is served to any signed-in user. `addr` is deliberately
     // never emitted — node network addresses stay server-side, the same
-    // reason GarageClusterCache is superuser-only. Hostname/zone/fill levels
-    // are fine (see the node-metrics route docblock).
+    // reason GarageClusterCache is superuser-only. Zone/tags/fill levels are
+    // fine (see the node-metrics route docblock). `hostname` is no longer
+    // emitted either: it is not how a node is identified, and the only reader
+    // was a label the tags now supply.
     const items: ClusterNodeItem[] = layout.roles.map((r) => {
       const s = statusByNode.get(r.id);
       return {
@@ -31,7 +33,6 @@ export async function GET(req: Request) {
         zone: r.zone,
         tags: r.tags ?? [],
         capacity: r.capacity ?? null,
-        hostname: s?.hostname ?? null,
         isUp: s?.isUp ?? null,
         draining: s?.draining ?? null,
         garageVersion: s?.garageVersion ?? null,
