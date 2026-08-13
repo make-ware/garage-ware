@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import {
   Activity,
   ArrowLeftRight,
+  CalendarClock,
   Coins,
   Database,
   Gauge,
@@ -19,6 +20,7 @@ import { cn } from '@/lib/utils';
 const links = [
   { href: '/admin', label: 'Overview', icon: Activity },
   { href: '/admin/cluster', label: 'Cluster', icon: Database },
+  { href: '/admin/events', label: 'Events', icon: CalendarClock },
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/claims', label: 'Claims', icon: Coins },
   { href: '/admin/ledger', label: 'Ledger', icon: History },

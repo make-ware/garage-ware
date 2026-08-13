@@ -30,6 +30,14 @@ import { z } from 'zod';
  *     gate has to exist: without it a cluster-wide layout failure would write
  *     0 for every node and read back, forever, as "all gateways, nothing to
  *     judge".
+ *   - `role_ok` gates `role_capacity_bytes` / `node_tags` / `layout_version`.
+ *     It reads "this row was written by a scraper that records the layout
+ *     role fields", and is set whenever `layout_ok` is — *including* for a
+ *     node with no role, whose capacity is then a genuine 0. Rows written
+ *     before those columns existed read false, which is what stops the first
+ *     scrape after the upgrade from seeing every storage node go
+ *     `0 → 16 TB` and emitting a spurious ClusterEvents row for each. See
+ *     pocketbase/pb_hooks/lib/cluster-events.js.
  *   - Partition fields carry their own sentinel: a real partition always has
  *     total > 0, so `*_total_bytes === 0` means "no partition data" (e.g. a
  *     gateway node). "Used" is derived: total − available.
@@ -74,6 +82,18 @@ export const NodeMetricSchema = z
     stored_partitions: NumberField({ min: 0 }).int().default(0),
     /** Cluster-wide bytes per partition, denormalized (gated by layout_ok). */
     partition_size_bytes: NumberField({ min: 0 }).int().default(0),
+    /** This row carries the layout role fields below — see the docblock. */
+    role_ok: BoolField(),
+    /** Capacity the layout assigns this node; 0 = gateway or no role. */
+    role_capacity_bytes: NumberField({ min: 0 }).int().default(0),
+    /** The role's tags, comma-joined — carries the `name:` tag, so a rename
+     * shows up as a change (gated by role_ok). */
+    node_tags: TextField({ max: 500 }).optional(),
+    /** Cluster layout version at sample time, denormalized (gated by role_ok). */
+    layout_version: NumberField({ min: 0 }).int().default(0),
+    /** The node's reported Garage version; "" = unknown. Not gated — it comes
+     * from GetClusterStatus, whose failure aborts the whole scrape. */
+    garage_version: TextField({ max: 64 }).optional(),
     data_total_bytes: NumberField({ min: 0 }).int().default(0),
     data_available_bytes: NumberField({ min: 0 }).int().default(0),
     meta_total_bytes: NumberField({ min: 0 }).int().default(0),
@@ -93,6 +113,11 @@ export const NodeMetricInputSchema = z.object({
   layout_ok: z.boolean(),
   stored_partitions: z.number().int().min(0).default(0),
   partition_size_bytes: z.number().int().min(0).default(0),
+  role_ok: z.boolean(),
+  role_capacity_bytes: z.number().int().min(0).default(0),
+  node_tags: z.string().max(500).optional(),
+  layout_version: z.number().int().min(0).default(0),
+  garage_version: z.string().max(64).optional(),
   data_total_bytes: z.number().int().min(0).default(0),
   data_available_bytes: z.number().int().min(0).default(0),
   meta_total_bytes: z.number().int().min(0).default(0),

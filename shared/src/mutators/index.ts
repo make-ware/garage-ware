@@ -11,3 +11,4 @@ export * from './storage-transfer';
 export * from './storage-invite';
 export * from './node-metric';
 export * from './garage-cluster-cache';
+export * from './cluster-event';

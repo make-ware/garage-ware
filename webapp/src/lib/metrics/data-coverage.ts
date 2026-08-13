@@ -1,3 +1,4 @@
+import type { NodeMetric } from '@garage-ware/shared';
 import type { MetricPoint } from '@/lib/types';
 
 /**
@@ -415,6 +416,33 @@ export function coverageInputFromPoint(p: MetricPoint): CoverageInput {
     storedPartitions: p.stored_partitions,
     rcEntries: p.rc_entries,
     resyncQueueLength: p.resync_queue_length,
+  };
+}
+
+/**
+ * One stored sample as a coverage reading — the raw-row twin of
+ * `coverageInputFromPoint`, for callers holding NodeMetrics records from
+ * `fetchLatestNodeMetrics` rather than bucketed history. /admin/events uses
+ * it so the timeline's "suggested" card costs no extra fetch.
+ *
+ * It applies the schema's null conventions itself (see the docblock on
+ * shared/src/schema/node-metric.ts), which the bucketed path had already
+ * applied upstream: `layout_ok` voids `stored_partitions`, `node_stats_ok`
+ * voids `rc_entries` and the resync queue, and a zero `data_total_bytes`
+ * voids the space reading. A 0 that means "no reading" must never reach
+ * `assessCoverage`, which would read it as a real one.
+ */
+export function coverageInputFromMetric(m: NodeMetric): CoverageInput {
+  return {
+    nodeId: m.node_id,
+    isUp: m.is_up,
+    usedBytes:
+      m.data_total_bytes > 0
+        ? Math.max(m.data_total_bytes - m.data_available_bytes, 0)
+        : null,
+    storedPartitions: m.layout_ok ? m.stored_partitions : null,
+    rcEntries: m.node_stats_ok ? m.rc_entries : null,
+    resyncQueueLength: m.node_stats_ok ? m.resync_queue_length : null,
   };
 }
 

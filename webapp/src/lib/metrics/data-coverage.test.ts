@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assessCoverage,
   bytesPerPartition,
+  coverageInputFromMetric,
   coverageInputFromPoint,
   latestPointsByNode,
   median,
@@ -11,6 +12,7 @@ import {
   SHORTFALL_WARN,
   type CoverageInput,
 } from './data-coverage';
+import type { NodeMetric } from '@garage-ware/shared';
 import type { MetricPoint } from '@/lib/types';
 
 const GB = 1024 ** 3;
@@ -430,6 +432,85 @@ describe('coverageInputFromPoint', () => {
     expect(
       coverageInputFromPoint(point({ stored_partitions: 0 })).storedPartitions
     ).toBe(0);
+  });
+});
+
+function metric(overrides: Partial<NodeMetric> = {}): NodeMetric {
+  return {
+    id: 'rec1',
+    collectionId: 'pb_nodemetrics4x7z',
+    collectionName: 'NodeMetrics',
+    created: '2026-08-12 12:00:00.000Z',
+    updated: '2026-08-12 12:00:00.000Z',
+    node_id: 'node-a',
+    node_hostname: 'vault-01',
+    node_zone: 'dc1',
+    is_up: true,
+    node_stats_ok: true,
+    resync_queue_length: 0,
+    resync_errored_blocks: 0,
+    rc_entries: 10_000,
+    layout_ok: true,
+    stored_partitions: 100,
+    partition_size_bytes: 2 * GB,
+    role_ok: true,
+    role_capacity_bytes: 500 * GB,
+    node_tags: 'name:vault-01',
+    layout_version: 12,
+    garage_version: '2.3.0',
+    data_total_bytes: 500 * GB,
+    data_available_bytes: 400 * GB,
+    meta_total_bytes: 10 * GB,
+    meta_available_bytes: 9 * GB,
+    ...overrides,
+  } as NodeMetric;
+}
+
+describe('coverageInputFromMetric', () => {
+  it('derives used bytes from the stored partition totals', () => {
+    expect(coverageInputFromMetric(metric())).toEqual({
+      nodeId: 'node-a',
+      isUp: true,
+      usedBytes: 100 * GB,
+      storedPartitions: 100,
+      rcEntries: 10_000,
+      resyncQueueLength: 0,
+    });
+  });
+
+  it('reads a zero partition total as no reading, never zero bytes', () => {
+    // A 0 that means "no reading" reaching assessCoverage would be judged as a
+    // real one — the whole reason the raw row cannot be passed through as-is.
+    expect(
+      coverageInputFromMetric(
+        metric({ data_total_bytes: 0, data_available_bytes: 0 })
+      ).usedBytes
+    ).toBeNull();
+  });
+
+  it('voids the layout reading when layout_ok is false', () => {
+    const result = coverageInputFromMetric(
+      metric({ layout_ok: false, stored_partitions: 0 })
+    );
+    expect(result.storedPartitions).toBeNull();
+  });
+
+  it('keeps a gateway 0 under layout_ok, which is a real reading', () => {
+    expect(
+      coverageInputFromMetric(metric({ stored_partitions: 0 })).storedPartitions
+    ).toBe(0);
+  });
+
+  it('voids the resync counters when node_stats_ok is false', () => {
+    const result = coverageInputFromMetric(
+      metric({ node_stats_ok: false, rc_entries: 0, resync_queue_length: 0 })
+    );
+    expect(result.rcEntries).toBeNull();
+    expect(result.resyncQueueLength).toBeNull();
+  });
+
+  it('carries is_up straight through', () => {
+    expect(coverageInputFromMetric(metric({ is_up: false })).isUp).toBe(false);
   });
 });
 

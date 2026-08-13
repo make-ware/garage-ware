@@ -300,14 +300,20 @@ function MetricsView() {
   const scrapeNow = async () => {
     setScraping(true);
     try {
-      const result = await api<{ recorded: number; statsFailed: number }>(
-        '/next-api/garage/node-metrics/scrape',
-        { method: 'POST' }
-      );
+      const result = await api<{
+        recorded: number;
+        statsFailed: number;
+        events: number;
+      }>('/next-api/garage/node-metrics/scrape', { method: 'POST' });
       toast.success(
         `Recorded ${result.recorded} node sample${result.recorded === 1 ? '' : 's'}` +
           (result.statsFailed > 0
             ? ` (${result.statsFailed} without resync stats)`
+            : '') +
+          // The scrape also diffs against the previous sample; mention the
+          // timeline only when it actually gained something.
+          (result.events > 0
+            ? ` — ${result.events} cluster event${result.events === 1 ? '' : 's'} logged`
             : '')
       );
       setRefreshKey((k) => k + 1);

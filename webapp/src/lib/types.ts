@@ -16,6 +16,7 @@ import type {
   StorageInvite,
   NodeMetric,
   GarageClusterCache,
+  ClusterEvent,
 } from '@garage-ware/shared';
 import type { NodeClaimPosition } from '@/lib/storage/ledger-math';
 
@@ -36,6 +37,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'StorageInvites'): RecordService<StorageInvite>;
   collection(idOrName: 'NodeMetrics'): RecordService<NodeMetric>;
   collection(idOrName: 'GarageClusterCache'): RecordService<GarageClusterCache>;
+  collection(idOrName: 'ClusterEvents'): RecordService<ClusterEvent>;
 }
 
 /**
@@ -159,4 +161,13 @@ export interface ClusterNodesResponse {
   items: ClusterNodeItem[];
   replicationFactor: number;
   layoutVersion: number;
+}
+
+/** `GET /next-api/garage/events` — the cluster timeline, admin-only. */
+export interface ClusterEventsResponse {
+  items: ClusterEvent[];
+  page: number;
+  perPage: number;
+  totalItems: number;
+  totalPages: number;
 }

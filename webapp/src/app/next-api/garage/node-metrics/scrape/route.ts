@@ -11,7 +11,10 @@ interface ScrapeResult {
   skipped?: boolean;
   recorded: number;
   statsFailed: number;
+  layoutFailed: number;
   pruned: number;
+  /** ClusterEvents rows the diff against the previous scrape produced. */
+  events: number;
   errors: number;
 }
 
@@ -29,6 +32,10 @@ interface ScrapeResult {
  * PocketBase answers 503 when GARAGE_ADMIN_URL/GARAGE_ADMIN_TOKEN are not set
  * in its environment — that surfaces to the UI as an error rather than a
  * silently empty "success".
+ *
+ * The same call also advances the cluster timeline: the scraper diffs this
+ * sample against the previous one and appends any ClusterEvents rows it
+ * produced, reported back as `events`.
  */
 export async function POST(req: Request) {
   try {

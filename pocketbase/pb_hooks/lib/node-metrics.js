@@ -21,6 +21,15 @@
 // `bucketHistory` is a pure function (no Goja globals) so it can be unit
 // tested from the webapp's vitest setup.
 //
+// The same run also feeds the cluster timeline. Before writing this scrape's
+// rows, `scrapeOnce` reads the previous ones back (PREV_WINDOW_SEC) and hands
+// both sets to `diffObservations` in lib/cluster-events.js; anything that
+// changed is written as a ClusterEvents row inside the same transaction. The
+// read has to come first — after the writes, "previous" would be the row we
+// just saved. No new Garage calls and no extra state store: the previous
+// observation IS the previous NodeMetrics row, which is what the `role_*`,
+// `layout_version` and `garage_version` columns are there for.
+//
 // Lives in a plain `.js` (not `*.pb.js`, which PocketBase would load as a hook
 // file in its own right) and is `require`d INSIDE each handler: Goja runs
 // every callback in a fresh executor and will not carry top-level declarations
@@ -29,13 +38,26 @@
 // Null conventions (see shared/src/schema/node-metric.ts): PB number fields
 // cannot hold null, so stored rows use `node_stats_ok` to gate the resync
 // fields and `rc_entries`, `layout_ok` to gate `stored_partitions` /
-// `partition_size_bytes`, and `*_total_bytes === 0` to mean "no partition
-// data". Under `layout_ok`, `stored_partitions === 0` is a real reading ("this
-// node holds no partitions") — which is why that gate has to exist at all, or
-// a failed layout call would record every node as a gateway. Real nulls only
-// appear in the JSON `historyFor` emits.
+// `partition_size_bytes`, `role_ok` to gate `role_capacity_bytes` /
+// `node_tags` / `layout_version`, and `*_total_bytes === 0` to mean "no
+// partition data". Under `layout_ok`, `stored_partitions === 0` is a real
+// reading ("this node holds no partitions") — which is why that gate has to
+// exist at all, or a failed layout call would record every node as a gateway.
+// `role_ok` carries a second job on top of that one: it also means "this row
+// was written by a scraper that records the role columns", so a pre-migration
+// row cannot be diffed against and the detector stays quiet on its first run.
+// Real nulls only appear in the JSON `historyFor` emits.
 
 const COLLECTION = "NodeMetrics";
+
+/**
+ * How far back scrapeOnce looks for the previous observation to diff against.
+ * Wide enough to ride out a missed cron tick or two; narrow enough that a node
+ * absent that long is a genuinely new observation rather than a diff base. A
+ * longer outage produces no events for the gap, which is the honest answer —
+ * we were not looking.
+ */
+const PREV_WINDOW_SEC = 2 * 3600;
 
 /** Ranges the history endpoint serves: window size and bucket width. */
 const RANGES = {
@@ -211,14 +233,19 @@ function adminGet(baseUrl, token, path) {
 /**
  * Record one sample row per cluster node; optionally prune old rows.
  *
- * Returns { skipped?, recorded, statsFailed, layoutFailed, pruned, errors }.
- * `skipped` is set (with a warn log) when GARAGE_ADMIN_URL/TOKEN are absent —
- * the env is optional in dev, so this is a degraded state, not a crash. A
- * failed GetClusterStatus aborts the run (no node identity, nothing to
- * record); a failed GetNodeStatistics only clears node_stats_ok on every row,
- * and a failed GetClusterLayout only clears layout_ok. `layoutFailed` is
- * additive — existing callers destructure { recorded, statsFailed } and are
- * unaffected.
+ * Returns { skipped?, recorded, statsFailed, layoutFailed, pruned, events,
+ * errors }. `skipped` is set (with a warn log) when GARAGE_ADMIN_URL/TOKEN are
+ * absent — the env is optional in dev, so this is a degraded state, not a
+ * crash. A failed GetClusterStatus aborts the run (no node identity, nothing
+ * to record); a failed GetNodeStatistics only clears node_stats_ok on every
+ * row, and a failed GetClusterLayout clears both layout_ok and role_ok.
+ * `layoutFailed` and `events` are additive — existing callers destructure
+ * { recorded, statsFailed } and are unaffected.
+ *
+ * The same transaction also writes the cluster timeline. Detection is
+ * best-effort and never fails the scrape: a sample recorded without its events
+ * is a small loss, a scrape lost because the differ threw is a hole in the
+ * history the charts draw from.
  */
 function scrapeOnce(app, opts) {
   const baseUrl = $os.getenv("GARAGE_ADMIN_URL").replace(/\/+$/, "");
@@ -233,6 +260,7 @@ function scrapeOnce(app, opts) {
       statsFailed: 0,
       layoutFailed: 0,
       pruned: 0,
+      events: 0,
       errors: 0,
     };
   }
@@ -256,6 +284,7 @@ function scrapeOnce(app, opts) {
   // see the null conventions at the top of this file.
   let rolesById = {};
   let partitionSize = 0;
+  let layoutVersion = 0;
   let layoutOk = false;
   try {
     const layout = adminGet(baseUrl, token, "/v2/GetClusterLayout");
@@ -263,6 +292,7 @@ function scrapeOnce(app, opts) {
       if (role && role.id) rolesById[role.id] = role;
     }
     partitionSize = (layout && layout.partitionSize) || 0;
+    layoutVersion = (layout && layout.version) || 0;
     layoutOk = true;
   } catch (err) {
     console.warn(
@@ -276,9 +306,20 @@ function scrapeOnce(app, opts) {
   let layoutFailed = 0;
   let errors = 0;
   let pruned = 0;
+  let events = 0;
 
   app.runInTransaction((txApp) => {
     const collection = txApp.findCollectionByNameOrId(COLLECTION);
+
+    // Before any write: what the previous scrape saw. Reading after the loop
+    // would return the rows we are about to save.
+    let previous = [];
+    try {
+      previous = readPreviousObservations(txApp);
+    } catch (err) {
+      console.warn("[node-metrics] previous-sample read failed; no events this run:", err);
+    }
+    const current = [];
 
     for (const node of status.nodes || []) {
       try {
@@ -288,11 +329,33 @@ function scrapeOnce(app, opts) {
         const data = node.dataPartition;
         const meta = node.metadataPartition;
 
+        // Built once and used twice — written to the row, then diffed — so the
+        // timeline can never describe a sample different from the stored one.
+        const observation = {
+          node_id: node.id,
+          node_hostname: node.hostname || "",
+          node_zone: (node.role && node.role.zone) || "",
+          is_up: !!node.isUp,
+          layout_ok: layoutOk,
+          role_ok: layoutOk,
+          // `capacity` is absent for a gateway and the role is absent entirely
+          // for a node with none. Both fold to the 0 that role_ok makes
+          // readable as "holds no storage role".
+          role_capacity_bytes: (role && role.capacity) || 0,
+          node_tags: role && role.tags ? role.tags.join(",") : "",
+          layout_version: layoutVersion,
+          garage_version: node.garageVersion || "",
+          data_total_bytes: data ? data.total : 0,
+          data_available_bytes: data ? data.available : 0,
+          meta_total_bytes: meta ? meta.total : 0,
+          meta_available_bytes: meta ? meta.available : 0,
+        };
+
         const record = new Record(collection);
-        record.set("node_id", node.id);
-        record.set("node_hostname", node.hostname || "");
-        record.set("node_zone", (node.role && node.role.zone) || "");
-        record.set("is_up", !!node.isUp);
+        record.set("node_id", observation.node_id);
+        record.set("node_hostname", observation.node_hostname);
+        record.set("node_zone", observation.node_zone);
+        record.set("is_up", observation.is_up);
         record.set("node_stats_ok", !!bm);
         record.set("resync_queue_length", bm ? bm.resyncQueueLen : 0);
         record.set("resync_errored_blocks", bm ? bm.resyncErrors : 0);
@@ -304,18 +367,41 @@ function scrapeOnce(app, opts) {
         // no partitions".
         record.set("stored_partitions", (role && role.storedPartitions) || 0);
         record.set("partition_size_bytes", partitionSize);
-        record.set("data_total_bytes", data ? data.total : 0);
-        record.set("data_available_bytes", data ? data.available : 0);
-        record.set("meta_total_bytes", meta ? meta.total : 0);
-        record.set("meta_available_bytes", meta ? meta.available : 0);
+        record.set("role_ok", observation.role_ok);
+        record.set("role_capacity_bytes", observation.role_capacity_bytes);
+        record.set("node_tags", observation.node_tags);
+        record.set("layout_version", observation.layout_version);
+        record.set("garage_version", observation.garage_version);
+        record.set("data_total_bytes", observation.data_total_bytes);
+        record.set("data_available_bytes", observation.data_available_bytes);
+        record.set("meta_total_bytes", observation.meta_total_bytes);
+        record.set("meta_available_bytes", observation.meta_available_bytes);
         txApp.save(record);
 
+        current.push(observation);
         recorded++;
         if (!bm) statsFailed++;
         if (!layoutOk) layoutFailed++;
       } catch (err) {
         errors++;
         console.error("[node-metrics] failed to record node:", node.id, err);
+      }
+    }
+
+    // Best-effort, and deliberately so: the samples are the thing the charts
+    // need, and losing a whole scrape because the differ threw would be the
+    // worse trade. A node that failed to record above is absent from `current`
+    // and so is not diffed at all, rather than being reported as removed.
+    if (previous.length > 0 && current.length > 0) {
+      try {
+        const { diffObservations, recordEvents } = require(`${__hooks}/lib/cluster-events.js`);
+        events = recordEvents(
+          txApp,
+          diffObservations(previous, current),
+          toPbDate(Date.now())
+        );
+      } catch (err) {
+        console.error("[cluster-events] detection failed:", err);
       }
     }
 
@@ -329,8 +415,55 @@ function scrapeOnce(app, opts) {
     statsFailed: statsFailed,
     layoutFailed: layoutFailed,
     pruned: pruned,
+    events: events,
     errors: errors,
   };
+}
+
+/**
+ * The newest observation per node within PREV_WINDOW_SEC — the diff base for
+ * the cluster timeline. One query rather than a point-read per node, because
+ * it also has to answer "which nodes were being reported last time" so a node
+ * that vanished from the cluster (and therefore writes no row at all) can be
+ * detected.
+ *
+ * Sorted newest-first, so the first row seen for a node is the one kept.
+ */
+function readPreviousObservations(app) {
+  const cutoff = toPbDate(Date.now() - PREV_WINDOW_SEC * 1000);
+  const records = app.findRecordsByFilter(
+    COLLECTION,
+    "created >= {:cutoff}",
+    "-created",
+    0,
+    0,
+    { cutoff: cutoff }
+  );
+
+  const seen = {};
+  const out = [];
+  for (const r of records) {
+    const nodeId = r.getString("node_id");
+    if (!nodeId || seen[nodeId]) continue;
+    seen[nodeId] = true;
+    out.push({
+      node_id: nodeId,
+      node_hostname: r.getString("node_hostname"),
+      node_zone: r.getString("node_zone"),
+      is_up: r.getBool("is_up"),
+      layout_ok: r.getBool("layout_ok"),
+      role_ok: r.getBool("role_ok"),
+      role_capacity_bytes: r.getFloat("role_capacity_bytes"),
+      node_tags: r.getString("node_tags"),
+      layout_version: r.getFloat("layout_version"),
+      garage_version: r.getString("garage_version"),
+      data_total_bytes: r.getFloat("data_total_bytes"),
+      data_available_bytes: r.getFloat("data_available_bytes"),
+      meta_total_bytes: r.getFloat("meta_total_bytes"),
+      meta_available_bytes: r.getFloat("meta_available_bytes"),
+    });
+  }
+  return out;
 }
 
 /**
