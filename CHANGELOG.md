@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.2](https://github.com/make-ware/garage-ware/compare/v1.8.1...v1.8.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* add cluster events collection ([c5c54b9](https://github.com/make-ware/garage-ware/commit/c5c54b9803d4b62c248ed0cd9b495b6f73961717))
+* add timeline to cluster page ([f9591bb](https://github.com/make-ware/garage-ware/commit/f9591bb49d9910df913a3fbbabf98e83effd69f3))
+
 ## [1.8.1](https://github.com/make-ware/garage-ware/compare/v1.8.0...v1.8.1) (2026-08-12)
 
 
