@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import type { NodeMetric } from '@garage-ware/shared';
-import type { ClusterNodeItem } from '@/lib/types';
+import type { ClusterNodeItem, ClusterTimelineEvent } from '@/lib/types';
 import { groupNodesByZone } from './cluster-groups';
 import { NodeDetailsDialog } from './node-details-dialog';
 import { ZoneGroupCard } from './zone-group-card';
@@ -12,6 +12,18 @@ interface ClusterMapProps {
   replicationFactor: number;
   /** node id → latest NodeMetrics row; null while loading or unavailable. */
   latestMetrics: Map<string, NodeMetric> | null;
+  /**
+   * node id → open manual notes. Passing it is what puts a node "under
+   * repair" in the details dialog; a page that doesn't fetch the timeline
+   * simply omits it.
+   */
+  openEventsByNode?: Map<string, ClusterTimelineEvent[]>;
+  /**
+   * Show each node's full Garage id rather than its short form. **Admin pages
+   * only.** That id is the key used to add a node to the cluster, so it is
+   * treated as a secret on every user-facing surface.
+   */
+  revealNodeId?: boolean;
   /**
    * node id → network address. Admin pages only — passing it is what makes
    * the details dialog show an address at all.
@@ -33,6 +45,8 @@ export function ClusterMap({
   items,
   replicationFactor,
   latestMetrics,
+  openEventsByNode,
+  revealNodeId,
   addrByNodeId,
 }: ClusterMapProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -41,6 +55,17 @@ export function ClusterMap({
     : null;
 
   const groups = useMemo(() => groupNodesByZone(items), [items]);
+  // Cluster-wide notes carry no node_id and are skipped: "under repair" is a
+  // per-node state, and a note about the cluster shouldn't amber every card.
+  const underRepairNodes = useMemo(
+    () =>
+      new Set(
+        [...(openEventsByNode?.keys() ?? [])].filter(
+          (nodeId) => nodeId && (openEventsByNode?.get(nodeId)?.length ?? 0) > 0
+        )
+      ),
+    [openEventsByNode]
+  );
 
   if (items.length === 0) {
     return (
@@ -58,6 +83,7 @@ export function ClusterMap({
             key={group.zone}
             group={group}
             selectedId={selectedId}
+            underRepairNodes={underRepairNodes}
             onSelect={setSelectedId}
           />
         ))}
@@ -67,6 +93,8 @@ export function ClusterMap({
         onClose={() => setSelectedId(null)}
         replicationFactor={replicationFactor}
         latestMetrics={latestMetrics}
+        openEventsByNode={openEventsByNode}
+        revealNodeId={revealNodeId}
         addrByNodeId={addrByNodeId}
       />
     </>

@@ -47,6 +47,14 @@
 }
 
 :root {
+  /* Tells the browser which way to paint the widgets it draws itself: the
+     datetime-local picker, scrollbars, autofill, focus rings on native
+     controls. Without it a UA renders them light whatever the CSS variables
+     below say, which is why the "When" field on /admin/events opened a white
+     calendar on a dark page. Declared on both themes rather than only .dark,
+     so it stays correct if the hardcoded class on <html> ever becomes a
+     toggle. */
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.129 0.042 264.695);
@@ -82,6 +90,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.129 0.042 264.695);
   --foreground: oklch(0.984 0.003 247.858);
   --card: oklch(0.208 0.042 265.755);

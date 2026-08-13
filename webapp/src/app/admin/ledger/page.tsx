@@ -205,7 +205,12 @@ function AdminLedgerView() {
         grant, when, and by how much. Written by a PocketBase hook rather than
         by the app, so it also captures edits made directly against the database
         and claims removed when a user is deleted. Rows are immutable and
-        outlive both the claim and the user they describe.
+        outlive both the claim and the user they describe. This list spans every
+        user and node, so it states each change on its own; expand a row on the{' '}
+        <Link href="/admin/claims" className="underline">
+          claims page
+        </Link>{' '}
+        to read the same trail against a user&apos;s running total on one node.
       </p>
 
       {error && <p className="text-destructive mb-4">{error}</p>}
@@ -319,8 +324,11 @@ function AdminLedgerView() {
                       <TableHead>User</TableHead>
                       <TableHead>Node</TableHead>
                       <TableHead className="text-right">Change</TableHead>
-                      <TableHead className="text-right">
-                        Previous → New
+                      <TableHead
+                        className="text-right"
+                        title="The amount an edited entry carried before and after. A create or a delete has no such pair — its whole amount is under Change."
+                      >
+                        Entry
                       </TableHead>
                       <TableHead>By</TableHead>
                       <TableHead>Note</TableHead>
@@ -379,8 +387,17 @@ function AdminLedgerView() {
                             {formatSignedStorage(delta)}
                           </TableCell>
                           <TableCell className="text-right whitespace-nowrap text-muted-foreground text-xs">
-                            {formatStorage(Number(entry.previous_gb) || 0)} →{' '}
-                            {formatStorage(Number(entry.new_gb) || 0)}
+                            {/* Only an update moves an existing entry's
+                                amount. For a create or a delete this pair is
+                                0 → amount or amount → 0 — Change restated,
+                                with a zero beside it that reads as a total
+                                and is not one. The real per-node position
+                                cannot be reconstructed from a list mixing
+                                users and nodes; /admin/claims does that from
+                                a single pair's full trail. */}
+                            {entry.action === 'update'
+                              ? `${formatStorage(Number(entry.previous_gb) || 0)} → ${formatStorage(Number(entry.new_gb) || 0)}`
+                              : '—'}
                           </TableCell>
                           <TableCell className="text-xs">
                             {entry.actor_email || '—'}

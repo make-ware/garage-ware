@@ -43,6 +43,7 @@ import { NodeIdentity } from '@/components/cluster/node-identity';
 import type { AdminUser, LayoutResponse } from '@/lib/admin-types';
 import {
   nodeUsableGbInLayout,
+  positionsForAuditTrail,
   rollUpClaimsByUserNode,
   sumClaimsByNode,
   sumClaimsByUserNode,
@@ -284,7 +285,7 @@ function AdminClaimsView() {
       return;
     }
     if (!Number.isFinite(formQuotaGib) || formQuotaGib === 0) {
-      toast.error('Adjustment must be a non-zero amount');
+      toast.error('Enter a non-zero change to add or reclaim');
       return;
     }
     setSubmitting(true);
@@ -298,17 +299,24 @@ function AdminClaimsView() {
           ...(formNote.trim() ? { note: formNote.trim() } : {}),
         },
       });
+      // Deliberately word-for-word the SetClaimDialog toast: the two forms
+      // ask for different numbers but append the same entry, and reporting the
+      // outcome identically is what makes that visible.
+      const nodeName = nodeNames.get(formNode) ?? null;
+      const named = nodeName
+        ? `${nodeName} (${shortNodeId(formNode)})`
+        : shortNodeId(formNode);
       toast.success(
-        `Claim adjusted by ${formatSignedStorage(formQuotaGib)} — now ${formatStorage(
+        `${userById.get(formUser)?.email ?? 'User'} now claims ${formatStorage(
           selectedPairEffectiveGb + formQuotaGib
-        )}`
+        )} on ${named} (${formatSignedStorage(formQuotaGib)})`
       );
       setFormQuotaGib(0);
       setFormNote('');
       setExpanded((prev) => new Set(prev).add(userNodeKey(formUser, formNode)));
       await refresh();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Adjustment failed');
+      toast.error(err instanceof Error ? err.message : 'Change failed');
     } finally {
       setSubmitting(false);
     }
@@ -344,15 +352,16 @@ function AdminClaimsView() {
 
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle>Adjust claim</CardTitle>
+          <CardTitle>Add or reclaim storage</CardTitle>
           <CardDescription>
-            Per-node accounting in logical (post-replication) GB. Enter a
-            positive amount to grant more — e.g. after upgrading the node&apos;s
-            disk — or a negative amount to reclaim. To restate a user&apos;s
-            total rather than the change, use <strong>Set claim</strong> on
-            their row below. The sum of all claims on a node stays capped at its
-            usable capacity, and a user&apos;s claim on a node can never go
-            below zero.
+            Enter the <strong>change</strong>, not the new total — a user
+            already claiming 36 TB who is given 4 TB here ends up with 40 TB.
+            Positive grants more, negative reclaims. To type the total instead,
+            use <strong>Set claim</strong> on their row below; it works out the
+            same difference and appends the same kind of entry. Per-node
+            accounting in logical (post-replication) GB. The sum of all claims
+            on a node stays capped at its usable capacity, and a user&apos;s
+            claim on a node can never go below zero.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -394,7 +403,12 @@ function AdminClaimsView() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="claim-quota">Adjustment</Label>
+                <Label htmlFor="claim-quota">
+                  Change{' '}
+                  <span className="font-normal text-muted-foreground">
+                    (+ add, − reclaim)
+                  </span>
+                </Label>
                 <StorageQuotaInput
                   id="claim-quota"
                   valueGib={formQuotaGib}
@@ -405,30 +419,17 @@ function AdminClaimsView() {
               </div>
               <Button type="submit" disabled={submitting}>
                 <Plus className="mr-1 h-4 w-4" />
-                {submitting ? 'Applying...' : 'Apply adjustment'}
+                {submitting ? 'Applying...' : 'Apply change'}
               </Button>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="claim-note">Note (optional)</Label>
-              <Input
-                id="claim-note"
-                value={formNote}
-                onChange={(e) => setFormNote(e.target.value)}
-                placeholder="e.g. upgraded to 8TB disk"
-                maxLength={500}
-              />
-            </div>
+            {/* Sits directly under the inputs, not below the note: this line
+                is the answer to "the total, or the change?", and it only
+                settles the question if it is read before submitting. */}
             {formNode && (
               <p className="text-xs text-muted-foreground">
-                Node usable:{' '}
-                <strong>{formatStorage(selectedNodeUsableGb)}</strong> ·
-                claimed:{' '}
-                <strong>{formatStorage(selectedNodeAllocatedGb)}</strong> · free
-                to grant: <strong>{formatStorage(selectedNodeFreeGb)}</strong>
                 {formUser && (
                   <>
-                    {' '}
-                    · this user&apos;s claim here:{' '}
+                    This user&apos;s claim on this node:{' '}
                     <strong>{formatStorage(selectedPairEffectiveGb)}</strong>
                     {formQuotaGib !== 0 && (
                       <>
@@ -440,11 +441,27 @@ function AdminClaimsView() {
                           )}
                         </strong>
                       </>
-                    )}
+                    )}{' '}
+                    ·{' '}
                   </>
                 )}
+                Node usable:{' '}
+                <strong>{formatStorage(selectedNodeUsableGb)}</strong> ·
+                claimed:{' '}
+                <strong>{formatStorage(selectedNodeAllocatedGb)}</strong> · free
+                to grant: <strong>{formatStorage(selectedNodeFreeGb)}</strong>
               </p>
             )}
+            <div className="space-y-2">
+              <Label htmlFor="claim-note">Note (optional)</Label>
+              <Input
+                id="claim-note"
+                value={formNote}
+                onChange={(e) => setFormNote(e.target.value)}
+                placeholder="e.g. upgraded to 8TB disk"
+                maxLength={500}
+              />
+            </div>
           </form>
         </CardContent>
       </Card>
@@ -483,6 +500,13 @@ function AdminClaimsView() {
                   const user = userById.get(group.userId);
                   const isOpen = expanded.has(group.key);
                   const auditEntries = auditByKey.get(group.key);
+                  // Each audit row records its own entry's before/after, which
+                  // for a create is always 0 -> amount. What an admin reads a
+                  // trail for is the position, so walk the signed deltas back
+                  // from this pair's current total. See positionsForAuditTrail.
+                  const auditPositions = auditEntries
+                    ? positionsForAuditTrail(auditEntries, group.claimedGb)
+                    : null;
                   const nodeName = nodeNames.get(group.nodeId) ?? null;
                   return [
                     <TableRow key={group.key}>
@@ -540,7 +564,7 @@ function AdminClaimsView() {
                           disabled={!group.presentInLayout}
                           title={
                             group.presentInLayout
-                              ? undefined
+                              ? "Type this user's new total on this node; the difference is appended as one entry"
                               : 'A claim on a node that has left the layout can only be wound down'
                           }
                           onClick={() =>
@@ -661,7 +685,9 @@ function AdminClaimsView() {
                             </p>
                             <p className="px-3 pb-1 text-[11px] text-muted-foreground">
                               Every recorded change, including entries that have
-                              since been edited or deleted.
+                              since been edited or deleted. Before &rarr; after
+                              is this user&apos;s total claim on this node, not
+                              the individual entry.
                             </p>
                             {auditEntries === undefined ? (
                               <p className="px-3 pb-3 text-xs text-muted-foreground">
@@ -695,6 +721,9 @@ function AdminClaimsView() {
                                 <tbody>
                                   {auditEntries.map((entry) => {
                                     const delta = Number(entry.delta_gb) || 0;
+                                    const position = auditPositions?.get(
+                                      entry.id
+                                    );
                                     return (
                                       <tr
                                         key={entry.id}
@@ -719,17 +748,17 @@ function AdminClaimsView() {
                                           }`}
                                         >
                                           {formatSignedStorage(delta)}
-                                          <span className="ml-1 text-muted-foreground">
-                                            (
-                                            {formatStorage(
-                                              Number(entry.previous_gb) || 0
-                                            )}{' '}
-                                            →{' '}
-                                            {formatStorage(
-                                              Number(entry.new_gb) || 0
-                                            )}
-                                            )
-                                          </span>
+                                          {position && (
+                                            <span
+                                              className="ml-1 text-muted-foreground"
+                                              title="This user's total claim on this node, before and after the change"
+                                            >
+                                              (
+                                              {formatStorage(position.beforeGb)}{' '}
+                                              →{' '}
+                                              {formatStorage(position.afterGb)})
+                                            </span>
+                                          )}
                                         </td>
                                         <td className="px-3 py-2 text-muted-foreground">
                                           {entry.actor_email ||

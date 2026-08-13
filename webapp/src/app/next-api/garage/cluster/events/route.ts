@@ -1,6 +1,7 @@
 import 'server-only';
 import { z } from 'zod';
 import { ClusterEventMutator } from '@garage-ware/shared/mutators';
+import type { ClusterEvent } from '@garage-ware/shared';
 import {
   errorResponse,
   getPbAsSuperuser,
@@ -21,6 +22,25 @@ export const dynamic = 'force-dynamic';
  * it truncated instead of implying it showed everything.
  */
 const MAX_ITEMS = 200;
+
+/**
+ * The projection, in one place so both lists are redacted identically — a
+ * second inline copy is how one of them would eventually carry a field the
+ * other doesn't.
+ */
+function toTimelineEvent(e: ClusterEvent): ClusterTimelineEvent {
+  return {
+    id: e.id,
+    kind: e.kind,
+    source: e.source,
+    severity: e.severity,
+    node_id: e.node_id ?? '',
+    category: e.category ?? '',
+    title: e.title,
+    occurred_at: e.occurred_at,
+    ended_at: e.ended_at ?? '',
+  };
+}
 
 const Query = z.object({
   days: z.coerce.number().int().min(1).max(90).default(TIMELINE_DAYS),
@@ -68,26 +88,24 @@ export async function GET(req: Request) {
     const windowEnd = new Date(now + days * 86_400_000);
 
     const pb = await getPbAsSuperuser();
-    const result = await new ClusterEventMutator(pb).search(1, MAX_ITEMS, {
-      since: windowStart.toISOString(),
-      until: windowEnd.toISOString(),
-    });
-
-    const items: ClusterTimelineEvent[] = result.items.map((e) => ({
-      id: e.id,
-      kind: e.kind,
-      source: e.source,
-      severity: e.severity,
-      node_id: e.node_id ?? '',
-      category: e.category ?? '',
-      title: e.title,
-      occurred_at: e.occurred_at,
-      ended_at: e.ended_at ?? '',
-    }));
+    const events = new ClusterEventMutator(pb);
+    // `openEvents` is deliberately **not** windowed. A repair that has been
+    // open for six weeks is exactly the one worth flagging, and scoping it to
+    // the timeline's 30 days would quietly clear the marker on the node that
+    // has been broken longest. `listOpenManual` is the collection's own query
+    // for this — `(source, ended_at)` is indexed for it.
+    const [windowed, open] = await Promise.all([
+      events.search(1, MAX_ITEMS, {
+        since: windowStart.toISOString(),
+        until: windowEnd.toISOString(),
+      }),
+      events.listOpenManual(),
+    ]);
 
     const body: ClusterTimelineResponse = {
-      items,
-      totalItems: result.totalItems,
+      items: windowed.items.map(toTimelineEvent),
+      openEvents: open.items.map(toTimelineEvent),
+      totalItems: windowed.totalItems,
       windowStart: windowStart.toISOString(),
       windowEnd: windowEnd.toISOString(),
       days,

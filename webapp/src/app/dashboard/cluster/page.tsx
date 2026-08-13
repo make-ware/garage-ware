@@ -14,6 +14,7 @@ import { fetchLatestNodeMetrics } from '@/lib/metrics/latest-node-metrics';
 import { parseNodeTags } from '@/lib/node-label';
 import type {
   ClusterNodesResponse,
+  ClusterTimelineEvent,
   ClusterTimelineResponse,
 } from '@/lib/types';
 
@@ -89,6 +90,19 @@ function ClusterLayoutPage() {
     [data]
   );
 
+  // Open manual notes, keyed by the node they pin to. Cluster-wide notes carry
+  // an empty node_id and are skipped — "under repair" is a per-node state.
+  const openEventsByNode = useMemo(() => {
+    const map = new Map<string, ClusterTimelineEvent[]>();
+    for (const event of timeline?.openEvents ?? []) {
+      if (!event.node_id) continue;
+      const list = map.get(event.node_id);
+      if (list) list.push(event);
+      else map.set(event.node_id, [event]);
+    }
+    return map;
+  }, [timeline]);
+
   // Names come from the layout the page already holds — an event row stores
   // only a node id, and `node_hostname` is explicitly not the label.
   const nodeNames = useMemo(
@@ -145,6 +159,7 @@ function ClusterLayoutPage() {
           items={data.items}
           replicationFactor={data.replicationFactor}
           latestMetrics={latestMetrics}
+          openEventsByNode={openEventsByNode}
         />
       ) : null}
 

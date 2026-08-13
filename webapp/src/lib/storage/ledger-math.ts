@@ -219,6 +219,68 @@ export function sumClaimsByUserNode(
   return map;
 }
 
+/**
+ * Trim the float noise a running subtraction accumulates, and fold -0 to 0.
+ * Ledger amounts go down to 0.001 GB, so six decimals leaves three orders of
+ * magnitude of headroom while still killing the 39.999999999999996 case.
+ */
+function normalizeGb(value: number): number {
+  const rounded = Math.round(value * 1e6) / 1e6;
+  return rounded === 0 ? 0 : rounded;
+}
+
+/** A (user, node) pair's effective claim either side of one audit row. */
+export interface AuditPosition {
+  /** The pair's effective claim immediately before the change. */
+  beforeGb: number;
+  /** ...and immediately after it. */
+  afterGb: number;
+}
+
+/** The subset of a StorageClaimAudit row this arithmetic needs. */
+export interface AuditDeltaLike {
+  id: string;
+  delta_gb?: number;
+}
+
+/**
+ * Reconstruct the (user, node) claimed position either side of every audit row.
+ *
+ * `StorageClaimAudit.previous_gb` / `new_gb` describe the *entry* that moved,
+ * not the position it moved. For a create that is always `0 -> amount`, which
+ * rendered beside a 36 TB claim reads "0 B -> 4 TB" — as though the grant had
+ * been wiped and re-issued. The position is not on the row and should not be:
+ * a hook writing one would be trusting its own history, and rewriting the
+ * column now would restate rows in a collection whose whole point is that it
+ * is never restated. It is recoverable here, because the deltas are signed and
+ * the trail is complete.
+ *
+ * Anchored on the **present**, not on the beginning: `currentClaimedGb` is the
+ * pair's live ledger sum and therefore the newest row's `afterGb`, and each
+ * older row's `afterGb` is the next one's `beforeGb`. Anchoring the other way
+ * would assume the trail reaches back to the pair's first entry, which it need
+ * not — the collection postdates some claims, and callers read one page of it.
+ * Walking backwards makes an incomplete tail lose precision at the far end
+ * only, where it is honest, rather than skewing every row.
+ *
+ * `entriesNewestFirst` must arrive in the order StorageClaimAuditMutator sorts
+ * (`-created`): the walk is a running subtraction, so the order *is* the
+ * arithmetic.
+ */
+export function positionsForAuditTrail(
+  entriesNewestFirst: readonly AuditDeltaLike[],
+  currentClaimedGb: number
+): Map<string, AuditPosition> {
+  const positions = new Map<string, AuditPosition>();
+  let afterGb = normalizeGb(Number(currentClaimedGb) || 0);
+  for (const entry of entriesNewestFirst) {
+    const beforeGb = normalizeGb(afterGb - (Number(entry.delta_gb) || 0));
+    positions.set(entry.id, { beforeGb, afterGb });
+    afterGb = beforeGb;
+  }
+  return positions;
+}
+
 /** A user's complete storage position. Mirrors the `StorageSummary` shape. */
 export interface ComputedStorageSummary {
   /** Per-node breakdown, whether derived from entries or from the balance cache. */

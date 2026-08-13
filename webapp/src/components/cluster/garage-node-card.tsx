@@ -40,33 +40,53 @@ function Stat({
 interface GarageNodeCardProps {
   item: ClusterNodeItem;
   selected: boolean;
+  /** An open manual note is pinned to this node — see CLAUDE.md, Cluster events. */
+  underRepair?: boolean;
   onSelect: (nodeId: string) => void;
+}
+
+/**
+ * The dot answers "how worried should I be", so it takes the worst of the two
+ * signals it has: down beats under repair beats unknown beats up. Liveness
+ * alone was misleading — a node with an open repair note showed the same green
+ * as a healthy one, which is exactly the thing the note exists to say.
+ *
+ * Nothing is lost by the precedence: repair also renders as its own badge, so
+ * a node that is both down and being worked on shows a red dot *and* the
+ * badge, and the dot's title spells out both.
+ */
+function nodeStatus(isUp: boolean | null, underRepair: boolean) {
+  const liveness = isUp === null ? 'status unknown' : isUp ? 'up' : 'down';
+  const label = underRepair ? `${liveness} · under repair` : liveness;
+  if (isUp === false) return { dot: 'bg-destructive', label };
+  if (underRepair) return { dot: 'bg-amber-500', label };
+  if (isUp === null) return { dot: 'bg-muted-foreground', label };
+  return { dot: 'bg-emerald-500', label };
 }
 
 export function GarageNodeCard({
   item,
   selected,
+  underRepair = false,
   onSelect,
 }: GarageNodeCardProps) {
   const diskUsed =
     item.diskTotalBytes !== null && item.diskFreeBytes !== null
       ? item.diskTotalBytes - item.diskFreeBytes
       : null;
-  const status =
-    item.isUp === null
-      ? { dot: 'bg-muted-foreground', label: 'status unknown' }
-      : item.isUp
-        ? { dot: 'bg-emerald-500', label: 'up' }
-        : { dot: 'bg-destructive', label: 'down' };
+  const status = nodeStatus(item.isUp, underRepair);
   // `rest` drops the tag that supplied the name, so it never shows twice —
   // and, since the badges are capped at three, so a name badge cannot evict a
-  // real tag like `ssd`. The aria-label uses the full id when unnamed: some
-  // screen readers announce a trailing ellipsis.
+  // real tag like `ssd`.
   const { name, rest } = parseNodeTags(item.tags);
   return (
     <button
       type="button"
-      aria-label={`Node ${name ?? item.id} details`}
+      // The label a node is *identified* by, never its full id: that id is the
+      // key used to join a node to the cluster, and an aria-label is a display
+      // surface like any other. An unnamed node announces its short id, which
+      // may include a trailing ellipsis; that is the lesser cost.
+      aria-label={`Node ${nodeLabel(name, item.id)} details`}
       onClick={() => onSelect(item.id)}
       className={cn(
         'w-full min-w-0 overflow-hidden rounded-md border bg-card p-3 text-left text-card-foreground shadow-sm transition-colors',
@@ -82,6 +102,14 @@ export function GarageNodeCard({
         <span className="truncate text-sm font-medium">
           {nodeLabel(name, item.id)}
         </span>
+        {underRepair && (
+          <Badge
+            variant="outline"
+            className="shrink-0 border-amber-500/60 text-[10px] text-amber-500"
+          >
+            under repair
+          </Badge>
+        )}
         {item.draining && (
           <Badge
             variant="outline"

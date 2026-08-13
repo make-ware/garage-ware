@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Check, ListFilter } from 'lucide-react';
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
 import { toast } from 'sonner';
 import { ProtectedRoute } from '@/components/auth/protected-route';
@@ -18,11 +18,18 @@ import {
   ChartContainer,
   ChartLegend,
   ChartLegendContent,
+  ChartStyle,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from '@/components/ui/chart';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { useAdminStatus } from '@/hooks/use-admin-status';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { api, ApiError } from '@/lib/api-client';
 import type {
   ClusterNodesResponse,
@@ -40,6 +47,7 @@ import {
   type NodeCoverage,
 } from '@/lib/metrics/data-coverage';
 import { buildNodeNameMap, nodeLabel } from '@/lib/node-label';
+import { cn } from '@/lib/utils';
 
 const RANGES = ['6h', '24h', '7d', '30d'] as const;
 type Range = (typeof RANGES)[number];
@@ -70,6 +78,21 @@ const compactNumber = new Intl.NumberFormat('en', {
 function nodeKeyFor(node: MetricNode): string {
   return `n${node.node_id.slice(0, 8)}`;
 }
+
+/**
+ * Tooltip `content` that renders no card at all — what the charts use below
+ * the mobile breakpoint.
+ *
+ * The card carries one row per charted node plus a detail line each, so on a
+ * phone it covers the chart it is describing. Recharts draws the cursor from
+ * the Tooltip element itself (`finalIsActive && <Cursor …>`), independent of
+ * whatever `content` returns, so suppressing the card this way keeps the line
+ * that tracks the touch along the series — the reader still gets a position,
+ * just not eight values stacked over it.
+ *
+ * Declared at module scope so the prop identity is stable across renders.
+ */
+const noTooltipCard = () => null;
 
 /** One row per time bucket, `${nodeKey}` → plotted value (absent = gap). */
 type ChartRow = { t: number } & Record<string, number>;
@@ -145,6 +168,8 @@ function MetricChart({
   formatDetail,
   curve = 'monotone',
 }: MetricChartProps) {
+  const isMobile = useIsMobile();
+
   const formatTick = (t: number) =>
     range === '6h' || range === '24h'
       ? new Date(t).toLocaleTimeString([], {
@@ -152,6 +177,45 @@ function MetricChart({
           minute: '2-digit',
         })
       : new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+  const tooltipCard = (
+    <ChartTooltipContent
+      labelFormatter={(_, payload) => {
+        const t = payload?.[0]?.payload?.t;
+        return typeof t === 'number'
+          ? new Date(t).toLocaleString([], {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : '';
+      }}
+      formatter={(value, name, item) => {
+        const key = String(name);
+        const detail = formatDetail
+          ? formatDetail(item.payload as ChartRow, key)
+          : null;
+        return (
+          <div className="flex w-full items-center gap-2">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+              style={{ backgroundColor: item.color }}
+            />
+            <span className="flex-1 text-muted-foreground">
+              {config[key]?.label ?? key}
+            </span>
+            <span className="font-mono font-medium tabular-nums text-foreground">
+              {formatValue(Number(value))}
+              {detail ? (
+                <span className="text-muted-foreground"> · {detail}</span>
+              ) : null}
+            </span>
+          </div>
+        );
+      }}
+    />
+  );
 
   return (
     <Card>
@@ -185,49 +249,7 @@ function MetricChart({
                 width={48}
                 tickFormatter={(v: number) => formatValue(v)}
               />
-              <ChartTooltip
-                content={
-                  <ChartTooltipContent
-                    labelFormatter={(_, payload) => {
-                      const t = payload?.[0]?.payload?.t;
-                      return typeof t === 'number'
-                        ? new Date(t).toLocaleString([], {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                        : '';
-                    }}
-                    formatter={(value, name, item) => {
-                      const key = String(name);
-                      const detail = formatDetail
-                        ? formatDetail(item.payload as ChartRow, key)
-                        : null;
-                      return (
-                        <div className="flex w-full items-center gap-2">
-                          <span
-                            className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
-                            style={{ backgroundColor: item.color }}
-                          />
-                          <span className="flex-1 text-muted-foreground">
-                            {config[key]?.label ?? key}
-                          </span>
-                          <span className="font-mono font-medium tabular-nums text-foreground">
-                            {formatValue(Number(value))}
-                            {detail ? (
-                              <span className="text-muted-foreground">
-                                {' '}
-                                · {detail}
-                              </span>
-                            ) : null}
-                          </span>
-                        </div>
-                      );
-                    }}
-                  />
-                }
-              />
+              <ChartTooltip content={isMobile ? noTooltipCard : tooltipCard} />
               <ChartLegend
                 content={<ChartLegendContent className="flex-wrap" />}
               />
@@ -251,6 +273,142 @@ function MetricChart({
   );
 }
 
+interface NodeFilterProps {
+  /** Every node the palette can chart — the filter's universe, not the shown set. */
+  nodes: MetricNode[];
+  nodeNames: Map<string, string>;
+  /** The charts' own config, so a swatch here is the color of that node's line. */
+  config: ChartConfig;
+  hidden: ReadonlySet<string>;
+  onToggle: (nodeId: string) => void;
+  onOnly: (nodeId: string) => void;
+  onAll: () => void;
+  onNone: () => void;
+}
+
+/**
+ * Multi-select over the charted nodes.
+ *
+ * Rows are plain `role="checkbox"` buttons rather than the `Checkbox`
+ * component: each row also carries an "Only" action, and `Checkbox` is a
+ * Radix `<button>`, so the two could not sit in one row without nesting
+ * interactive elements. "Only" is always visible rather than revealed on
+ * hover — a touch device has no hover, and this page is being fixed for one.
+ */
+function NodeFilter({
+  nodes,
+  nodeNames,
+  config,
+  hidden,
+  onToggle,
+  onOnly,
+  onAll,
+  onNone,
+}: NodeFilterProps) {
+  // ChartStyle emits `[data-chart=<id>] { --color-<key>: … }` (and a `.dark`
+  // twin), so the swatches need their own scope id — the charts' vars are
+  // scoped to their own containers and don't reach into a portalled popover.
+  const styleId = `nodefilter-${useId().replace(/[^\w-]/g, '')}`;
+  const shown = nodes.filter((n) => !hidden.has(n.node_id)).length;
+
+  if (nodes.length === 0) return null;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm">
+          <ListFilter className="h-4 w-4" />
+          Nodes
+          <span className="tabular-nums text-muted-foreground">
+            {shown}/{nodes.length}
+          </span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-0">
+        <div className="flex items-center justify-between border-b px-3 py-2">
+          <span className="text-sm font-medium">Charted nodes</span>
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={onAll}
+              disabled={shown === nodes.length}
+            >
+              All
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={onNone}
+              disabled={shown === 0}
+            >
+              None
+            </Button>
+          </div>
+        </div>
+        <div data-chart={styleId} className="max-h-72 overflow-y-auto p-1">
+          <ChartStyle id={styleId} config={config} />
+          {nodes.map((node) => {
+            const key = nodeKeyFor(node);
+            const checked = !hidden.has(node.node_id);
+            const label = nodeLabel(
+              nodeNames.get(node.node_id) ?? null,
+              node.node_id
+            );
+            return (
+              <div
+                key={node.node_id}
+                className="flex items-center gap-1 rounded-sm pr-1 hover:bg-accent"
+              >
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={checked}
+                  onClick={() => onToggle(node.node_id)}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
+                >
+                  <span
+                    className={cn(
+                      'flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border',
+                      checked
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-input'
+                    )}
+                  >
+                    {checked ? <Check className="h-3 w-3" /> : null}
+                  </span>
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+                    style={{
+                      backgroundColor: `var(--color-${key})`,
+                      opacity: checked ? 1 : 0.35,
+                    }}
+                  />
+                  <span className="flex-1 truncate">{label}</span>
+                  {node.node_zone ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {node.node_zone}
+                    </span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOnly(node.node_id)}
+                  className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Only
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function MetricsView() {
   const { isAdmin } = useAdminStatus();
   const [range, setRange] = useState<Range>('24h');
@@ -262,6 +420,13 @@ function MetricsView() {
   const [error, setError] = useState<string | null>(null);
   const [scraping, setScraping] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Which nodes the reader has switched *off*, rather than which are on: a
+  // node that joins the cluster — or that only appears once a longer range is
+  // picked — then charts by default, which is the safe direction for a page
+  // whose job is to show you something is wrong.
+  const [hiddenNodeIds, setHiddenNodeIds] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -338,14 +503,37 @@ function MetricsView() {
     () => (history?.nodes ?? []).slice(0, PALETTE.length),
     [history]
   );
-  const hiddenNodes = (history?.nodes.length ?? 0) - nodes.length;
+  const unchartedNodes = (history?.nodes.length ?? 0) - nodes.length;
+
+  // Palette slots stay pinned to the charted list above, never to this one, so
+  // switching a node off never repaints the lines that stayed on.
+  const visibleNodes = useMemo(
+    () => nodes.filter((n) => !hiddenNodeIds.has(n.node_id)),
+    [nodes, hiddenNodeIds]
+  );
 
   const keyById = useMemo(
-    () => new Map(nodes.map((n) => [n.node_id, nodeKeyFor(n)])),
-    [nodes]
+    () => new Map(visibleNodes.map((n) => [n.node_id, nodeKeyFor(n)])),
+    [visibleNodes]
   );
-  const nodeKeys = useMemo(() => nodes.map(nodeKeyFor), [nodes]);
+  const nodeKeys = useMemo(() => visibleNodes.map(nodeKeyFor), [visibleNodes]);
 
+  const toggleNode = (nodeId: string) =>
+    setHiddenNodeIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(nodeId)) next.add(nodeId);
+      return next;
+    });
+  const showOnlyNode = (nodeId: string) =>
+    setHiddenNodeIds(
+      new Set(nodes.map((n) => n.node_id).filter((id) => id !== nodeId))
+    );
+  const showAllNodes = () => setHiddenNodeIds(new Set());
+  const showNoNodes = () =>
+    setHiddenNodeIds(new Set(nodes.map((n) => n.node_id)));
+
+  // Over `nodes`, not `visibleNodes`: the slot a node gets must not depend on
+  // what else is switched on, and the filter reads its swatches from here.
   const chartConfig = useMemo(() => {
     const config: ChartConfig = {};
     nodes.forEach((node, i) => {
@@ -430,8 +618,10 @@ function MetricsView() {
     [points, keyById]
   );
 
-  // Deliberately over ALL points, not the palette-capped `nodes` slice: a 9th
-  // node is not charted, but it still has to be flagged.
+  // Deliberately over ALL points — neither the palette-capped `nodes` slice nor
+  // the filter narrows it. A 9th node is not charted and a switched-off one is
+  // not drawn, but both still have to be flagged: this banner is a health
+  // alert, and a filter that could hide a wiped drive would defeat it.
   const coverage = useMemo(
     () =>
       assessCoverage(latestPointsByNode(points).map(coverageInputFromPoint)),
@@ -502,7 +692,17 @@ function MetricsView() {
             API.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <NodeFilter
+            nodes={nodes}
+            nodeNames={nodeNames}
+            config={chartConfig}
+            hidden={hiddenNodeIds}
+            onToggle={toggleNode}
+            onOnly={showOnlyNode}
+            onAll={showAllNodes}
+            onNone={showNoNodes}
+          />
           <div className="flex rounded-md border">
             {RANGES.map((r) => (
               <Button
@@ -530,7 +730,7 @@ function MetricsView() {
         </p>
       )}
 
-      {hiddenNodes > 0 && (
+      {unchartedNodes > 0 && (
         <p className="text-sm text-muted-foreground">
           Showing the first {PALETTE.length} of {history?.nodes.length} nodes —
           the color palette caps out; additional nodes are not charted.
@@ -593,69 +793,77 @@ function MetricsView() {
             <p className="text-sm text-muted-foreground">{guardNote}</p>
           ) : null}
 
-          <div className="grid gap-6">
-            <MetricChart
-              title="Uptime"
-              description="Share of samples in each interval where the node was connected"
-              data={uptimeData}
-              config={chartConfig}
-              nodeKeys={nodeKeys}
-              range={range}
-              yDomain={[0, 100]}
-              formatValue={pct}
-              curve="stepAfter"
-            />
-            <MetricChart
-              title="Data space used"
-              description="Data partition fill per node (used / total in the tooltip)"
-              data={dataSpaceData}
-              config={chartConfig}
-              nodeKeys={nodeKeys}
-              range={range}
-              yDomain={[0, 100]}
-              formatValue={pct}
-              formatDetail={spaceDetail}
-            />
-            <MetricChart
-              title="Data per partition"
-              description="Stored bytes divided by the partitions the layout assigns each node — equal-sized shards, so healthy nodes track each other. A line that drops away from the pack is a node missing data."
-              data={perPartitionData}
-              config={chartConfig}
-              nodeKeys={nodeKeys}
-              range={range}
-              formatValue={formatCapacity}
-              formatDetail={perPartitionDetail}
-            />
-            <MetricChart
-              title="Metadata space used"
-              description="Metadata partition fill per node (used / total in the tooltip)"
-              data={metaSpaceData}
-              config={chartConfig}
-              nodeKeys={nodeKeys}
-              range={range}
-              yDomain={[0, 100]}
-              formatValue={pct}
-              formatDetail={spaceDetail}
-            />
-            <MetricChart
-              title="Resync queue"
-              description="Blocks waiting to resynchronize, per node"
-              data={resyncQueueData}
-              config={chartConfig}
-              nodeKeys={nodeKeys}
-              range={range}
-              formatValue={count}
-            />
-            <MetricChart
-              title="Resync errored blocks"
-              description="Blocks whose resync is failing, per node"
-              data={resyncErroredData}
-              config={chartConfig}
-              nodeKeys={nodeKeys}
-              range={range}
-              formatValue={count}
-            />
-          </div>
+          {nodeKeys.length === 0 ? (
+            <Card>
+              <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                No nodes selected. Pick at least one under “Nodes” to chart it.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-6">
+              <MetricChart
+                title="Uptime"
+                description="Share of samples in each interval where the node was connected"
+                data={uptimeData}
+                config={chartConfig}
+                nodeKeys={nodeKeys}
+                range={range}
+                yDomain={[0, 100]}
+                formatValue={pct}
+                curve="stepAfter"
+              />
+              <MetricChart
+                title="Data space used"
+                description="Data partition fill per node (used / total in the tooltip)"
+                data={dataSpaceData}
+                config={chartConfig}
+                nodeKeys={nodeKeys}
+                range={range}
+                yDomain={[0, 100]}
+                formatValue={pct}
+                formatDetail={spaceDetail}
+              />
+              <MetricChart
+                title="Data per partition"
+                description="Stored bytes divided by the partitions the layout assigns each node — equal-sized shards, so healthy nodes track each other. A line that drops away from the pack is a node missing data."
+                data={perPartitionData}
+                config={chartConfig}
+                nodeKeys={nodeKeys}
+                range={range}
+                formatValue={formatCapacity}
+                formatDetail={perPartitionDetail}
+              />
+              <MetricChart
+                title="Metadata space used"
+                description="Metadata partition fill per node (used / total in the tooltip)"
+                data={metaSpaceData}
+                config={chartConfig}
+                nodeKeys={nodeKeys}
+                range={range}
+                yDomain={[0, 100]}
+                formatValue={pct}
+                formatDetail={spaceDetail}
+              />
+              <MetricChart
+                title="Resync queue"
+                description="Blocks waiting to resynchronize, per node"
+                data={resyncQueueData}
+                config={chartConfig}
+                nodeKeys={nodeKeys}
+                range={range}
+                formatValue={count}
+              />
+              <MetricChart
+                title="Resync errored blocks"
+                description="Blocks whose resync is failing, per node"
+                data={resyncErroredData}
+                config={chartConfig}
+                nodeKeys={nodeKeys}
+                range={range}
+                formatValue={count}
+              />
+            </div>
+          )}
         </>
       )}
     </div>

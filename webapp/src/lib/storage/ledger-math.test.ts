@@ -14,6 +14,7 @@ import {
   sumTransfers,
   userNodeKey,
   type NodeBalanceLike,
+  positionsForAuditTrail,
 } from './ledger-math';
 import { GIBIBYTE } from './units';
 import type { ClusterLayout } from '@/lib/garage';
@@ -537,5 +538,75 @@ describe('nodePositionsFromBalances', () => {
       { node_id: 'node-a', claimed_gb: 1, node_hostname: '', node_zone: '' },
     ]);
     expect(position.nodeZone).toBeUndefined();
+  });
+});
+
+describe('positionsForAuditTrail', () => {
+  // The bug this exists for: a +4 TB grant appended to an existing 36 TB claim
+  // rendered as "0 B → 4 TB", because previous_gb/new_gb describe the entry,
+  // not the position. Sizes here are in the ledger's GB, so 36 TB is 36000.
+  const trail = [
+    { id: 'a2', delta_gb: 4000 },
+    { id: 'a1', delta_gb: 36000 },
+  ];
+
+  it('reads each row against the running per-node total', () => {
+    const positions = positionsForAuditTrail(trail, 40000);
+    expect(positions.get('a2')).toEqual({ beforeGb: 36000, afterGb: 40000 });
+    expect(positions.get('a1')).toEqual({ beforeGb: 0, afterGb: 36000 });
+  });
+
+  it('anchors on the present, so a truncated trail stays right at the top', () => {
+    // Same pair, but the page only reached back as far as the newest row.
+    const positions = positionsForAuditTrail([trail[0]], 40000);
+    expect(positions.get('a2')).toEqual({ beforeGb: 36000, afterGb: 40000 });
+    expect(positions.size).toBe(1);
+  });
+
+  it('walks negative adjustments and deletes back the same way', () => {
+    const positions = positionsForAuditTrail(
+      [
+        { id: 'd1', delta_gb: -2000 },
+        { id: 'c1', delta_gb: 5000 },
+        { id: 'b1', delta_gb: 10000 },
+      ],
+      13000
+    );
+    expect(positions.get('d1')).toEqual({ beforeGb: 15000, afterGb: 13000 });
+    expect(positions.get('c1')).toEqual({ beforeGb: 10000, afterGb: 15000 });
+    expect(positions.get('b1')).toEqual({ beforeGb: 0, afterGb: 10000 });
+  });
+
+  it('every row before → after equals its own delta', () => {
+    const rows = [
+      { id: 'x3', delta_gb: 0.001 },
+      { id: 'x2', delta_gb: -0.002 },
+      { id: 'x1', delta_gb: 0.003 },
+    ];
+    const positions = positionsForAuditTrail(rows, 0.002);
+    for (const row of rows) {
+      const position = positions.get(row.id)!;
+      // The running subtraction must not accumulate float noise — an audit row
+      // reading 1.9999999999999998 GB is a bug report waiting to happen.
+      expect(position.afterGb - position.beforeGb).toBeCloseTo(
+        row.delta_gb,
+        10
+      );
+      expect(String(position.beforeGb)).not.toMatch(/\d{12}/);
+    }
+    expect(positions.get('x1')!.beforeGb).toBe(0);
+  });
+
+  it('treats a missing delta as no movement rather than NaN', () => {
+    const positions = positionsForAuditTrail(
+      [{ id: 'n1' }, { id: 'm1', delta_gb: 100 }],
+      100
+    );
+    expect(positions.get('n1')).toEqual({ beforeGb: 100, afterGb: 100 });
+    expect(positions.get('m1')).toEqual({ beforeGb: 0, afterGb: 100 });
+  });
+
+  it('returns an empty map for an empty trail', () => {
+    expect(positionsForAuditTrail([], 40000).size).toBe(0);
   });
 });

@@ -215,6 +215,13 @@ export interface ClusterTimelineEvent {
 export interface ClusterTimelineResponse {
   items: ClusterTimelineEvent[];
   /**
+   * Every open manual note, **unwindowed** — an open row pinned to a node is
+   * what puts it "under repair", and a repair open longer than the window is
+   * the one most worth showing. Overlaps `items` for recent ones; they serve
+   * different questions ("what changed" vs "what is still wrong").
+   */
+  openEvents: ClusterTimelineEvent[];
+  /**
    * How many rows fall in the window, which may exceed `items.length`. The
    * card says so when it does — a truncated list that looks complete is the
    * "no silent caps" failure.

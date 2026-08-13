@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { NodeMetric } from '@garage-ware/shared';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -22,8 +22,17 @@ import {
   describeSample,
   type PartitionSample,
 } from '@/lib/metrics/node-sample';
-import type { ClusterNodeItem } from '@/lib/types';
-import { nodeLabel, parseNodeTags } from '@/lib/node-label';
+import {
+  assessCoverage,
+  coverageInputFromMetric,
+  MIN_PEER_READINGS,
+  type CoverageReason,
+  type NodeCoverage,
+} from '@/lib/metrics/data-coverage';
+import { CATEGORY_LABELS, SEVERITY_LABEL } from '@/lib/cluster-timeline';
+import type { ClusterNodeItem, ClusterTimelineEvent } from '@/lib/types';
+import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
+import { cn } from '@/lib/utils';
 
 interface NodeDetailsDialogProps {
   /** The node whose details to show; null closes the dialog. */
@@ -33,6 +42,18 @@ interface NodeDetailsDialogProps {
   /** node id → latest NodeMetrics row; null while loading or unavailable. */
   latestMetrics: Map<string, NodeMetric> | null;
   /**
+   * node id → open manual notes. Omitting it hides the repair banner entirely,
+   * which is what a page that doesn't fetch the timeline wants.
+   */
+  openEventsByNode?: Map<string, ClusterTimelineEvent[]>;
+  /**
+   * Show the node's full Garage id instead of its short form. **Admin pages
+   * only.** The id is the public key a node is added to the cluster with, so
+   * it is treated as a secret everywhere else — `shortNodeId` is enough to
+   * tell two nodes apart, which is all a user needs it for.
+   */
+  revealNodeId?: boolean;
+  /**
    * node id → network address. Only ever passed on the admin page; omitting it
    * hides the address row entirely, since the non-admin payload never carries
    * one.
@@ -40,27 +61,41 @@ interface NodeDetailsDialogProps {
   addrByNodeId?: Map<string, string | null>;
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+/** One label-over-value cell. Two per row on all but the widest content. */
+function Stat({
+  label,
+  children,
+  wide,
+}: {
+  label: string;
+  children: ReactNode;
+  wide?: boolean;
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-4 text-sm">
-      <dt className="shrink-0 text-muted-foreground">{label}</dt>
-      <dd className="text-right">{children}</dd>
+    <div className={cn('min-w-0', wide && 'col-span-2')}>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="truncate text-sm">{children}</dd>
     </div>
   );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+    <section className="border-t pt-4 first:border-t-0 first:pt-0">
+      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </h3>
-      <dl className="space-y-2">{children}</dl>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3">{children}</dl>
     </section>
   );
 }
 
-function PartitionRows({
+function Muted({ children }: { children: ReactNode }) {
+  return <span className="text-muted-foreground">{children}</span>;
+}
+
+/** A filesystem partition as used/total with a fill bar. Always full width. */
+function PartitionStat({
   label,
   partition,
 }: {
@@ -69,27 +104,98 @@ function PartitionRows({
 }) {
   if (!partition) {
     return (
-      <Row label={label}>
-        <span className="text-muted-foreground">no partition data</span>
-      </Row>
+      <Stat label={label} wide>
+        <Muted>no partition data</Muted>
+      </Stat>
     );
   }
   return (
-    <div className="space-y-1">
-      <Row label={label}>
+    <div className="col-span-2 min-w-0">
+      <dt className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+        <span>{label}</span>
+        <QuotaFillPct used={partition.usedBytes} cap={partition.totalBytes} />
+      </dt>
+      <dd className="text-sm">
         {formatCapacity(partition.usedBytes)} /{' '}
         {formatCapacity(partition.totalBytes)}
-        <QuotaFillPct used={partition.usedBytes} cap={partition.totalBytes} />
-      </Row>
-      <QuotaFillBar used={partition.usedBytes} cap={partition.totalBytes} />
+        <QuotaFillBar
+          used={partition.usedBytes}
+          cap={partition.totalBytes}
+          className="mt-1"
+        />
+      </dd>
     </div>
   );
 }
 
 /**
- * Per-node details for the cluster map: identity, live status, capacity, and
+ * Why the coverage check declined to judge this node. Short, because it lands
+ * in a stat cell — the long-form versions on /dashboard/metrics and
+ * /admin/events are paragraphs doing a different job, not copies of this.
+ */
+const COVERAGE_REASON: Record<CoverageReason, string> = {
+  'node-down': 'node is down',
+  'layout-unavailable': 'layout unavailable at last sample',
+  'no-role': 'gateway — holds no partitions',
+  'no-partition-reading': 'no partition reading',
+  'too-few-peers': `needs ${MIN_PEER_READINGS} reporting storage nodes`,
+  'cluster-too-empty': 'cluster too empty to compare',
+};
+
+/**
+ * Open manual notes pinned to this node — the "under repair" state, which is
+ * one open row and no extra column (see CLAUDE.md, Cluster events).
+ *
+ * Amber rather than destructive on purpose: a node under repair is a node
+ * somebody is already dealing with, which is a different thing from a node
+ * that is failing unattended. It sits at the top because it is the one piece
+ * of context that changes how everything below it should be read.
+ */
+function RepairBanner({ events }: { events: ClusterTimelineEvent[] }) {
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+        Under repair
+      </p>
+      <ul className="space-y-2">
+        {events.map((e) => (
+          <li key={e.id}>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="text-sm font-medium">{e.title}</span>
+              {e.category && (
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/40 text-amber-700 dark:text-amber-400"
+                >
+                  {CATEGORY_LABELS[
+                    e.category as keyof typeof CATEGORY_LABELS
+                  ] ?? e.category}
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {/* Absolute, not "open for 4 days": a relative duration means
+                  reading the clock during render, which `react-hooks/purity`
+                  rejects — correctly, since it makes the render unstable. */}
+              Open since {formatPbDateTime(e.occurred_at)} ·{' '}
+              {SEVERITY_LABEL[e.severity] ?? e.severity}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Per-node details for the cluster map: identity, live status, capacity, what
+ * the node holds of the ring, whether it is holding its share of the data, and
  * the most recent NodeMetrics sample. The sample honors the collection's null
  * conventions via describeSample — a gap renders as a gap, never a zero.
+ *
+ * Deliberately **not** an event list: an open repair note is state, and it is
+ * the only event this dialog knows about. History lives on the timeline.
  *
  * A dialog rather than the panel that used to sit inside the map's frame: with
  * the map now a plain responsive grid, there is no fixed canvas for a panel to
@@ -102,6 +208,8 @@ export function NodeDetailsDialog({
   onClose,
   replicationFactor,
   latestMetrics,
+  openEventsByNode,
+  revealNodeId,
   addrByNodeId,
 }: NodeDetailsDialogProps) {
   // Selection clears the instant the dialog is dismissed, but Radix keeps the
@@ -114,6 +222,21 @@ export function NodeDetailsDialog({
   const [shown, setShown] = useState(item);
   if (item !== null && item !== shown) setShown(item);
 
+  // Coverage is inherently comparative, so it is computed over *every* node's
+  // latest sample and then read for the one on screen — there is no per-node
+  // answer to look up. Memoized on the map, not on the selection, so opening a
+  // second node costs nothing.
+  const coverageByNode = useMemo(() => {
+    if (!latestMetrics) return null;
+    const result = assessCoverage(
+      [...latestMetrics.values()].map(coverageInputFromMetric)
+    );
+    return {
+      byNode: new Map(result.nodes.map((n) => [n.nodeId, n])),
+      median: result.medianBytesPerPartition,
+    };
+  }, [latestMetrics]);
+
   return (
     <Dialog
       open={item !== null}
@@ -123,12 +246,16 @@ export function NodeDetailsDialog({
     >
       {/* Header pinned, body scrolling: a long sample list must not push the
           close button off the top of the dialog. */}
-      <DialogContent className="max-h-[85vh] grid-rows-[auto_1fr] gap-0 overflow-hidden p-0 sm:max-w-lg">
+      <DialogContent className="max-h-[85vh] grid-rows-[auto_1fr] gap-0 overflow-hidden p-0 sm:max-w-xl">
         {shown && (
           <NodeDetailsBody
             item={shown}
             replicationFactor={replicationFactor}
             metric={latestMetrics?.get(shown.id) ?? null}
+            coverage={coverageByNode?.byNode.get(shown.id) ?? null}
+            medianBytesPerPartition={coverageByNode?.median ?? null}
+            openEvents={openEventsByNode?.get(shown.id) ?? []}
+            revealNodeId={revealNodeId ?? false}
             addr={
               addrByNodeId ? (addrByNodeId.get(shown.id) ?? null) : undefined
             }
@@ -143,11 +270,19 @@ function NodeDetailsBody({
   item,
   replicationFactor,
   metric,
+  coverage,
+  medianBytesPerPartition,
+  openEvents,
+  revealNodeId,
   addr,
 }: {
   item: ClusterNodeItem;
   replicationFactor: number;
   metric: NodeMetric | null;
+  coverage: NodeCoverage | null;
+  medianBytesPerPartition: number | null;
+  openEvents: ClusterTimelineEvent[];
+  revealNodeId: boolean;
   addr?: string | null;
 }) {
   const usableGib = nodeUsableGbFrom(item.capacity, replicationFactor);
@@ -158,6 +293,7 @@ function NodeDetailsBody({
   const sample = metric ? describeSample(metric) : null;
   // The name renders as the title, so it must not repeat as a badge.
   const { name, rest } = parseNodeTags(item.tags);
+  const underRepair = openEvents.length > 0;
 
   return (
     <>
@@ -167,9 +303,30 @@ function NodeDetailsBody({
           {nodeLabel(name, item.id)}
         </DialogTitle>
         <DialogDescription className="break-all font-mono text-xs">
-          {item.id}
+          {/* Short by default. The full id is the key a node joins the cluster
+              with — admin surfaces only. */}
+          {revealNodeId ? item.id : shortNodeId(item.id)}
         </DialogDescription>
         <div className="flex flex-wrap items-center gap-1 pt-1">
+          {item.isUp === null ? (
+            <Badge variant="secondary">status unknown</Badge>
+          ) : item.isUp ? (
+            <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400">
+              up
+            </Badge>
+          ) : (
+            <Badge variant="destructive">down</Badge>
+          )}
+          {underRepair && (
+            <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/15 dark:text-amber-400">
+              under repair
+            </Badge>
+          )}
+          {item.draining && (
+            <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/15 dark:text-amber-400">
+              draining
+            </Badge>
+          )}
           <Badge variant="outline">{item.zone || 'no zone'}</Badge>
           {rest.map((tag) => (
             <Badge key={tag} variant="secondary">
@@ -179,50 +336,60 @@ function NodeDetailsBody({
         </div>
       </DialogHeader>
 
-      <div className="space-y-6 overflow-y-auto p-4">
+      <div className="space-y-4 overflow-y-auto p-4">
+        {underRepair && <RepairBanner events={openEvents} />}
+
         <Section title="Status">
-          <Row label="Connection">
+          <Stat label="Connection">
             {item.isUp === null ? (
-              <span className="text-muted-foreground">unknown</span>
+              <Muted>unknown</Muted>
             ) : item.isUp ? (
               <span className="text-emerald-500">up</span>
             ) : (
               <span className="text-destructive">down</span>
             )}
-          </Row>
-          {item.draining && (
-            <Row label="Draining">
-              <span className="text-amber-500">yes</span>
-            </Row>
-          )}
-          {item.lastSeenSecsAgo !== null && (
-            <Row label="Last seen">{item.lastSeenSecsAgo}s ago</Row>
-          )}
-          {item.garageVersion && (
-            <Row label="Garage version">{item.garageVersion}</Row>
-          )}
+          </Stat>
+          <Stat label="Last seen">
+            {item.lastSeenSecsAgo !== null ? (
+              `${item.lastSeenSecsAgo}s ago`
+            ) : (
+              <Muted>—</Muted>
+            )}
+          </Stat>
+          <Stat label="Garage version">
+            {item.garageVersion ?? <Muted>—</Muted>}
+          </Stat>
+          <Stat label="Layout version">
+            {metric?.role_ok && metric.layout_version > 0 ? (
+              `v${metric.layout_version}`
+            ) : (
+              <Muted>—</Muted>
+            )}
+          </Stat>
           {addr !== undefined && (
-            <Row label="Address">
+            <Stat label="Address" wide>
               <span className="break-all font-mono text-xs">{addr ?? '—'}</span>
-            </Row>
+            </Stat>
           )}
         </Section>
 
         <Section title="Capacity">
-          <Row label="Declared">
+          <Stat label="Declared">
             {item.capacity !== null ? (
               formatCapacity(item.capacity)
             ) : (
-              <span className="text-muted-foreground">none (gateway node)</span>
+              <Muted>none (gateway node)</Muted>
             )}
-          </Row>
-          {usableGib !== null && (
-            <Row label={`Usable at RF ${replicationFactor}`}>
-              {formatCapacityGib(usableGib)}
-            </Row>
-          )}
-          <PartitionRows
-            label="Data partition"
+          </Stat>
+          <Stat label={`Usable at RF ${replicationFactor}`}>
+            {usableGib !== null ? (
+              formatCapacityGib(usableGib)
+            ) : (
+              <Muted>—</Muted>
+            )}
+          </Stat>
+          <PartitionStat
+            label="Data filesystem"
             partition={
               item.diskTotalBytes !== null && diskUsed !== null
                 ? {
@@ -233,8 +400,8 @@ function NodeDetailsBody({
                 : null
             }
           />
-          <PartitionRows
-            label="Metadata partition"
+          <PartitionStat
+            label="Metadata filesystem"
             partition={
               item.metaTotalBytes !== null && item.metaFreeBytes !== null
                 ? {
@@ -247,28 +414,119 @@ function NodeDetailsBody({
           />
         </Section>
 
+        {/* Ring facts, kept out of "Capacity" on purpose: stored partitions ×
+            partition size is Garage's `usableCapacity`, a strictly better
+            answer to "how much of this node is usable" than the
+            capacity / RF the claim ledger is denominated in. Showing the two
+            numbers is useful; multiplying them under a Capacity heading would
+            invite substituting it into the invariant. See CLAUDE.md, Node data
+            coverage. */}
+        <Section title="Ring">
+          <Stat label="Partitions held">
+            {metric?.layout_ok ? (
+              metric.stored_partitions.toLocaleString()
+            ) : (
+              <Muted>unknown</Muted>
+            )}
+          </Stat>
+          <Stat label="Partition size">
+            {metric?.layout_ok && metric.partition_size_bytes > 0 ? (
+              formatCapacity(metric.partition_size_bytes)
+            ) : (
+              <Muted>—</Muted>
+            )}
+          </Stat>
+          <Stat label="Blocks claimed">
+            {metric?.node_stats_ok ? (
+              metric.rc_entries.toLocaleString()
+            ) : (
+              <Muted>unknown</Muted>
+            )}
+          </Stat>
+          <Stat label="Data per partition">
+            {coverage?.bytesPerPartition !== null &&
+            coverage?.bytesPerPartition !== undefined ? (
+              formatCapacity(coverage.bytesPerPartition)
+            ) : (
+              <Muted>—</Muted>
+            )}
+          </Stat>
+        </Section>
+
+        <Section title="Data coverage">
+          {!coverage ? (
+            <Stat label="Status" wide>
+              <Muted>no sample to compare</Muted>
+            </Stat>
+          ) : coverage.status === 'unknown' ? (
+            <Stat label="Not compared" wide>
+              <Muted>
+                {coverage.reason
+                  ? COVERAGE_REASON[coverage.reason]
+                  : 'no reading'}
+              </Muted>
+            </Stat>
+          ) : coverage.status === 'ok' ? (
+            <Stat label="Status" wide>
+              <span className="text-emerald-500">
+                holding its share of the data
+              </span>
+            </Stat>
+          ) : (
+            <>
+              <Stat label="Status" wide>
+                <span
+                  className={
+                    coverage.status === 'missing-data'
+                      ? 'text-destructive'
+                      : 'text-amber-500'
+                  }
+                >
+                  {coverage.status === 'missing-data'
+                    ? 'holding less data than its peers'
+                    : 'rebuilding — data still catching up'}
+                </span>
+              </Stat>
+              <Stat label="Shortfall">
+                {coverage.dataShortfallPct !== null ? (
+                  `${Math.round(coverage.dataShortfallPct * 100)}% below median`
+                ) : (
+                  <Muted>—</Muted>
+                )}
+              </Stat>
+              <Stat label="Unaccounted for">
+                {coverage.missingBytes !== null ? (
+                  formatCapacity(coverage.missingBytes)
+                ) : (
+                  <Muted>—</Muted>
+                )}
+              </Stat>
+            </>
+          )}
+          {medianBytesPerPartition !== null && (
+            <Stat label="Cluster median per partition" wide>
+              <Muted>{formatCapacity(medianBytesPerPartition)}</Muted>
+            </Stat>
+          )}
+        </Section>
+
         <Section title="Latest sample">
           {sample ? (
             <>
-              <Row label="Sampled">{formatPbDateTime(sample.sampledAt)}</Row>
-              <Row label="Up at sample">
+              <Stat label="Sampled">{formatPbDateTime(sample.sampledAt)}</Stat>
+              <Stat label="Up at sample">
                 {sample.isUp ? (
                   'yes'
                 ) : (
                   <span className="text-destructive">no</span>
                 )}
-              </Row>
-              <PartitionRows label="Data" partition={sample.dataPartition} />
-              <PartitionRows
-                label="Metadata"
-                partition={sample.metaPartition}
-              />
+              </Stat>
               {sample.resync ? (
                 <>
-                  <Row label="Resync queue">
+                  <Stat label="Resync queue">
                     {sample.resync.queueLength.toLocaleString()}
-                  </Row>
-                  <Row label="Resync errors">
+                  </Stat>
+                  <Stat label="Resync errors">
                     {sample.resync.erroredBlocks > 0 ? (
                       <span className="text-destructive">
                         {sample.resync.erroredBlocks.toLocaleString()}
@@ -276,22 +534,20 @@ function NodeDetailsBody({
                     ) : (
                       '0'
                     )}
-                  </Row>
+                  </Stat>
                 </>
               ) : (
-                <Row label="Resync">
-                  <span className="text-muted-foreground">
-                    stats unavailable at last sample
-                  </span>
-                </Row>
+                <Stat label="Resync" wide>
+                  <Muted>stats unavailable at last sample</Muted>
+                </Stat>
               )}
             </>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              No samples recorded yet.
-            </p>
+            <Stat label="Status" wide>
+              <Muted>No samples recorded yet.</Muted>
+            </Stat>
           )}
-          <p className="pt-2 text-xs text-muted-foreground">
+          <p className="col-span-2 pt-1 text-xs text-muted-foreground">
             Sampled every 15 minutes ·{' '}
             <Link
               href="/dashboard/metrics"

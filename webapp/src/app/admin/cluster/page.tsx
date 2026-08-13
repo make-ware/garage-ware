@@ -15,7 +15,11 @@ import pb from '@/lib/pocketbase';
 import { fetchLatestNodeMetrics } from '@/lib/metrics/latest-node-metrics';
 import { cn } from '@/lib/utils';
 import type { ClusterHealth, ClusterStatus } from '@/lib/garage';
-import type { ClusterNodesResponse } from '@/lib/types';
+import type {
+  ClusterNodesResponse,
+  ClusterTimelineEvent,
+  ClusterTimelineResponse,
+} from '@/lib/types';
 
 function StatCard({
   title,
@@ -58,6 +62,7 @@ export default function ClusterDetailPage() {
     string,
     NodeMetric
   > | null>(null);
+  const [openEvents, setOpenEvents] = useState<ClusterTimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -68,15 +73,21 @@ export default function ClusterDetailPage() {
       try {
         // Status is fetched only for `addr` — the shared /cluster/nodes
         // payload deliberately never carries node addresses.
-        const [h, s, n] = await Promise.all([
+        const [h, s, n, t] = await Promise.all([
           api<ClusterHealth>('/next-api/garage/cluster/health'),
           api<ClusterStatus>('/next-api/garage/cluster/status'),
           api<ClusterNodesResponse>('/next-api/garage/cluster/nodes'),
+          // Only for the open notes that mark a node under repair in the
+          // details dialog. Best-effort: the map is the page.
+          api<ClusterTimelineResponse>('/next-api/garage/cluster/events').catch(
+            () => null
+          ),
         ]);
         if (cancelled) return;
         setHealth(h);
         setStatus(s);
         setNodes(n);
+        setOpenEvents(t?.openEvents ?? []);
         setError(null);
         try {
           const latest = await fetchLatestNodeMetrics(
@@ -102,6 +113,19 @@ export default function ClusterDetailPage() {
       cancelled = true;
     };
   }, [refreshKey]);
+
+  // Open manual notes keyed by node; cluster-wide notes carry no node_id and
+  // are skipped, since "under repair" is a per-node state.
+  const openEventsByNode = useMemo(() => {
+    const map = new Map<string, ClusterTimelineEvent[]>();
+    for (const event of openEvents) {
+      if (!event.node_id) continue;
+      const list = map.get(event.node_id);
+      if (list) list.push(event);
+      else map.set(event.node_id, [event]);
+    }
+    return map;
+  }, [openEvents]);
 
   const addrByNodeId = useMemo(
     () =>
@@ -187,6 +211,8 @@ export default function ClusterDetailPage() {
           items={nodes.items}
           replicationFactor={nodes.replicationFactor}
           latestMetrics={latestMetrics}
+          openEventsByNode={openEventsByNode}
+          revealNodeId
           addrByNodeId={addrByNodeId}
         />
       ) : null}

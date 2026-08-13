@@ -18,10 +18,13 @@ import type { ZoneGroup } from './cluster-groups';
 export function ZoneGroupCard({
   group,
   selectedId,
+  underRepairNodes,
   onSelect,
 }: {
   group: ZoneGroup;
   selectedId: string | null;
+  /** Node ids carrying an open manual note. */
+  underRepairNodes: ReadonlySet<string>;
   onSelect: (nodeId: string) => void;
 }) {
   // The dashed/muted treatment below is shared with the cluster events
@@ -47,6 +50,7 @@ export function ZoneGroupCard({
             key={item.id}
             item={item}
             selected={item.id === selectedId}
+            underRepair={underRepairNodes.has(item.id)}
             onSelect={onSelect}
           />
         ))}
