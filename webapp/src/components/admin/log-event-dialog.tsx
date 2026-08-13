@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { api } from '@/lib/api-client';
+import { CATEGORY_LABELS } from '@/lib/cluster-timeline';
 import { nodeLabel } from '@/lib/node-label';
 
 /** Sentinel for "no node" — Radix Select forbids an empty value. */
@@ -64,16 +65,6 @@ interface Props {
   /** Called after a successful write so the parent can refresh. */
   onLogged: () => void | Promise<void>;
 }
-
-const CATEGORY_LABELS: Record<ClusterEventCategory, string> = {
-  'hardware-failure': 'Hardware failure',
-  'disk-replaced': 'Disk replaced',
-  maintenance: 'Maintenance',
-  upgrade: 'Upgrade',
-  incident: 'Incident',
-  decommission: 'Decommission',
-  other: 'Other',
-};
 
 /**
  * Write a note onto the cluster timeline.

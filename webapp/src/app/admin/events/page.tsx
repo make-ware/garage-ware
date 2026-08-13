@@ -41,6 +41,14 @@ import {
   type NodeChoice,
 } from '@/components/admin/log-event-dialog';
 import { api } from '@/lib/api-client';
+// Shared with the dashboard timeline so the two can't disagree about what a
+// kind is called or what `warning` looks like.
+import {
+  CATEGORY_LABELS,
+  KIND_LABELS,
+  SEVERITY_TONE,
+  eventBadgeLabel,
+} from '@/lib/cluster-timeline';
 import { formatCapacity, formatPbDateTime } from '@/lib/format';
 import { buildNodeNameMap, nodeLabel } from '@/lib/node-label';
 import pb from '@/lib/pocketbase';
@@ -56,21 +64,6 @@ import type { ClusterEventsResponse, ClusterNodesResponse } from '@/lib/types';
 const PER_PAGE = 50;
 const ANY = '__any__';
 
-/** Human copy for each kind, used by the filter and the row badge. */
-const KIND_LABELS: Record<ClusterEventKind, string> = {
-  layout_version: 'Layout version',
-  node_added: 'Node added',
-  node_removed: 'Node removed',
-  capacity_changed: 'Capacity changed',
-  zone_changed: 'Zone changed',
-  tags_changed: 'Tags changed',
-  disk_changed: 'Disk changed',
-  data_drop: 'Data drop',
-  node_state: 'Node state',
-  version_changed: 'Version changed',
-  note: 'Note',
-};
-
 /**
  * Which kinds carry byte counts in `previous_value` / `new_value`. The rows
  * store raw values so they stay re-renderable; this is where they become
@@ -83,23 +76,6 @@ const BYTE_KINDS = new Set<ClusterEventKind>([
   'node_added',
   'node_removed',
 ]);
-
-/** Matches CATEGORY_LABELS in the log dialog — the same words either side. */
-const CATEGORY_LABELS: Record<string, string> = {
-  'hardware-failure': 'Hardware failure',
-  'disk-replaced': 'Disk replaced',
-  maintenance: 'Maintenance',
-  upgrade: 'Upgrade',
-  incident: 'Incident',
-  decommission: 'Decommission',
-  other: 'Other',
-};
-
-const SEVERITY_RAIL: Record<string, string> = {
-  info: 'bg-muted-foreground/40',
-  warning: 'bg-amber-500',
-  critical: 'bg-destructive',
-};
 
 type NodeState = 'online' | 'offline' | 'under-repair' | 'unknown';
 
@@ -645,7 +621,7 @@ function AdminEventsView() {
                       {items.map((e) => (
                         <li key={e.id} className="flex gap-3">
                           <div
-                            className={`mt-1 w-1 shrink-0 rounded-full ${SEVERITY_RAIL[e.severity] ?? SEVERITY_RAIL.info}`}
+                            className={`mt-1 w-1 shrink-0 rounded-full ${SEVERITY_TONE[e.severity] ?? SEVERITY_TONE.info}`}
                             aria-hidden
                           />
                           <div className="min-w-0 flex-1 space-y-1">
@@ -653,14 +629,12 @@ function AdminEventsView() {
                               <span className="font-mono text-xs text-muted-foreground tabular-nums">
                                 {timeOf(e.occurred_at)}
                               </span>
+                              {/* A manual row's kind is always "Note", which
+                                  paired with a "by hand" badge said nothing
+                                  twice; its category is the useful word. */}
                               <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                                {KIND_LABELS[e.kind] ?? e.kind}
+                                {eventBadgeLabel(e)}
                               </span>
-                              {e.source === 'manual' && (
-                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                                  by hand
-                                </span>
-                              )}
                               {!e.ended_at && e.source === 'manual' && (
                                 <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
                                   open

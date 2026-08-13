@@ -17,6 +17,9 @@ import type {
   NodeMetric,
   GarageClusterCache,
   ClusterEvent,
+  ClusterEventKind,
+  ClusterEventSeverity,
+  ClusterEventSource,
 } from '@garage-ware/shared';
 import type { NodeClaimPosition } from '@/lib/storage/ledger-math';
 
@@ -170,4 +173,54 @@ export interface ClusterEventsResponse {
   perPage: number;
   totalItems: number;
   totalPages: number;
+}
+
+/**
+ * One row of the user-facing timeline: a deliberate projection of
+ * `ClusterEvent`, not the record.
+ *
+ * `ClusterEvents` stays admin-only in PocketBase — this shape is what
+ * `/next-api/garage/cluster/events` hands any signed-in user, and the
+ * *omissions* are the privacy boundary. `actor_id`, `actor_email` and
+ * `annotated_by` identify the admin who wrote a note and never leave the
+ * server; `detail`, `previous_value`, `new_value` and `annotation` are dropped
+ * because the dashboard timeline does not render them, and shipping a field
+ * nobody displays is how it ends up displayed later by accident.
+ *
+ * `category` **is** carried: it is a closed enum, identifies nobody, and is
+ * the badge — a manual row's kind is always `note`, so the category is the
+ * only word on it worth reading.
+ *
+ * `node_hostname` / `node_zone` are dropped for a different reason: per
+ * `lib/node-label.ts` the hostname is the detector's stored fallback and
+ * explicitly *not* how a node is labelled, so the client resolves names from
+ * the live layout it already holds.
+ */
+export interface ClusterTimelineEvent {
+  id: string;
+  kind: ClusterEventKind;
+  source: ClusterEventSource;
+  severity: ClusterEventSeverity;
+  /** '' for a cluster-wide event — a layout bump, or a note about no node. */
+  node_id: string;
+  /** Manual rows only; '' on a detector row, which never guesses a cause. */
+  category: string;
+  title: string;
+  occurred_at: string;
+  /** '' means still open. Only meaningful on a manual row. */
+  ended_at: string;
+}
+
+/** `GET /next-api/garage/cluster/events` — any signed-in user. */
+export interface ClusterTimelineResponse {
+  items: ClusterTimelineEvent[];
+  /**
+   * How many rows fall in the window, which may exceed `items.length`. The
+   * card says so when it does — a truncated list that looks complete is the
+   * "no silent caps" failure.
+   */
+  totalItems: number;
+  windowStart: string;
+  windowEnd: string;
+  days: number;
 }

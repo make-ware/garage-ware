@@ -24,6 +24,8 @@ export function ZoneGroupCard({
   selectedId: string | null;
   onSelect: (nodeId: string) => void;
 }) {
+  // The dashed/muted treatment below is shared with the cluster events
+  // timeline; see `cluster-event-timeline.tsx`. Keep the two in step.
   return (
     <section
       aria-label={`Zone ${group.label}`}

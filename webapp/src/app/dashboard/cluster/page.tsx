@@ -5,12 +5,17 @@ import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import type { NodeMetric } from '@garage-ware/shared';
 import { ProtectedRoute } from '@/components/auth/protected-route';
+import { ClusterEventTimeline } from '@/components/cluster/cluster-event-timeline';
 import { ClusterMap } from '@/components/cluster/cluster-map';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api-client';
 import pb from '@/lib/pocketbase';
 import { fetchLatestNodeMetrics } from '@/lib/metrics/latest-node-metrics';
-import type { ClusterNodesResponse } from '@/lib/types';
+import { parseNodeTags } from '@/lib/node-label';
+import type {
+  ClusterNodesResponse,
+  ClusterTimelineResponse,
+} from '@/lib/types';
 
 function ClusterLayoutPage() {
   const [data, setData] = useState<ClusterNodesResponse | null>(null);
@@ -18,6 +23,11 @@ function ClusterLayoutPage() {
     string,
     NodeMetric
   > | null>(null);
+  const [timeline, setTimeline] = useState<ClusterTimelineResponse | null>(
+    null
+  );
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -25,6 +35,13 @@ function ClusterLayoutPage() {
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
+      // The timeline needs nothing from the layout, so it goes out now and is
+      // awaited below — behind the map on the page, not behind it on the
+      // wire. `.catch` is attached here rather than at the await so a fast
+      // failure can't surface as an unhandled rejection.
+      const timelinePromise = api<ClusterTimelineResponse>(
+        '/next-api/garage/cluster/events'
+      ).catch(() => null);
       try {
         const result = await api<ClusterNodesResponse>(
           '/next-api/garage/cluster/nodes'
@@ -52,6 +69,14 @@ function ClusterLayoutPage() {
       } finally {
         if (!cancelled) setLoading(false);
       }
+      // Enrichment, like the samples above: the map is the page, and a
+      // timeline that failed costs only the timeline.
+      const events = await timelinePromise;
+      if (!cancelled) {
+        setTimeline(events);
+        setTimelineError(events ? null : 'Timeline unavailable');
+        setTimelineLoading(false);
+      }
     };
     run();
     return () => {
@@ -61,6 +86,16 @@ function ClusterLayoutPage() {
 
   const zoneCount = useMemo(
     () => new Set((data?.items ?? []).map((i) => i.zone)).size,
+    [data]
+  );
+
+  // Names come from the layout the page already holds — an event row stores
+  // only a node id, and `node_hostname` is explicitly not the label.
+  const nodeNames = useMemo(
+    () =>
+      new Map(
+        (data?.items ?? []).map((i) => [i.id, parseNodeTags(i.tags).name])
+      ),
     [data]
   );
 
@@ -112,6 +147,14 @@ function ClusterLayoutPage() {
           latestMetrics={latestMetrics}
         />
       ) : null}
+
+      <ClusterEventTimeline
+        events={timeline?.items ?? null}
+        nodeNames={nodeNames}
+        loading={timelineLoading}
+        error={timelineError}
+        totalItems={timeline?.totalItems ?? 0}
+      />
     </div>
   );
 }
