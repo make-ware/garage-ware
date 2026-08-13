@@ -586,15 +586,61 @@ describe('positionsForAuditTrail', () => {
     const positions = positionsForAuditTrail(rows, 0.002);
     for (const row of rows) {
       const position = positions.get(row.id)!;
-      // The running subtraction must not accumulate float noise — an audit row
-      // reading 1.9999999999999998 GB is a bug report waiting to happen.
       expect(position.afterGb - position.beforeGb).toBeCloseTo(
         row.delta_gb,
         10
       );
-      expect(String(position.beforeGb)).not.toMatch(/\d{12}/);
     }
     expect(positions.get('x1')!.beforeGb).toBe(0);
+  });
+
+  it('lands on an exact zero at real GiB magnitudes', () => {
+    // The regression: claims are stored in binary GiB, so a 36 TB grant is
+    // 33527.61268615723 and a 4 TB one 3725.290298461914. Rounding the walk to
+    // six decimals left the oldest row at exactly 1e-6 GiB, which the byte
+    // formatter rendered as "1.07 KB → 36 TB" — a first grant that looked like
+    // it had landed on top of something.
+    const gib = (tb: number) => (tb * 1000 ** 4) / 1024 ** 3;
+    const positions = positionsForAuditTrail(
+      [
+        { id: 'a2', delta_gb: gib(4) },
+        { id: 'a1', delta_gb: gib(36) },
+      ],
+      gib(36) + gib(4)
+    );
+    expect(positions.get('a1')!.beforeGb).toBe(0);
+    expect(positions.get('a1')!.afterGb).toBeCloseTo(gib(36), 6);
+    expect(positions.get('a2')!.afterGb).toBeCloseTo(gib(40), 6);
+  });
+
+  it('zeroes out again when a grant is fully reclaimed', () => {
+    const gib = (tb: number) => (tb * 1000 ** 4) / 1024 ** 3;
+    const positions = positionsForAuditTrail(
+      [
+        { id: 'r1', delta_gb: -gib(4) },
+        { id: 'r2', delta_gb: -gib(36) },
+        { id: 'g2', delta_gb: gib(4) },
+        { id: 'g1', delta_gb: gib(36) },
+      ],
+      0
+    );
+    expect(positions.get('r1')!.afterGb).toBe(0);
+    expect(positions.get('g1')!.beforeGb).toBe(0);
+    expect(positions.get('g2')!.afterGb).toBeCloseTo(gib(40), 6);
+  });
+
+  it('keeps a genuinely small position rather than snapping it to zero', () => {
+    // 0.001 GB, the smallest amount the ledger accepts, alongside a cluster-
+    // sized claim. The zero-snap scales with the operands, so it must not
+    // swallow this.
+    const tiny = (0.001 * 1000 ** 3) / 1024 ** 3;
+    const big = (36 * 1000 ** 4) / 1024 ** 3;
+    const positions = positionsForAuditTrail(
+      [{ id: 's1', delta_gb: big }],
+      big + tiny
+    );
+    expect(positions.get('s1')!.beforeGb).toBeCloseTo(tiny, 12);
+    expect(positions.get('s1')!.beforeGb).not.toBe(0);
   });
 
   it('treats a missing delta as no movement rather than NaN', () => {

@@ -220,13 +220,31 @@ export function sumClaimsByUserNode(
 }
 
 /**
- * Trim the float noise a running subtraction accumulates, and fold -0 to 0.
- * Ledger amounts go down to 0.001 GB, so six decimals leaves three orders of
- * magnitude of headroom while still killing the 39.999999999999996 case.
+ * How close to zero counts as zero, relative to the magnitudes subtracted to
+ * get there. Float error grows with those magnitudes, so a fixed absolute
+ * threshold is either too tight on a large cluster or too loose on a small one.
  */
-function normalizeGb(value: number): number {
-  const rounded = Math.round(value * 1e6) / 1e6;
-  return rounded === 0 ? 0 : rounded;
+const ZERO_EPSILON_RATIO = 1e-11;
+
+/**
+ * Fold float noise at zero, rounding nothing else.
+ *
+ * An earlier cut rounded every intermediate to six decimals, which at ledger
+ * magnitudes is itself the bug: claims are stored in GiB, so a 36 TB grant is
+ * 33527.61268615723 — six decimals is a *relative* precision of 3e-11, and the
+ * up-to-5e-7 error each rounding introduces is carried into the next
+ * subtraction, where it can no longer cancel. A pair that began from nothing
+ * came out at exactly 1e-6 GiB and rendered as "1.07 KB → 36 TB".
+ *
+ * Only zero needs defending. Display rounding hides a residue on a large
+ * figure, but beside zero the smallest unit the formatter reaches for is bytes,
+ * so noise there is the one place it becomes a visible claim about the past.
+ * The subtraction therefore stays exact, and a result within float noise of
+ * zero — scaled to the operands the error came from — is reported as the zero
+ * it is. `scale` of 0 still snaps, which is the right answer for 0 − 0.
+ */
+function snapZeroGb(value: number, scale: number): number {
+  return Math.abs(value) <= Math.abs(scale) * ZERO_EPSILON_RATIO ? 0 : value;
 }
 
 /** A (user, node) pair's effective claim either side of one audit row. */
@@ -265,16 +283,21 @@ export interface AuditDeltaLike {
  *
  * `entriesNewestFirst` must arrive in the order StorageClaimAuditMutator sorts
  * (`-created`): the walk is a running subtraction, so the order *is* the
- * arithmetic.
+ * arithmetic. Nothing is rounded along the way — see {@link snapZeroGb} for
+ * why rounding intermediates is what makes a position wrong rather than tidy.
  */
 export function positionsForAuditTrail(
   entriesNewestFirst: readonly AuditDeltaLike[],
   currentClaimedGb: number
 ): Map<string, AuditPosition> {
   const positions = new Map<string, AuditPosition>();
-  let afterGb = normalizeGb(Number(currentClaimedGb) || 0);
+  let afterGb = Number(currentClaimedGb) || 0;
   for (const entry of entriesNewestFirst) {
-    const beforeGb = normalizeGb(afterGb - (Number(entry.delta_gb) || 0));
+    const deltaGb = Number(entry.delta_gb) || 0;
+    const beforeGb = snapZeroGb(
+      afterGb - deltaGb,
+      Math.max(Math.abs(afterGb), Math.abs(deltaGb))
+    );
     positions.set(entry.id, { beforeGb, afterGb });
     afterGb = beforeGb;
   }
