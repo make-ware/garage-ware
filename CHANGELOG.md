@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.3](https://github.com/make-ware/garage-ware/compare/v1.8.2...v1.8.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* metrics filter and layout ([2b84a32](https://github.com/make-ware/garage-ware/commit/2b84a3285199ce0685d8b7ae22bdeb7b5656f3d3))
+
 ## [1.8.2](https://github.com/make-ware/garage-ware/compare/v1.8.1...v1.8.2) (2026-08-13)
 
 
