@@ -123,7 +123,7 @@ function BucketsView() {
         <CardHeader>
           <CardTitle>Your buckets</CardTitle>
           <CardDescription>
-            Each bucket gets a slice of your total storage claim. Click a column
+            Each bucket gets a slice of your total storage quota. Click a column
             to sort.
           </CardDescription>
         </CardHeader>
@@ -148,7 +148,7 @@ function CreateBucketDialog({
 }) {
   const [name, setName] = useState('');
   const [quotaGib, setQuotaGib] = useState(() => {
-    // Default 1 TB, capped at the user's free claim
+    // Default 1 TB, capped at the user's unallocated quota
     const oneTbInGib = 931.3225746;
     return Math.min(oneTbInGib, maxGb);
   });
@@ -163,7 +163,7 @@ function CreateBucketDialog({
       }
       if (quotaGib > maxGb) {
         throw new Error(
-          `Quota exceeds your free claim (${formatStorage(maxGb)} available)`
+          `Quota exceeds your unallocated storage (${formatStorage(maxGb)} available)`
         );
       }
       await api('/next-api/garage/buckets', {
@@ -213,7 +213,7 @@ function CreateBucketDialog({
             />
             <p className="text-xs text-muted-foreground">
               {formatStorage(maxGb)} available. Set 0 for unlimited within your
-              claim.
+              quota.
             </p>
           </div>
         </div>

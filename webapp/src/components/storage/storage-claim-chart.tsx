@@ -9,12 +9,12 @@ import { formatStorage } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 /**
- * The "Storage claim" card's chart.
+ * The "Storage quota" card's chart.
  *
  * Two stacked bars **on one shared scale**, so they can be read against each
  * other by eye:
  *
- *   Granted     [ claimed ][ received ][ given away ]   ← where it came from
+ *   Quota       [ granted ][ gifted ][ given away ]     ← where it came from
  *   Allocated   [ stored ][ reserved ][ unallocated  ]  ← where it went
  *
  * Row 1 spans `claims + received` (the gross); row 2 spans the grant, or the
@@ -98,7 +98,7 @@ export function buildClaimBars(input: ClaimBarInput): ClaimBars {
   if (claims > 0) {
     sources.push({
       key: 'claimed',
-      label: 'Claimed',
+      label: 'Granted',
       gb: claims,
       widthGb: take(claims),
       sign: 'none',
@@ -109,7 +109,7 @@ export function buildClaimBars(input: ClaimBarInput): ClaimBars {
   if (received > 0) {
     sources.push({
       key: 'received',
-      label: 'Received',
+      label: 'Gifted to you',
       gb: received,
       widthGb: take(received),
       sign: 'add',
@@ -361,8 +361,8 @@ export function StorageClaimChart({
   if (netGranted <= 0 && bars.sources.length === 0) {
     return (
       <p className={cn('text-sm text-muted-foreground', className)}>
-        You have no storage yet. Ask an administrator to grant you a claim, or
-        have another user transfer you some, before creating buckets.
+        You have no storage yet. Ask an administrator to grant you a quota, or
+        have another user gift you some, before creating buckets.
       </p>
     );
   }
@@ -393,7 +393,7 @@ export function StorageClaimChart({
           <p className="text-3xl font-semibold leading-none">
             {formatStorage(netGranted)}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">granted to you</p>
+          <p className="mt-1 text-xs text-muted-foreground">total quota</p>
         </div>
         <div>
           <p className="text-xl font-semibold leading-none">
@@ -420,7 +420,7 @@ export function StorageClaimChart({
         scaleMax={bars.scaleMax}
         ariaLabel={`Sources of your storage: ${bars.sources
           .map((s) => `${s.label} ${signed(s)}`)
-          .join(', ')}. Granted to you: ${formatStorage(netGranted)}.`}
+          .join(', ')}. Your total quota: ${formatStorage(netGranted)}.`}
       />
 
       <ClaimRow

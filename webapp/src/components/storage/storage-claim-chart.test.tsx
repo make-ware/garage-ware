@@ -177,8 +177,8 @@ describe('StorageClaimChart', () => {
       />
     );
     // Sources: the legend reports the ledger, signed.
-    expect(screen.getByText('Claimed')).toBeInTheDocument();
-    expect(screen.getByText('Received')).toBeInTheDocument();
+    expect(screen.getByText('Granted')).toBeInTheDocument();
+    expect(screen.getByText('Gifted to you')).toBeInTheDocument();
     expect(screen.getByText('Given away')).toBeInTheDocument();
     expect(screen.getByText('+1.07 TB')).toBeInTheDocument();
     expect(screen.getByText('−536.87 GB')).toBeInTheDocument();

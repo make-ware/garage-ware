@@ -126,3 +126,57 @@ export function formatPbDateTime(value: string | undefined | null): string {
 function stripTrailingZeros(s: string): string {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
 }
+
+// ── Currency ─────────────────────────────────────────────────────────────
+//
+// Used by the dashboard cost card. Built at module scope, like `compactNumber`
+// in dashboard/metrics/page.tsx — an Intl formatter is expensive to construct
+// and these render once per comparison row.
+
+const usdWhole = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 0,
+});
+
+const usdCents = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/**
+ * Format a USD amount for display.
+ *
+ * Two honesty rules, both load-bearing for a card whose job is to be believed:
+ *
+ * 1. **A non-zero amount never renders as "$0.00".** At the cluster's amortized
+ *    rate a small footprint genuinely costs fractions of a cent per month, and
+ *    printing "$0.00" would be a claim that it is free. Anything above zero but
+ *    below a cent renders "<$0.01"; only a true zero renders "$0.00".
+ * 2. **Cents are dropped above $1,000.** "$12,847/yr" reads better than
+ *    "$12,847.32/yr", and against a blended reference rate that precision is
+ *    invented anyway. Below that the cents still carry information — a $389.50
+ *    monthly line rounding to "$390" loses a figure the reader can check.
+ */
+export function formatUsd(usd: number): string {
+  if (!Number.isFinite(usd)) return '—';
+  if (usd === 0) return '$0.00';
+  const abs = Math.abs(usd);
+  if (abs < 0.01) return usd < 0 ? '>-$0.01' : '<$0.01';
+  return abs >= 1000 ? usdWhole.format(usd) : usdCents.format(usd);
+}
+
+/**
+ * Render a "how many times dearer" multiple, e.g. "545×". `null` (an
+ * unconfigured cluster rate, where the ratio is meaningless) renders as a dash
+ * rather than "Infinity×".
+ */
+export function formatMultiple(multiple: number | null): string {
+  if (multiple === null || !Number.isFinite(multiple) || multiple <= 0)
+    return '—';
+  if (multiple >= 100) return `${Math.round(multiple)}×`;
+  if (multiple >= 10) return `${stripTrailingZeros(multiple.toFixed(1))}×`;
+  return `${stripTrailingZeros(multiple.toFixed(2))}×`;
+}

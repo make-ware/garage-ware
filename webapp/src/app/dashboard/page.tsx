@@ -16,8 +16,10 @@ import { useAdminStatus } from '@/hooks/use-admin-status';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
 import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
-import { bytesToGib } from '@/lib/storage/units';
+import { bytesToGib, gibToBytes } from '@/lib/storage/units';
+import { usePricingConfig } from '@/lib/pricing/use-pricing-config';
 import { StorageClaimChart } from '@/components/storage/storage-claim-chart';
+import { StorageCostSummary } from '@/components/storage/storage-cost-summary';
 import { StorageTransfersCard } from '@/components/storage/storage-transfers-card';
 import { TransferDialog } from '@/components/storage/transfer-dialog';
 import {
@@ -34,15 +36,11 @@ import { Button } from '@/components/ui/button';
 import type { AccessKey, StorageInvite } from '@garage-ware/shared';
 import type {
   BucketWithUsage,
+  ClusterNodeItem,
+  ClusterNodesResponse,
   LabelledTransfer,
   StorageSummary,
 } from '@/lib/types';
-
-interface NodeInfo {
-  id: string;
-  zone: string;
-  tags: string[];
-}
 
 interface TransfersResponse {
   sent: LabelledTransfer[];
@@ -55,8 +53,10 @@ interface DashboardData {
   keys: AccessKey[];
   summary: StorageSummary;
   transfers: TransfersResponse;
-  nodeMap: Record<string, NodeInfo>;
+  nodeMap: Record<string, ClusterNodeItem>;
   usedGb: number;
+  /** The cluster's replication factor — a term in the hardware cost. */
+  replicationFactor: number;
 }
 
 interface ClaimResponse {
@@ -71,7 +71,7 @@ async function loadData(): Promise<DashboardData> {
       api<{ items: BucketWithUsage[] }>('/next-api/garage/buckets'),
       api<{ items: AccessKey[] }>('/next-api/garage/keys'),
       api<StorageSummary>('/next-api/garage/storage-summary'),
-      api<{ items: NodeInfo[] }>('/next-api/garage/cluster/nodes'),
+      api<ClusterNodesResponse>('/next-api/garage/cluster/nodes'),
       api<TransfersResponse>('/next-api/garage/transfers'),
     ]);
   const usedBytes = bucketsResp.items.reduce(
@@ -86,6 +86,7 @@ async function loadData(): Promise<DashboardData> {
     transfers: transfersResp,
     nodeMap,
     usedGb: bytesToGib(usedBytes),
+    replicationFactor: nodesResp.replicationFactor,
   };
 }
 
@@ -114,6 +115,12 @@ async function claimPendingInvites(): Promise<ClaimResponse | null> {
 
 function StorageDashboard() {
   const { isAdmin } = useAdminStatus();
+  // Deliberately its own fetch, not a sixth call in `loadData`: a failure there
+  // sets `error` and the whole dashboard renders as an error string, and a
+  // cosmetic panel must never be able to do that. The hook falls back to the
+  // built-in defaults rather than reporting null, so there is no failure state
+  // to render — a deployment that has configured nothing gets the same numbers.
+  const { config: pricing } = usePricingConfig();
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -214,10 +221,10 @@ function StorageDashboard() {
       <div className="mb-6 grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Storage claim</CardTitle>
+            <CardTitle>Storage quota</CardTitle>
             <CardDescription>
-              What you have been granted, where it came from, and how much of it
-              is still free.
+              Everything granted to you and gifted by others, where it came
+              from, and how much of it is still free.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -284,6 +291,14 @@ function StorageDashboard() {
         </Card>
       </div>
 
+      <StorageCostSummary
+        className="mb-6"
+        quotaBytes={summary ? gibToBytes(summary.netGrantedGb) : 0}
+        replicationFactor={data?.replicationFactor ?? 1}
+        pricing={pricing}
+        loading={!data}
+      />
+
       <Card className="mb-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -348,8 +363,8 @@ function StorageDashboard() {
               <p className="text-sm text-muted-foreground">Loading…</p>
             ) : claimsByNode.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No node claims yet. An administrator grants storage per cluster
-                node; transfers from other users are not tied to one.
+                No node quotas yet. An administrator grants storage per cluster
+                node; storage gifted by other users is not tied to one.
               </p>
             ) : (
               <table className="w-full text-sm">
@@ -357,7 +372,7 @@ function StorageDashboard() {
                   <tr className="text-muted-foreground border-b">
                     <th className="text-left pb-2 font-medium">Node</th>
                     <th className="text-left pb-2 font-medium">Tags</th>
-                    <th className="text-right pb-2 font-medium">Claimed</th>
+                    <th className="text-right pb-2 font-medium">Quota</th>
                   </tr>
                 </thead>
                 <tbody>

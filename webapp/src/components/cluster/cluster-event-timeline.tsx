@@ -18,6 +18,7 @@ import {
 } from '@/lib/cluster-timeline';
 import { formatPbDateTime } from '@/lib/format';
 import type { ClusterTimelineEvent } from '@/lib/types';
+import { CLUSTER_PANEL_CLASS } from './panel';
 import { cn } from '@/lib/utils';
 
 interface ClusterEventTimelineProps {
@@ -116,7 +117,7 @@ export function ClusterEventTimeline({
     // Matches the zone boxes in `zone-group-card.tsx` — dashed, muted, flat —
     // so the timeline reads as part of the cluster view rather than a panel
     // floating above it. Keep the two in step if either changes.
-    <Card className="rounded-lg border-dashed bg-muted/30 shadow-none">
+    <Card className={CLUSTER_PANEL_CLASS}>
       <CardHeader>
         <CardTitle>Cluster events</CardTitle>
         <CardDescription>

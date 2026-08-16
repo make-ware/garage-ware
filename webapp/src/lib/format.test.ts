@@ -6,8 +6,10 @@ import {
   formatGib,
   formatPbDate,
   formatPbDateTime,
+  formatMultiple,
   formatSignedStorage,
   formatStorage,
+  formatUsd,
 } from './format';
 import { GIGABYTE, PETABYTE, TERABYTE, tbToGib } from './storage/units';
 
@@ -158,5 +160,59 @@ describe('formatPbDateTime', () => {
   it('handles missing and unparseable values the same way', () => {
     expect(formatPbDateTime(undefined)).toBe('—');
     expect(formatPbDateTime('nonsense')).toBe('nonsense');
+  });
+});
+
+describe('formatUsd', () => {
+  it('renders a true zero as $0.00', () => {
+    expect(formatUsd(0)).toBe('$0.00');
+  });
+
+  it('never renders a non-zero amount as $0.00', () => {
+    // The honesty case: at the cluster's amortized rate a small footprint
+    // really does cost a fraction of a cent, and "$0.00" would read as free.
+    expect(formatUsd(0.0037)).toBe('<$0.01');
+    expect(formatUsd(0.000001)).toBe('<$0.01');
+  });
+
+  it('renders cents below $1,000, where they still carry information', () => {
+    expect(formatUsd(9.5)).toBe('$9.50');
+    expect(formatUsd(17.6)).toBe('$17.60');
+    expect(formatUsd(389.5)).toBe('$389.50');
+  });
+
+  it('drops invented precision at $1,000 and above', () => {
+    expect(formatUsd(1000)).toBe('$1,000');
+    expect(formatUsd(12847.32)).toBe('$12,847');
+    expect(formatUsd(9600)).toBe('$9,600');
+  });
+
+  it('handles negatives without claiming zero', () => {
+    expect(formatUsd(-0.001)).toBe('>-$0.01');
+    expect(formatUsd(-9.5)).toBe('-$9.50');
+  });
+
+  it('renders a dash for a non-finite amount', () => {
+    expect(formatUsd(Number.NaN)).toBe('—');
+    expect(formatUsd(Number.POSITIVE_INFINITY)).toBe('—');
+  });
+});
+
+describe('formatMultiple', () => {
+  it('rounds large multiples to whole numbers', () => {
+    expect(formatMultiple(545.45)).toBe('545×');
+  });
+
+  it('keeps a decimal for mid-range multiples', () => {
+    expect(formatMultiple(16.36)).toBe('16.4×');
+  });
+
+  it('keeps two decimals below 10', () => {
+    expect(formatMultiple(1.5)).toBe('1.5×');
+  });
+
+  it('renders a dash rather than Infinity when there is no ratio', () => {
+    expect(formatMultiple(null)).toBe('—');
+    expect(formatMultiple(Number.POSITIVE_INFINITY)).toBe('—');
   });
 });

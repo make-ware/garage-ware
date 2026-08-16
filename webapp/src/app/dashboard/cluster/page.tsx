@@ -7,19 +7,30 @@ import type { NodeMetric } from '@garage-ware/shared';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { ClusterEventTimeline } from '@/components/cluster/cluster-event-timeline';
 import { ClusterMap } from '@/components/cluster/cluster-map';
+import { CLUSTER_PANEL_CLASS } from '@/components/cluster/panel';
+import { StorageCostCard } from '@/components/storage/storage-cost-card';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api-client';
 import pb from '@/lib/pocketbase';
 import { fetchLatestNodeMetrics } from '@/lib/metrics/latest-node-metrics';
 import { parseNodeTags } from '@/lib/node-label';
+import { clusterUsableBytes } from '@/lib/pricing/rates';
+import { usePricingConfig } from '@/lib/pricing/use-pricing-config';
+import { gibToBytes } from '@/lib/storage/units';
 import type {
   ClusterNodesResponse,
   ClusterTimelineEvent,
   ClusterTimelineResponse,
+  StorageSummary,
 } from '@/lib/types';
 
 function ClusterLayoutPage() {
+  const { config: pricing } = usePricingConfig();
   const [data, setData] = useState<ClusterNodesResponse | null>(null);
+  // The cost panel's own quota figure. Its own effect, and swallowing its own
+  // failure, for the same reason the timeline has one: this page is the cluster
+  // map, and a panel that could not price itself must not take the map down.
+  const [summary, setSummary] = useState<StorageSummary | null>(null);
   const [latestMetrics, setLatestMetrics] = useState<Map<
     string,
     NodeMetric
@@ -85,6 +96,24 @@ function ClusterLayoutPage() {
     };
   }, [refreshKey]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadSummary = async () => {
+      try {
+        const result = await api<StorageSummary>(
+          '/next-api/garage/storage-summary'
+        );
+        if (!cancelled) setSummary(result);
+      } catch {
+        if (!cancelled) setSummary(null);
+      }
+    };
+    loadSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const zoneCount = useMemo(
     () => new Set((data?.items ?? []).map((i) => i.zone)).size,
     [data]
@@ -145,6 +174,17 @@ function ClusterLayoutPage() {
           </Button>
         </div>
       </div>
+
+      <StorageCostCard
+        className={CLUSTER_PANEL_CLASS}
+        quotaBytes={summary ? gibToBytes(summary.netGrantedGb) : 0}
+        clusterUsableBytes={
+          data ? clusterUsableBytes(data.items, data.replicationFactor) : 0
+        }
+        replicationFactor={data?.replicationFactor ?? 1}
+        pricing={pricing}
+        loading={loading}
+      />
 
       {error && (
         <p className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
