@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/make-ware/garage-ware/compare/v1.8.3...v1.9.0) (2026-08-16)
+
+
+### Features
+
+* onboarding flow and repair section ([5f58236](https://github.com/make-ware/garage-ware/commit/5f582360b530a60cf49cdeda732634bde9619e6f))
+
+
+### Bug Fixes
+
+* add cost calculation ([0a62095](https://github.com/make-ware/garage-ware/commit/0a620959329c62acf1404b26a53418f67ab8567d))
+* ledger math ([92cbaeb](https://github.com/make-ware/garage-ware/commit/92cbaeb2bfffa384f8c0e54febbfac7ff4681b39))
+
 ## [1.8.3](https://github.com/make-ware/garage-ware/compare/v1.8.2...v1.8.3) (2026-08-13)
 
 
