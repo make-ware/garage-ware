@@ -13,7 +13,7 @@
     "format": "echo 'PocketBase workspace - no format needed'",
     "format:check": "echo 'PocketBase workspace - no format check needed'",
     "serve": "./pocketbase serve",
-    "admin": "./pocketbase admin",
+    "admin": "sh -c '[ -n \"$1\" ] && [ -n \"$2\" ] || { echo \"Usage: yarn workspace @garage-ware/pb admin <email> <password>\"; exit 1; }; exec ./pocketbase superuser upsert \"$1\" \"$2\"' --",
     "seed-admin": "node scripts/seed-admin.mjs",
     "clean": "rm -rf pb_data"
   },

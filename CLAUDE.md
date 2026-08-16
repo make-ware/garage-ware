@@ -10,7 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **Storage claims with replication factor** — admins grant users storage per cluster node as an append-only ledger of signed adjustments; a user's total claim is the sum of their entries, and they allocate slices of it as per-bucket quotas. Replication factor is read live from Garage's layout.
 3. **Storage transfers** — a user (or an admin on their behalf) hands part of their *unallocated* claim to another user, found by email. Also append-only; "returning" a transfer means deleting the row. An address with no account yet gets a **StorageInvite** instead: the same handoff held in escrow, emailed to the recipient, and converted to a real transfer when they sign up — see [Storage invites](#storage-invites).
 4. **Storage user self-service** — users manage their own S3 access keys, buckets, per-key bucket permissions, and live usage.
-5. **Cluster event timeline** — a dated log of what changed in the cluster and why. Layout changes, disk resizes and connectivity are detected by diffing consecutive metrics scrapes; causes are typed in by an admin. Administered at `/admin/events`; a reduced, redacted version renders below the node map on `/dashboard/cluster` for every signed-in user. See [Cluster events](#cluster-events).
+5. **Repairs** — admins launch Garage's per-node repair operations (scrub, block repair, rebalance) and read each node's scrub state. Administered at `/admin/repairs`; every launch appends to the cluster timeline. See [Repairs](#repairs).
+6. **Cluster event timeline** — a dated log of what changed in the cluster and why. Layout changes, disk resizes and connectivity are detected by diffing consecutive metrics scrapes; causes are typed in by an admin. Administered at `/admin/events`; a reduced, redacted version renders below the node map on `/dashboard/cluster` for every signed-in user. See [Cluster events](#cluster-events).
 
 The one formula to keep in your head — a user's **net granted GB**:
 
@@ -72,7 +73,7 @@ yarn db:migrate    # alias for: yarn workspace @garage-ware/shared migrate:gener
 yarn db:status
 
 # PocketBase admin (create the superuser via the binary)
-yarn workspace @garage-ware/pb admin
+yarn workspace @garage-ware/pb admin <email> <password>
 
 # Promote an existing user to app-admin (needs POCKETBASE_ADMIN_EMAIL/PASSWORD;
 # falls back to webapp/.env, like the pb `dev` script). The user must already exist.
@@ -153,7 +154,7 @@ Two parallel back ends, two different auth boundaries:
 | `StorageUserBalances` | `user`, `claims_gb`, `sent_gb`, `received_gb`, `allocated_gb`, `recomputed_at`, `last_drift_gb` | Node-agnostic half of the same cache: transfers in/out and what the user's buckets reserve. `claims_gb` is the **unfiltered** cross-node sum and is *not* the granted figure — see the warning in [Storage balances](#storage-balances). |
 | `NodeMetrics` | `node_id`, `node_hostname`, `node_zone`, `is_up`, `node_stats_ok`, `resync_queue_length`, `resync_errored_blocks`, `rc_entries`, `layout_ok`, `stored_partitions`, `partition_size_bytes`, `role_ok`, `role_capacity_bytes`, `node_tags`, `layout_version`, `garage_version`, `data_total_bytes`, `data_available_bytes`, `meta_total_bytes`, `meta_available_bytes` | **Per-node time-series**, one row per node per 15-minute `node-metrics-scrape` cron tick (sample time = autodate `created`; retention via `NODE_METRICS_RETENTION_DAYS`). Admin-readable, all write rules `null` (the cron writes via the JSVM). Node identity is a **`TextField`, not a relation** — nodes aren't PB entities. PB number fields can't hold null, so "no reading" is encoded by three separate conventions: `node_stats_ok` gates the two resync fields **and `rc_entries`** (one `GetNodeStatistics` call, one gate); `layout_ok` gates `stored_partitions` / `partition_size_bytes` (one `GetClusterLayout` call); `role_ok` gates `role_capacity_bytes` / `node_tags` / `layout_version`; and `*_total_bytes = 0` means "no partition data" (gateway node). The bucketed history route emits real JSON `null`s for all of them. **Under `layout_ok`, `stored_partitions = 0` is a real reading** — "holds no partitions", i.e. a gateway or a node draining out of an older layout — which is the entire reason that gate exists: without it a failed layout call would record every node as a gateway and bake a permanent all-clear into the history. `role_ok` carries a **second** job on top of the same one: it also means "this row was written by a scraper that records the role columns", so pre-migration rows read `false` and the event detector refuses to diff against them — see [Cluster events](#cluster-events). The last five columns exist only for that detector; nothing charts them, and `bucketHistory` does not aggregate them. See [Node data coverage](#node-data-coverage). Readable by **any signed-in user** (list/view `@request.auth.id != ''`) — cluster health is visible without exposing who stores what: the cluster map reads each node's latest row straight from PB, while `GET /next-api/garage/node-metrics` stays the door for *history*, since the bucketing must run server-side. Recording a sample (`POST .../node-metrics/scrape`) stays admin-only. |
 | `GarageClusterCache` | `key`, `payload`, `fetched_at` | **Stale-while-revalidate cache** of the Garage cluster reads, one row per `key` (`layout` \| `status` \| `health` \| `replication_factor`, unique index). `payload` is the raw response body (the repo's only `JSONField`; `replication_factor` stores `{ replicationFactor: n }` so every payload is an object) and is re-parsed through `lib/garage/schemas.ts` on read — a payload that no longer parses is a miss. `fetched_at` is when Garage answered, **not** the autodate `updated`, which moves on any write. **All five rules `null`**, superuser-only, no hook and no cron: [webapp/src/lib/garage/cached.ts](webapp/src/lib/garage/cached.ts) is the only reader and writer. See [Cluster read cache](#cluster-read-cache). |
-| `ClusterEvents` | `kind`, `source`, `severity`, `node_id`, `node_hostname`, `node_zone`, `title`, `detail`, `previous_value`, `new_value`, `category`, `occurred_at`, `ended_at`, `annotation`, `annotated_by`, `annotated_at`, `actor_id`, `actor_email` | **The cluster timeline.** One collection, two authors: `source: 'detector'` rows are appended by the `node-metrics-scrape` cron when two consecutive samples disagree, `source: 'manual'` rows are written by an admin. Admin-readable; **all three write rules `null`** (the cron writes via the JSVM, the route handlers as a superuser), so it is genuinely append-only from a browser — unlike `AccessKeys`/`Buckets`, where the Route-Handler funnel is only convention. Node identity is a **`TextField`, not a relation**: a `node_removed` row must outlive its node. `previous_value` / `new_value` hold the **raw** value as text, never a rendered one — the UI formats by `kind`. Sorted and indexed on `occurred_at`, not `created`, so a note written today about last Tuesday lands on last Tuesday. `ended_at` empty means still open, and an open manual row pinned to a node is what marks it **under repair**. **Nothing prunes it** — the point is to remember further back than the `NodeMetrics` it explains. **Two read doors:** `/next-api/garage/events` hands an admin the whole row, `/next-api/garage/cluster/events` hands any signed-in user a projection with the actor identity and the free-text fields stripped. The rules themselves stay admin-only, so that projection — not the rule — is the boundary. See [Cluster events](#cluster-events). |
+| `ClusterEvents` | `kind`, `source`, `severity`, `node_id`, `node_hostname`, `node_zone`, `title`, `detail`, `previous_value`, `new_value`, `category`, `occurred_at`, `ended_at`, `annotation`, `annotated_by`, `annotated_at`, `actor_id`, `actor_email` | **The cluster timeline.** One collection, three authors: `source: 'detector'` rows are appended by the `node-metrics-scrape` cron when two consecutive samples disagree, `source: 'manual'` rows are written by an admin, and `source: 'action'` rows (`kind: 'repair'`) are written by `POST /next-api/garage/repairs` when an admin launches a repair — see [Repairs](#repairs). Admin-readable; **all three write rules `null`** (the cron writes via the JSVM, the route handlers as a superuser), so it is genuinely append-only from a browser — unlike `AccessKeys`/`Buckets`, where the Route-Handler funnel is only convention. Node identity is a **`TextField`, not a relation**: a `node_removed` row must outlive its node. `previous_value` / `new_value` hold the **raw** value as text, never a rendered one — the UI formats by `kind`. Sorted and indexed on `occurred_at`, not `created`, so a note written today about last Tuesday lands on last Tuesday. `ended_at` empty means still open, and an open **manual** row pinned to a node is what marks it **under repair** — which is exactly why a repair launch is `action` and not `manual`, and why it closes itself (`ended_at = occurred_at`). **Nothing prunes it** — the point is to remember further back than the `NodeMetrics` it explains. **Two read doors:** `/next-api/garage/events` hands an admin the whole row, `/next-api/garage/cluster/events` hands any signed-in user a projection with the actor identity and the free-text fields stripped. The rules themselves stay admin-only, so that projection — not the rule — is the boundary. See [Cluster events](#cluster-events). |
 
 **PB write rules are not `null` — the Route-Handler funnel is convention, not enforcement.** `AccessKeys`/`Buckets` allow `user = @request.auth.id || <admin>` on create/update/delete, `StorageClaims` is admin-only, `StorageTransfers` lets the sender create and the recipient delete. So PB would happily *accept* a direct SDK write from the browser — and every quota invariant and every Garage-side sync would be skipped. All app writes go through `/next-api/garage/*`; keep it that way, and don't read the permissive rules as license to write from a component.
 
@@ -286,7 +287,7 @@ It exists because the object axis was previously *only* derived, so an admin cou
 
 #### Storage cost card
 
-The full comparison lives on **`/dashboard/cluster`**, at the top, wearing `CLUSTER_PANEL_CLASS` from [components/cluster/panel.ts](webapp/src/components/cluster/panel.ts) — the dashed-border, muted-fill treatment that page's event timeline already used, extracted to a constant so the two panels match by construction rather than by coincidence. It carries **two sections over the same rates**: the user's quota, and the cluster's whole usable capacity. Separate blocks rather than one blended figure, because they answer different questions — what am I getting, and what is this thing worth — and averaging them would answer neither. Each section's table sits in a **collapsed `View details` accordion** — the headline answers the question, the table is the evidence, and evidence should be available rather than unavoidable. Radix unmounts collapsed content, so the tables are genuinely absent from the DOM until opened; tests must click the trigger first (`expandAll()` in [storage-cost-card.test.tsx](webapp/src/components/storage/storage-cost-card.test.tsx)). The table is **Provider · Rate/TB/mo · Monthly · Annual · N years**, where N is the configured lifespan; **Rate folds away below `md` and Monthly below `sm`**, so a phone gets three columns rather than a horizontal scroll — Annual and the lifespan total survive because they are the two figures the surrounding copy quotes. The two sit **side by side at `xl`, stacked below it** — not `lg`, because the page's container caps at `max-w-6xl` and an `lg` viewport leaves each column ~456px, enough to render a five-column table only by scrolling it, which defeats the point of the split. The grid is applied only when both halves exist; a lone section at half width with dead space beside it reads as a rendering fault. Bars were the wrong mark here: the figures span nearly two orders of magnitude, so this cluster's row came out ~27x shorter than S3's and had to be floored to a visible minimum to render at all, at which point it no longer showed the ratio it existed to show. The last column is the one that lands, and it is self-checking: **over the hardware's life this cluster's total equals the disk purchase price exactly** (36 usable TB at RF 3 → 108 raw TB × $22 = $2,376), because a lifespan of amortized capital is the capital. [rates.test.ts](webapp/src/lib/pricing/rates.test.ts) asserts that identity across every lifespan and replication factor — it is what breaks first if the amortization is wrong. `/dashboard` carries only [storage-cost-summary.tsx](webapp/src/components/storage/storage-cost-summary.tsx): a single full-width band with what the quota costs here, a saving per provider, and a CTA to the cluster page. **Below `sm` only the cheapest provider's saving is shown** — one comparison fits on a phone, and it should be the hardest test of the claim rather than the most flattering one. It is picked by total cost, not by taking the last row, so it survives a reordering; both figures stay in the DOM, since this is a layout choice and not a different set of numbers for phones. The split is the point. A full pricing panel was taking a screenful of a working dashboard to make an argument the user needs to read once; the panel now sits next to the cluster it is arguing for. Each component carries a test asserting it has not grown back into the other (`<table>` absent on the panel, no bars or provider list on the summary), and the panel carries no CTA because it lives on the page it would link to.
+The full comparison lives on **`/dashboard/cluster`**, at the top, wearing `CLUSTER_PANEL_CLASS` from [components/cluster/panel.ts](webapp/src/components/cluster/panel.ts) — the dashed-border, muted-fill treatment that page's event timeline already used, extracted to a constant so the two panels match by construction rather than by coincidence. It carries **two sections over the same rates**: the user's quota, and the cluster's whole usable capacity. Separate blocks rather than one blended figure, because they answer different questions — what am I getting, and what is this thing worth — and averaging them would answer neither. Each section's table sits in a **collapsed `View details` accordion** — the headline answers the question, the table is the evidence, and evidence should be available rather than unavoidable. Radix unmounts collapsed content, so the tables are genuinely absent from the DOM until opened; tests must click the trigger first (`expandAll()` in [storage-cost-card.test.tsx](webapp/src/components/storage/storage-cost-card.test.tsx)). The table is **Provider · Rate/TB/mo · Monthly · Annual · N years**, where N is the configured lifespan; **Rate folds away below `md` and Monthly below `sm`**, so a phone gets three columns rather than a horizontal scroll — Annual and the lifespan total survive because they are the two figures the surrounding copy quotes. The two sit **side by side at `xl`, stacked below it** — not `lg`, because the page's container caps at `max-w-6xl` and an `lg` viewport leaves each column ~456px, enough to render a five-column table only by scrolling it, which defeats the point of the split. The grid is applied only when both halves exist; a lone section at half width with dead space beside it reads as a rendering fault. Bars were the wrong mark here: the figures span nearly two orders of magnitude, so this cluster's row came out ~27x shorter than S3's and had to be floored to a visible minimum to render at all, at which point it no longer showed the ratio it existed to show. The last column is the one that lands, and it is self-checking: **over the hardware's life this cluster's total equals the disk purchase price exactly** (36 usable TB at RF 3 → 108 raw TB × $22 = $2,376), because a lifespan of amortized capital is the capital. [rates.test.ts](webapp/src/lib/pricing/rates.test.ts) asserts that identity across every lifespan and replication factor — it is what breaks first if the amortization is wrong. `/dashboard` carries only [storage-cost-summary.tsx](webapp/src/components/storage/storage-cost-summary.tsx): a single full-width band with what the quota costs here, a saving per provider, and a CTA to the cluster page. **Below `sm` only the cheapest provider's saving is shown** — one comparison fits on a phone, and it should be the hardest test of the claim rather than the most flattering one. It is `cheapestAlternative(rows)`, the same helper the panel headlines with: picked by total cost, not by taking the last row, so it survives a reordering; both figures stay in the DOM, since this is a layout choice and not a different set of numbers for phones. The split is the point. A full pricing panel was taking a screenful of a working dashboard to make an argument the user needs to read once; the panel now sits next to the cluster it is arguing for. Each component carries a test asserting it has not grown back into the other (`<table>` absent on the panel, no bars or provider list on the summary), and the panel carries no CTA because it lives on the page it would link to.
 
 Both price the user's **total storage quota** — `StorageSummary.netGrantedGb`: what an admin granted, **plus storage gifted by other users**, less anything gifted away — against two commercial reference rates and against this cluster's own amortized hardware cost. The quota is the like-for-like figure, since capacity you hold from a provider is capacity you pay them for. **"Claim" is the ledger's term and stays in the accounting code and the admin console; every user-facing surface says "quota".** It is a value/ROI panel and the platform's one call to action to invest in the cluster. [webapp/src/components/storage/storage-cost-card.tsx](webapp/src/components/storage/storage-cost-card.tsx) is presentation only; all the arithmetic is in [webapp/src/lib/pricing/rates.ts](webapp/src/lib/pricing/rates.ts).
 
@@ -296,6 +297,7 @@ Both price the user's **total storage quota** — `StorageSummary.netGrantedGb`:
 - **The replication factor is a term in the arithmetic, taken from the live layout.** `garageUsdPerGbMonth(usdPerRawTb, years, rf)` multiplies by RF, because at RF 3 a terabyte of a user's data occupies three terabytes of disk — omitting it understates the cluster's cost, and overstates the saving, by exactly 3×. It is clamped to a floor of 1 like `nodeUsableGbFrom` does, so an unreadable RF can never make the cluster look cheaper than it is. The cluster-wide figure divides capacity by RF (`clusterUsableBytes`) and then prices it at the RF-inclusive rate, which must equal pricing the raw disk at the raw price — [rates.test.ts](webapp/src/lib/pricing/rates.test.ts) asserts that identity, since it is what catches RF being applied twice or not at all. Pricing raw declared capacity against a provider would overstate the cluster's cloud-equivalent value, because their price already includes their own redundancy.
 - **Egress is modelled, at one twelfth of the footprint per month** (`EGRESS_FRACTION_PER_MONTH`) — the assumption that a user reads everything back once a year. It is an assumption, not a measurement: this app has no egress telemetry of any kind, so the card states it in visible copy. It is also the conservative end, since egress is exactly where the commercial gap widens. Both free-allowance shapes are real and are not interchangeable — S3 gives a flat 100 GB/month, B2 gives 3× what you store — so modelling only the flat kind would bill B2 for egress it does not charge for. At this volume B2's egress is free and S3's is $261/month on a 36 TB claim, which is most of why S3 reads 27× rather than 21×.
 - **Two providers, not three.** One premium (S3) and one budget (B2) bracket the market; a second budget row said nothing the first had not.
+- **The headline quotes the *cheapest* alternative, not the dearest.** A saving is only worth as much as the alternative it is measured against, and the dearest one is the easiest to beat — so each section leads with B2 (~6.3× on a 36 TB quota) and S3's much larger saving (~27.5×) waits inside `View details`, where a reader who opens it finds a bigger number they were not sold. `cheapestAlternative(rows)` picks it from the **priced rows**, never from the rate table, because the free-egress allowances differ in shape (a flat 100 GB against a multiple of what you store) and the cheapest storage rate is therefore not automatically the cheapest total; deriving it makes "the headline is the conservative comparison" true by construction rather than by coincidence. The summary band's phone-only row uses the same helper — that is one function, not two, precisely so the two surfaces cannot disagree about which comparison is honest. `HEADLINE_RATE` remains for the **static** no-quota copy, is likewise the cheapest reference rather than a hardcoded key, and a test asserts the constant and the helper agree across footprints.
 - **It is a marketing panel, not a spreadsheet.** One headline, three labelled bars, one line of assumptions. An earlier cut carried a rate column, a monthly column, an annual column, a cheapest-provider sentence and a five-line footnote — every figure defensible and the whole thing unreadable beside working controls. Detail lives in the per-row tooltip, where it costs nothing until asked for. A test asserts there is no `<table>`.
 - **The cluster line says "can hold", never "replaces".** Usable capacity supports a *capacity* claim, not a *spend* claim — the app has no cluster-wide stored-bytes figure (`Buckets.bytes` needs a superuser aggregate, and `diskTotal − diskFree` is filesystem used, which triple-counts replicas). A test asserts the wording.
 - **Every named provider carries its actual published rate.** An earlier cut used an invented "blended cloud" rate of $0.20/GB/month — ~8.7× S3's list price — which had to be labelled generically precisely because attributing it to anyone would have been false. Using the real numbers (S3 Standard $0.023/GB, Wasabi $7.99/TB, Backblaze B2 $6.95/TB, all checked `RATES_AS_OF`) removed the need for the fiction, and the comparison still holds comfortably. **Do not reintroduce a made-up rate to widen the gap.** A unit test pins each figure and a render test pins the labels beside them.
@@ -364,6 +366,117 @@ Ten detected kinds, in two families. Layout-derived (`layout_version`, `node_add
 
 `TIMELINE_DAYS`, the week bucketing, `eventBadgeLabel()` and the `KIND_LABELS` / `CATEGORY_LABELS` / `SEVERITY_TONE` maps all live in [webapp/src/lib/cluster-timeline.ts](webapp/src/lib/cluster-timeline.ts) — deliberately not `server-only`. `/admin/events` and the log dialog import them rather than keeping the copies they used to own (`CATEGORY_LABELS` existed twice, commented "the same words either side"), for exactly the reason `node-label.ts` exists. Weeks are **local** calendar weeks stepped with `setDate`, so one spanning a DST change is still seven days rather than 167 hours, and **only weeks with something in them get a marker**. An earlier cut drew every week in the window so quiet stretches were explicit; on a real cluster most weeks are quiet, and the result was a column of "No events" with the occasional event in it — the scaffold drowning the thing it framed. The window is stated once in the card's description instead. A note dated in the future — planned maintenance next Tuesday, which the log dialog permits — is shown rather than dropped, but only within one further window: the route bounds its query on **both** ends and the grouping filters to the same bounds, so a note whose year was mistyped can neither be fetched and then quietly discarded nor park itself permanently at the top.
 
+#### Repairs
+
+`/admin/repairs` launches Garage's repair operations per node — a scrub (start,
+pause, resume, cancel), a block repair, or a rebalance — and shows what each
+node's scrub worker is doing. Three sub-routes under one layout, which is the
+app's first nested admin nav; `admin/layout.tsx`'s `pathname.startsWith(href)`
+already keeps the parent lit, so that file's logic is untouched.
+
+**Everything on-node goes through one envelope.** Twelve v2 operations take a
+required `node` query param (an id, `*`, or `self`) and answer
+`{ success: Record<nodeId, T>, error: Record<nodeId, string> }` with **both keys
+required**. A 200 means *the coordinator answered*, not *the operation ran*.
+[webapp/src/lib/garage/multi-node.ts](webapp/src/lib/garage/multi-node.ts) is
+the only correct way to read one: `NodeOutcome` is a discriminated union, so a
+value is unreachable without narrowing on `ok`, and a node id in **both** maps
+resolves to a failure. `outcomeForNode` returns **`null`** when the envelope
+names the node in neither map — a 200 that means nothing happened, the most
+dangerous shape here — and callers must treat it as failure. This module exists
+because the repo already made the opposite mistake once, in Goja:
+[node-metrics.js](pocketbase/pb_hooks/lib/node-metrics.js) reads
+`(stats && stats.success) || {}` and discards the error map entirely.
+
+**`launchRepair` refuses `*` and `self`, and so does the route.** `*` would fan a
+repair across every node while the confirmation dialog named exactly one; `self`
+is whichever node answers the admin API, routinely not the one clicked. Two
+guards on the same thing is not one too many. The browser also names a
+`RepairAction`, never a `RepairType` — the mapping is a total `Record` in
+[lib/garage/repair.ts](webapp/src/lib/garage/repair.ts), so the seven repair
+types this app does not offer cannot be requested by editing a body, and adding
+an action without deciding what it sends is a compile error.
+
+**There is no last-scrub timestamp in the Garage API.** Not one — no
+`lastScrub`, no `ScrubWorkerState`, no `time_last_complete_scrub` anywhere in
+v2.3.0. The only channel is `WorkerInfoResp.freeform: string[]`, human prose
+Garage may reword between releases, and worker *names* are not in the spec
+either. So [lib/repair/scrub-status.ts](webapp/src/lib/repair/scrub-status.ts)
+parses English, and is written to fail safely: keyword-first and never a
+whole-line regex, each field matched independently, `Date.parse` as the judge so
+an unparseable date is `null` and never `Invalid Date`, the scrub worker found
+by a case-insensitive `name.includes('scrub')` with the lowest id winning. Two
+rules hold it together — **`freeform` is returned verbatim and the page always
+renders it**, so a parse miss costs precision and never information; and
+**`recognised: false` is its own UI state**, because "Garage said something we
+don't understand" is not "this node has never been scrubbed", and rendering the
+two identically is the silent all-clear that `role_ok` and `data-coverage.ts`'s
+guards both exist to prevent. When no scrub worker matches, the page names the
+workers it did see. **All four scrub buttons stay enabled whenever the node
+answered** — deriving which command applies from a freeform-parsed flag would
+rest a control on exactly the precision this page admits it lacks. Let Garage
+refuse.
+
+**`lib/repair/` is its own directory** for the reason `lib/metrics/` and
+`lib/pricing/` are: nothing in the accounting path may import it, and a module
+of values scraped out of prose sitting beside `ledger-math.ts` invites a guessed
+number into a ledger call site. It is not `server-only` — pages and route
+handlers need the same words. Note the deliberate pair:
+`lib/garage/repair.ts` is *how to talk to Garage about repairs*, `lib/repair/`
+is *what a repair means to this app*, the same split as `lib/cluster-timeline.ts`
+against `pb_hooks/lib/cluster-events.js`.
+
+**`GET /next-api/garage/repairs/workers` never reads `cached.ts`.** Worker state
+is live operational state; "can this repair run *now*" is not a display
+question, the same rule that keeps `/admin/status` off the cache. One fetch
+serves all three pages — the scrub page reads `scrub`, the other two read
+`busyCount`/`erroredCount`, which is how they can say "something is already
+running here" before an operator starts a second multi-day job. It returns no
+node identity; that stays with `/cluster/nodes`. **No polling** — `?node=*` fans
+out to every peer, and this app has no timer-driven Garage traffic outside the
+scrape in the PB process. Manual refresh, plus one after a launch, with
+`fetchedAt` on screen.
+
+**`POST /next-api/garage/repairs` writes Garage first and the timeline row
+second**, inverting the usual "PB first, Garage second, roll back" rule on
+purpose. That rule governs *mirrored* state; a timeline row is the record that a
+human pressed a button and there is nothing to roll back to. Garage has to go
+first because the row's content depends on the outcome, and a row written
+beforehand could only be corrected afterwards — which the collection forbids
+(`updateRule: null`). **A refused launch writes a row too**, at `warning`, with
+Garage's message in `detail`. **A PocketBase failure logs and still returns
+success**: the repair has already run on the cluster, and failing the request
+would tell the operator it hadn't, so they would click again and duplicate a
+cluster-wide block repair — the `StorageInvites` email precedent exactly.
+`logged: false` says so instead. A per-node error or a `null` outcome is a
+**502**, never a 200 with `ok: false`, which would rebuild Garage's own trap at
+our boundary. It makes **no layout call**: Garage's error map is the authority
+on whether the node exists.
+
+**Repair rows reach `/dashboard/cluster`** through the existing
+`toTimelineEvent` projection, which strips the actor and `detail`. That is
+intended — the events already existed, they just never reached the people
+looking at the cluster. Two consequences: **titles carry no node name**
+(`'Scrub started'`, not `` `Scrub started on ${label}` ``), because the timeline
+resolves names live from the layout via `<NodeIdentity>` and this repo never
+denormalizes one onto a row; and a repeatedly failing button would flood that
+timeline, bounded by the typed confirmation and the route's 200-row cap.
+
+**The gate is a type-the-node-name challenge**, not an OTP: the question is *did
+you mean this node*, which an OTP does nothing about. It is a React boolean and
+**not server-enforced**, like every other gate here. `ConfirmDeleteDialog` grew
+`variant` / `pendingLabel` (defaulting to the delete behaviour, so no call site
+changed) and a `useId` — as it was, "Start scrub" rendered a red button reading
+"Deleting...", and a table of N rows put N inputs with the same DOM id on the
+page.
+
+**`DELETE /next-api/garage/events/[id]` is now an allow-list** (`source !==
+'manual'` → 409) rather than a deny-list on `'detector'`. The old form silently
+admitted every source added after it, and the first one added was `action` — the
+row recording that a named admin launched a cluster-wide repair, which is
+precisely the row that admin must not be able to delete. `PATCH` likewise
+refuses `endedAt` on a non-manual row; annotation stays open to every source.
+
 ### Admin gate
 
 Admin checks use the `Admins` collection rules: the listRule/viewRule (`@collection.Admins.user ?= @request.auth.id`) means a non-admin querying their own row gets a 404 and an admin gets the record. So [webapp/src/lib/auth/server.ts](webapp/src/lib/auth/server.ts) `isUserAdmin()` and the client-side [webapp/src/hooks/use-admin-status.ts](webapp/src/hooks/use-admin-status.ts) both work via the same self-scoped lookup, no superuser auth needed.
@@ -409,9 +522,126 @@ Tests for the client are in [webapp/src/lib/garage/garage-client.test.ts](webapp
 4. For mutations: write PB first, call Garage second; on Garage failure, roll back the PB row (and vice versa for deletes — Garage first, PB second). Use `try { ... } catch (err) { return errorResponse(err); }` to map `HttpError`/`GarageError` to JSON responses.
 5. From the client, call via `api()` from [webapp/src/lib/api-client.ts](webapp/src/lib/api-client.ts) — it auto-attaches the PB token as a bearer header. Don't write a bare `fetch()`.
 
+## First run and setup
+
+A fresh container used to start three processes and stop there. Every step after
+that was manual, undocumented, or broken: nothing created the PocketBase
+superuser, `POCKETBASE_ADMIN_EMAIL`/`PASSWORD` were required at runtime but
+absent from the Docker docs, there was **no in-app path to the first app admin**
+at all (`Admins.createRule` requires you to already be one, and `seed-admin.mjs`
+was never copied into the image), and the documented `yarn workspace
+@garage-ware/pb admin` ran `./pocketbase admin` — a command removed in
+PocketBase 0.23+.
+
+Three pieces now close that, and the split between them matters.
+
+**[docker/entrypoint.sh](docker/entrypoint.sh) owns everything that must happen
+before anything listens.** It resolves superuser credentials (operator env wins;
+otherwise generate once and persist to `/data/pb_superuser.env` 0600 — setting
+exactly one of the pair is a hard error, not a partial config), runs `pocketbase
+superuser upsert` against `--dir` with `--automigrate` doing the schema, and
+`export`s the pair so supervisord's children — both PocketBase and Next.js —
+inherit them. **No `--hooksDir` on that upsert**: loading the hooks would
+register their crons inside a one-shot command. Creating the superuser here also
+suppresses PocketBase's built-in installer, which prints a `0.0.0.0:8090` URL
+unreachable from a browser behind the container's nginx.
+
+**The claim token is the bootstrap, and the `Admins` count is the guard.** The
+entrypoint mints a token, persists it under `SETUP_STATE_DIR` (`/data/setup`),
+and prints it; `POST /next-api/setup/claim` takes it from a signed-in caller and
+writes the `Admins` row as a superuser. The load-bearing check is
+`evaluateClaim` refusing on **any non-empty `Admins`** — checked *before* the
+token, so a claimed instance answers identically whether or not the caller
+guessed right. The token proves you can read this deployment's logs; the count
+is what makes it single-use in effect. `SETUP_OWNER_EMAIL` is the unattended
+alternative (a `Users` after-create hook), guarded on the same empty-`Admins`
+condition so it is not a standing back door. `GET /next-api/setup/status` is
+unauthenticated by necessity — `/` and `/setup` must route a visitor with no
+account — and is deliberately confined to four fields; it also **heals the
+upgrade path**, writing the `claimed` marker when it finds admins but no marker,
+so an existing deployment stops printing a claim banner after one page load.
+
+**Sign-up gating is a PocketBase hook, not a rule and not a route.** Sign-up is a
+direct client-side PB call (`AuthService.register` → `UserMutator`), so nothing
+server-side of ours is on that path; and `SIGNUP_MODE` is env-driven, so a
+collection rule would mean a migration per change. `Users.createRule` therefore
+stays `''` and
+[pb_hooks/lib/signup-gate.js](pocketbase/pb_hooks/lib/signup-gate.js) decides.
+That file is **pure** — no Goja globals, no `require`, no clock — so vitest
+drives it across the workspace boundary exactly as `cluster-events-lib.test.ts`
+drives `diffObservations`; `main.pb.js` does the I/O and throws
+`BadRequestError`. Four rules, in order: `e.hasSuperuserAuth()` always passes
+(that is the admin-invite path in `next-api/garage/users/route.ts`, which has
+already done its own check); an **empty `Admins` always passes**, because a
+closed fresh install would lock out its own owner before they could claim it;
+then `open`/`closed`; then invite mode, which admits `SETUP_OWNER_EMAIL` or a
+pending `StorageInvites` row. An unrecognised `SIGNUP_MODE` falls back to
+`invite`, **never `open`** — a typo must not throw the doors open.
+[signup-mode.ts](webapp/src/lib/setup/signup-mode.ts) parses the same values for
+display, and a test asserts the two parsers agree.
+
+> **Invite-only is a breaking change** for a deployment upgrading into it. Ship
+> as `feat!:` with `SIGNUP_MODE=open` as the one-line opt-out.
+>
+> **Accepted gap:** while `Admins` is empty, sign-up is open regardless of mode.
+> Signing up in that window grants nothing — claiming still needs the token.
+
+**The bootstrap window must never recur, hence the last-admin guard.** Every
+relaxation above keys off `Admins` being *empty*, not off a one-time "has this
+been claimed" — so an instance that loses its last admin silently reverts to a
+fresh install: public sign-up reopens, `SETUP_OWNER_EMAIL` re-arms,
+`/next-api/status` reopens to any signed-in user, and `/` starts sending
+visitors to `/setup`. Getting there is easy: `Admins.deleteRule` asks *"is the
+caller an admin"*, not *"is this your own row"*, and `Admins.user` cascades from
+`Users`, so one self-delete from `/profile` does it. Two `onRecordDeleteRequest`
+hooks refuse the last removal — one on `Admins`, one on `Users` for the cascade
+path, which fires no `Admins` hook. Both fail **closed** if they cannot count.
+Keeping one admin alive is a smaller guarantee than making the window one-way,
+and it means the state those relaxations describe simply never comes back.
+
+### Status and troubleshooting
+
+`/admin/status` (`GET /next-api/status`) is the deployment self-check. Everything
+it reports previously failed silently in a log nobody reads.
+
+Its gate is `requireAdminOrUnclaimed` — `requireAdmin`, except while **no admin
+exists**, when any signed-in caller may read it. That exception is the point: an
+owner has to be able to see *why* Garage is unreachable before they can become an
+admin. It fails **closed** if it cannot determine the admin count.
+
+Two rules for anything added here:
+
+- **Never read `cached.ts`.** Every Garage call is live. `cached.ts` is designed
+  to serve a stale layout straight through an outage, which is the correct
+  behaviour for a display path and precisely the wrong answer for "can this
+  deployment reach the cluster *now*".
+- **Never render a secret.** Env vars report `set`/`unset`; URLs report host only
+  via `hostOf()` — which also drops any userinfo, so a URL carrying credentials
+  cannot leak through it. The copy-diagnostics block is a pure formatting pass over the
+  same payload — if a value is unsafe to paste into a support thread it must not
+  be in the payload either.
+
+`GET /next-api/health` is separate and unauthenticated: `{status, pocketbase}`,
+no Garage, no config detail, 503 when PocketBase is unreachable. It is what the
+image's `HEALTHCHECK` hits — nginx's `/health` proxies straight to PocketBase and
+so only ever proved the half that rarely dies.
+
+**Garage failures had to be made legible first.** `client.ts` discarded
+`err.cause`, so a refused port, a bad hostname and a timeout all reached the UI
+as undici's `TypeError: fetch failed`; `fromEnv()` threw a bare `Error`, leaking
+its internal sentence into a browser banner as a 500; and nothing outside
+`lib/garage/` ever `instanceof`-checked the five error classes. Now
+`GarageError` carries a `code` (`classifyFetchFailure` walks the cause chain,
+loop-guarded), `GarageConfigError` names the missing vars, and `errorResponse()`
+maps them to real statuses — 503 unreachable/quorum/not-configured, 502
+auth/schema. That last change fixes all 26 `fromEnv()` call sites at once and
+revives the dead 503 branch at `dashboard/metrics/page.tsx:488`, which was
+unreachable because the scrape hook's deliberate 503 (`main.pb.js:670`) arrived
+as a PocketBase `ClientResponseError` and got flattened to a 500.
+
 ## Docker
 
-[docker/Dockerfile](docker/Dockerfile) builds a single container with Supervisor running PocketBase + Next.js + Nginx (reverse proxy on :80). All runtime state lives under a single `/data` volume — back up by snapshotting that one directory. See [docker/README.md](docker/README.md). Garage itself runs separately; the container only needs to reach `GARAGE_ADMIN_URL` over the network.
+[docker/Dockerfile](docker/Dockerfile) builds a single container with Supervisor running PocketBase + Next.js + Nginx (reverse proxy on :80), fronted by [docker/entrypoint.sh](docker/entrypoint.sh) — see [First run and setup](#first-run-and-setup) for what that does before supervisord starts. All runtime state lives under a single `/data` volume — back up by snapshotting that one directory, which now also holds the generated superuser password and the first-run claim state. [docker-compose.yml](docker-compose.yml) + [.env.docker.example](.env.docker.example) are the supported install path. See [docker/README.md](docker/README.md). Garage itself runs separately; the container only needs to reach `GARAGE_ADMIN_URL` over the network.
 
 **The builder stage mirrors the repo layout; only the runner renames `pocketbase/` to `pb/`.** `next build` type-checks `webapp/src/lib/metrics/node-metrics-lib.test.ts`, which imports `../../../../pocketbase/pb_hooks/lib/node-metrics.js` across the workspace boundary — staging the hooks straight to `pb/` in the builder made that a TS2307 and failed the image build while `yarn build` stayed green locally. The runtime path `/app/pb` is baked into [docker/supervisord.conf](docker/supervisord.conf), so the rename has to happen, just later. [.dockerignore](.dockerignore) keeps the host's `node_modules`, `.next`, `pb_data`, and host-arch `pocketbase/pocketbase` out of the context — CI checkouts have none of these, so a build that only ever ran in CI won't tell you they're a problem.
 

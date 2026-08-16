@@ -10,9 +10,11 @@ import {
   Database,
   Gauge,
   HardDrive,
+  HeartPulse,
   History,
   Key,
   Users,
+  Wrench,
 } from 'lucide-react';
 import { AdminRoute } from '@/components/auth/admin-route';
 import { cn } from '@/lib/utils';
@@ -21,6 +23,7 @@ const links = [
   { href: '/admin', label: 'Overview', icon: Activity },
   { href: '/admin/cluster', label: 'Cluster', icon: Database },
   { href: '/admin/events', label: 'Events', icon: CalendarClock },
+  { href: '/admin/repairs', label: 'Repairs', icon: Wrench },
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/claims', label: 'Claims', icon: Coins },
   { href: '/admin/ledger', label: 'Ledger', icon: History },
@@ -28,6 +31,7 @@ const links = [
   { href: '/admin/buckets', label: 'Buckets', icon: HardDrive },
   { href: '/admin/quota', label: 'Quota', icon: Gauge },
   { href: '/admin/keys', label: 'Keys', icon: Key },
+  { href: '/admin/status', label: 'Status', icon: HeartPulse },
 ];
 
 export default function AdminLayout({

@@ -25,6 +25,18 @@ interface Props {
   onConfirm: () => Promise<void>;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * The submit button's tone. Defaults to `destructive`, which is what every
+   * delete call site wants and gets without passing anything.
+   *
+   * It exists because the type-the-name challenge is not only a delete gate:
+   * /admin/repairs uses it to ask "did you mean *this* node" before launching a
+   * repair, which is a creative action. A red button is a real signal and
+   * spending it on "Start scrub" would devalue it everywhere else.
+   */
+  variant?: React.ComponentProps<typeof Button>['variant'];
+  /** In-flight label. Defaults to `Deleting...` — see `variant`. */
+  pendingLabel?: string;
 }
 
 export function ConfirmDeleteDialog({
@@ -36,7 +48,13 @@ export function ConfirmDeleteDialog({
   onConfirm,
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
+  variant = 'destructive',
+  pendingLabel = 'Deleting...',
 }: Props) {
+  // Not a literal id: this dialog stays mounted behind its trigger, so a table
+  // rendering one per row would otherwise put N inputs with the same DOM id on
+  // the page and break every <Label htmlFor> on it.
+  const inputId = React.useId();
   const [internalOpen, setInternalOpen] = React.useState(false);
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
@@ -63,7 +81,7 @@ export function ConfirmDeleteDialog({
       await onConfirm();
       handleOpenChange(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Delete failed');
+      toast.error(err instanceof Error ? err.message : 'Action failed');
       setSubmitting(false);
     }
   }
@@ -81,12 +99,12 @@ export function ConfirmDeleteDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="space-y-2">
-          <Label htmlFor="confirm-delete-input">
+          <Label htmlFor={inputId}>
             Type <span className="font-mono font-semibold">{confirmText}</span>{' '}
             to confirm
           </Label>
           <Input
-            id="confirm-delete-input"
+            id={inputId}
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             autoComplete="off"
@@ -96,11 +114,11 @@ export function ConfirmDeleteDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
           <Button
-            variant="destructive"
+            variant={variant}
             disabled={!matches || submitting}
             onClick={handleConfirm}
           >
-            {submitting ? 'Deleting...' : confirmLabel}
+            {submitting ? pendingLabel : confirmLabel}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

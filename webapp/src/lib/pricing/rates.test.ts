@@ -7,6 +7,7 @@ import {
   REFERENCE_RATES,
   annualTotalUsd,
   buildCostComparison,
+  cheapestAlternative,
   clusterUsableBytes,
   garageRateFor,
   garageUsdPerTbMonth,
@@ -45,12 +46,14 @@ describe('published reference rates', () => {
     expect(REFERENCE_RATES.map((r) => r.key)).toEqual(['s3', 'backblaze']);
   });
 
-  it('quotes S3 as the headline, the dearest of the two', () => {
-    expect(HEADLINE_RATE.key).toBe('s3');
+  it('quotes the cheapest provider as the headline, not the dearest', () => {
+    // The saving is only worth as much as the alternative it is measured
+    // against; leading with the budget provider makes the headline the hardest
+    // test of the claim. S3 stays in the table, where a bigger number the
+    // reader was not sold is a check rather than a pitch.
+    expect(HEADLINE_RATE.key).toBe('backblaze');
     for (const r of REFERENCE_RATES) {
-      expect(HEADLINE_RATE.usdPerTbMonth).toBeGreaterThanOrEqual(
-        r.usdPerTbMonth
-      );
+      expect(HEADLINE_RATE.usdPerTbMonth).toBeLessThanOrEqual(r.usdPerTbMonth);
     }
   });
 });
@@ -194,9 +197,43 @@ describe('buildCostComparison — a 36 TB claim at RF 3', () => {
     expect(byKey.garage.chargesEgress).toBe(false);
   });
 
-  it('reports the headline annual saving and multiple against S3', () => {
+  it('reports the annual saving and multiple against each provider', () => {
     expect(byKey.s3.savingsVsGarageAnnualUsd).toBeCloseTo(13068 - 475.2, 6);
     expect(byKey.s3.multipleOfGarage).toBeCloseTo(27.5, 1);
+    expect(byKey.backblaze.savingsVsGarageAnnualUsd).toBeCloseTo(
+      3002.4 - 475.2,
+      6
+    );
+    expect(byKey.backblaze.multipleOfGarage).toBeCloseTo(6.32, 2);
+  });
+
+  it('headlines the cheapest commercial row, never this cluster', () => {
+    // The card and the summary band both take their comparison from here, so
+    // the conservative choice is made once rather than in each component.
+    const cheapest = cheapestAlternative(rows)!;
+    expect(cheapest.key).toBe('backblaze');
+    expect(cheapest.key).toBe(HEADLINE_RATE.key);
+    expect(cheapest.isGarage).toBe(false);
+    for (const r of rows) {
+      if (r.isGarage) continue;
+      expect(cheapest.annualUsd).toBeLessThanOrEqual(r.annualUsd);
+    }
+  });
+
+  it('agrees with HEADLINE_RATE across footprints, allowances and all', () => {
+    // The constant ranks on the storage rate; the helper ranks on the total,
+    // where the free-egress allowances differ in shape. They must not diverge.
+    for (const tb of [0.5, 5, 36, 500]) {
+      const cheapest = cheapestAlternative(
+        buildCostComparison(tb * TERABYTE, garage)
+      )!;
+      expect(cheapest.key).toBe(HEADLINE_RATE.key);
+    }
+  });
+
+  it('returns null when there is nothing commercial to compare against', () => {
+    expect(cheapestAlternative([])).toBeNull();
+    expect(cheapestAlternative(rows.filter((r) => r.isGarage))).toBeNull();
   });
 
   it('orders rows most expensive first, cluster last', () => {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { GarageClient } from './client';
 import {
   GarageAuthError,
+  GarageConfigError,
   GarageError,
   GarageNotFoundError,
   GarageQuorumError,
@@ -129,5 +130,75 @@ describe('GarageClient', () => {
       if (oldUrl !== undefined) process.env.GARAGE_ADMIN_URL = oldUrl;
       if (oldTok !== undefined) process.env.GARAGE_ADMIN_TOKEN = oldTok;
     }
+  });
+
+  it('classifies a refused connection rather than surfacing "fetch failed"', async () => {
+    const cause = Object.assign(new Error('ECONNREFUSED'), {
+      code: 'ECONNREFUSED',
+    });
+    mockFetch(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause });
+    });
+    const promise = client.request('/v2/GetClusterHealth', ResponseSchema);
+    await expect(promise).rejects.toBeInstanceOf(GarageError);
+    // status stays 0 (nothing answered); `code` is what tells the reasons apart.
+    await expect(promise).rejects.toMatchObject({
+      status: 0,
+      code: 'unreachable',
+    });
+    // The original cause must survive for logging/diagnostics.
+    await expect(promise).rejects.toHaveProperty('cause');
+  });
+
+  it('classifies a DNS failure distinctly from a refused port', async () => {
+    mockFetch(async () => {
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }),
+      });
+    });
+    await expect(
+      client.request('/v2/GetClusterHealth', ResponseSchema)
+    ).rejects.toMatchObject({ code: 'dns' });
+  });
+
+  describe('fromEnv', () => {
+    const saved = {
+      url: process.env.GARAGE_ADMIN_URL,
+      token: process.env.GARAGE_ADMIN_TOKEN,
+    };
+
+    afterEach(() => {
+      if (saved.url === undefined) delete process.env.GARAGE_ADMIN_URL;
+      else process.env.GARAGE_ADMIN_URL = saved.url;
+      if (saved.token === undefined) delete process.env.GARAGE_ADMIN_TOKEN;
+      else process.env.GARAGE_ADMIN_TOKEN = saved.token;
+    });
+
+    it('throws a typed config error naming every missing var', () => {
+      delete process.env.GARAGE_ADMIN_URL;
+      delete process.env.GARAGE_ADMIN_TOKEN;
+      try {
+        GarageClient.fromEnv();
+        expect.unreachable('fromEnv should throw when unconfigured');
+      } catch (err) {
+        expect(err).toBeInstanceOf(GarageConfigError);
+        expect((err as GarageConfigError).missing).toEqual([
+          'GARAGE_ADMIN_URL',
+          'GARAGE_ADMIN_TOKEN',
+        ]);
+      }
+    });
+
+    it('reports only the var that is actually missing', () => {
+      process.env.GARAGE_ADMIN_URL = 'http://garage.test';
+      delete process.env.GARAGE_ADMIN_TOKEN;
+      expect(GarageClient.missingEnv()).toEqual(['GARAGE_ADMIN_TOKEN']);
+    });
+
+    it('builds a client when both are set', () => {
+      process.env.GARAGE_ADMIN_URL = 'http://garage.test';
+      process.env.GARAGE_ADMIN_TOKEN = 'tok';
+      expect(GarageClient.fromEnv()).toBeInstanceOf(GarageClient);
+    });
   });
 });

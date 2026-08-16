@@ -117,8 +117,24 @@ export const REFERENCE_RATES: readonly ReferenceRate[] = Object.freeze([
   }),
 ]);
 
-/** The dearest reference row — the one the headline saving quotes. */
-export const HEADLINE_RATE = REFERENCE_RATES[0];
+/**
+ * The reference the headline quotes: the **cheapest** of them, not the dearest.
+ *
+ * A saving is only worth as much as the alternative it is measured against, and
+ * the dearest alternative is the easiest one to beat. Leading with the budget
+ * provider makes the headline the hardest test of the claim rather than the
+ * most flattering one — and the reader who opens the table finds a *larger*
+ * number they were not sold, which is the direction that surprise should run.
+ *
+ * Picked by storage rate rather than by hardcoding a key, so adding a cheaper
+ * row moves the headline with it. This is the constant for **static copy**; a
+ * card that has already priced a footprint uses {@link cheapestAlternative}
+ * over its own rows, which accounts for the differing egress allowances. The
+ * two must agree, and a test asserts they do.
+ */
+export const HEADLINE_RATE: ReferenceRate = REFERENCE_RATES.reduce((a, b) =>
+  b.usdPerTbMonth < a.usdPerTbMonth ? b : a
+);
 
 /**
  * One-time cost per decimal TB of **raw disk**, when the operator has not set
@@ -336,6 +352,30 @@ export function buildCostComparison(
     )
   );
   return rows.sort((a, b) => b.annualUsd - a.annualUsd);
+}
+
+/**
+ * The cheapest commercial row of a built comparison — the alternative a saving
+ * should be quoted against.
+ *
+ * Derived from the priced rows rather than from the rate table, because the
+ * providers' free-egress allowances differ in *shape* (a flat 100 GB against a
+ * multiple of what is stored), so the cheapest storage rate is not
+ * automatically the cheapest total at a given footprint. Deriving it makes
+ * "the headline is the conservative comparison" true by construction instead of
+ * by coincidence, and it is the same question the summary band asks when it
+ * picks the one provider a phone has room for — hence one implementation.
+ *
+ * Ties keep the earlier row, and this cluster's own row is never a candidate.
+ * `null` when there is no commercial row at all.
+ */
+export function cheapestAlternative(
+  rows: readonly ProviderCost[]
+): ProviderCost | null {
+  return rows.reduce<ProviderCost | null>(
+    (min, r) => (r.isGarage || (min && min.annualUsd <= r.annualUsd) ? min : r),
+    null
+  );
 }
 
 /**

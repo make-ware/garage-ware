@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowRight, Database, HardDrive, Shield } from 'lucide-react';
@@ -17,6 +17,8 @@ import {
 export default function Home() {
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
+  // Undefined until we know; drives the redirect below rather than a render.
+  const [claimed, setClaimed] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     if (!isLoading && isAuthenticated) {
@@ -24,7 +26,37 @@ export default function Home() {
     }
   }, [isAuthenticated, isLoading, router]);
 
-  if (isLoading || isAuthenticated) {
+  // A deployment nobody administers should not open on a marketing page with a
+  // sign-in button — the owner has no way from there to the setup flow. Probe
+  // once, and only for visitors who are not already signed in.
+  useEffect(() => {
+    if (isLoading || isAuthenticated) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const res = await fetch('/next-api/setup/status', {
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { claimed?: boolean };
+        if (!cancelled) setClaimed(Boolean(data.claimed));
+      } catch {
+        // Treat an unreachable probe as claimed: showing the landing page is
+        // the safe failure, sending everyone to /setup is not.
+        if (!cancelled) setClaimed(true);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoading, isAuthenticated]);
+
+  useEffect(() => {
+    if (claimed === false) router.push('/setup');
+  }, [claimed, router]);
+
+  if (isLoading || isAuthenticated || claimed === false) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />

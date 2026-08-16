@@ -54,8 +54,27 @@ describe('StorageCostCard', () => {
     // The headline answers the question; the table is the evidence, and on a
     // phone an open five-column table would be most of the screen.
     const { container } = render(<StorageCostCard {...base} />);
-    expect(container.textContent).toMatch(/\$12,593/);
+    expect(container.textContent).toMatch(/\$2,527/);
     expect(container.textContent).not.toMatch(/\$65,340/);
+  });
+
+  it('headlines the cheapest alternative, and hides the dearest in details', () => {
+    // The saving is only worth as much as the alternative it is measured
+    // against. B2 up front is the hardest test of the claim; S3 — a saving 5x
+    // larger — is evidence the reader finds rather than a pitch they are given.
+    const { container } = render(<StorageCostCard {...base} />);
+    // 36 TB: B2 $3,002.40/yr against this cluster's $475.20 — $2,527 saved.
+    expect(container.textContent).toMatch(/saved a year against Backblaze B2/);
+    expect(container.textContent).toMatch(/\$2,527/);
+    expect(container.textContent).toMatch(/6\.32×/);
+    // 120 TB usable: B2 $10,008/yr against $1,584 — the same multiple.
+    expect(container.textContent).toMatch(/\$8,424/);
+    // The S3 headline figures are nowhere on screen until the table is opened.
+    expect(container.textContent).not.toMatch(/Amazon S3/);
+    expect(container.textContent).not.toMatch(/\$12,593/);
+    expect(container.textContent).not.toMatch(/27\.5×/);
+    expandAll();
+    expect(container.textContent).toMatch(/Amazon S3/);
   });
 
   it('folds the rate and monthly columns away on small screens', () => {
@@ -137,7 +156,6 @@ describe('StorageCostCard', () => {
     expect(container.textContent).toMatch(/\$13,068/);
     expect(container.textContent).toMatch(/\$3,002/);
     expect(container.textContent).toMatch(/\$475\.20/);
-    expect(container.textContent).toMatch(/\$12,593/);
   });
 
   it('prices the whole cluster — 120 TB usable is 360 TB of disk', () => {
@@ -147,7 +165,6 @@ describe('StorageCostCard', () => {
     expect(container.textContent).toMatch(/\$43,812/);
     expect(container.textContent).toMatch(/\$10,008/);
     expect(container.textContent).toMatch(/\$1,584/);
-    expect(container.textContent).toMatch(/\$42,228/);
   });
 
   it('shows each rate as a plain dollar figure per TB per month', () => {

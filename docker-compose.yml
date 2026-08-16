@@ -1,0 +1,39 @@
+# garage-ware — single-container deployment.
+#
+#   1. cp .env.docker.example .env.docker    and fill in the Garage values
+#   2. docker compose up -d
+#   3. docker compose logs garage-ware | grep '\[setup\]'
+#      -> follow the claim instructions it prints
+#
+# Config comes from .env.docker, NOT .env. A checkout of this repo already uses
+# .env for local development, and overwriting it just to run the container would
+# be a nasty surprise. Every supported key is documented in .env.docker.example.
+#
+# Everything that must persist lives in ./data. Back up that one directory.
+
+services:
+  garage-ware:
+    image: ghcr.io/make-ware/garage-ware:latest
+    # To build from a checkout instead of pulling, comment out `image:` above
+    # and uncomment this:
+    # build:
+    #   context: .
+    #   dockerfile: docker/Dockerfile
+    container_name: garage-ware
+    restart: unless-stopped
+    ports:
+      # Change the left-hand side to publish on a different host port.
+      - '8080:80'
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env.docker
+    healthcheck:
+      # Reaching this proves Next.js is up; its body proves Next.js can reach
+      # PocketBase. The image declares the same check, repeated here so it
+      # applies when the image tag is overridden.
+      test: ['CMD', 'curl', '-fsS', 'http://localhost/next-api/health']
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3

@@ -61,7 +61,19 @@ export async function PATCH(
       patch.annotated_by = body.annotation ? (user.email ?? user.id) : '';
       patch.annotated_at = body.annotation ? new Date().toISOString() : '';
     }
-    if (body.endedAt !== undefined) patch.ended_at = body.endedAt;
+    if (body.endedAt !== undefined) {
+      // Annotation stays open to every source — saying more later is always
+      // useful. Redefining *when* something happened is not: a detected change
+      // and a launched repair are both instants somebody else measured, and an
+      // admin does not get to move them.
+      if (existing.source !== 'manual') {
+        throw new HttpError(
+          409,
+          'Only a hand-written note has an end date an admin can set'
+        );
+      }
+      patch.ended_at = body.endedAt;
+    }
 
     const record = await pb.collection('ClusterEvents').update(id, patch);
     return Response.json(record);
@@ -76,10 +88,11 @@ export async function PATCH(
 /**
  * Remove a hand-written note.
  *
- * Detector rows are refused. They record something that was actually observed,
- * and the way to disagree with one is to annotate it — deleting it would leave
- * the timeline claiming a change never happened, which is exactly the state
- * this collection exists to make impossible. (A row written in error is still
+ * Only hand-written notes can go. Everything else — a detector observation, a
+ * recorded action — is a record of something that actually happened, and the
+ * way to disagree with one is to annotate it. Deleting one would leave the
+ * timeline claiming a change never happened, which is exactly the state this
+ * collection exists to make impossible. (A row written in error is still
  * removable from the PocketBase admin UI by a superuser, deliberately out of
  * the app's reach.)
  */
@@ -97,10 +110,18 @@ export async function DELETE(
       .getOne(id)
       .catch(() => null);
     if (!existing) throw new HttpError(404, 'Event not found');
-    if (existing.source === 'detector') {
+    // An ALLOW-list, not a deny-list. This used to refuse only `source:
+    // 'detector'`, which silently admitted every source added afterwards — and
+    // the first one added was `action`, the row recording that a named admin
+    // launched a repair. That is precisely the row that must not be removable
+    // by that admin. Checking for the one deletable source instead closes the
+    // hole for every future source too.
+    if (existing.source !== 'manual') {
       throw new HttpError(
         409,
-        'A detected event cannot be deleted — annotate it instead'
+        existing.source === 'detector'
+          ? 'A detected event cannot be deleted — annotate it instead'
+          : 'A recorded action cannot be deleted — annotate it instead'
       );
     }
 

@@ -11,44 +11,54 @@ Repo: [make-ware/garage-ware](https://github.com/make-ware/garage-ware) · Image
 
 ## Self-host with Docker
 
+You need a running Garage cluster with a layout applied, and an admin token for
+it (`garage admin-token create --name garage-ware`).
+
 Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to GHCR. The repo is private, so the package is too — authenticate to `ghcr.io` first with a personal access token that has `read:packages`:
 
 ```bash
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
-docker run -d --name garage-ware \
-  -p 80:80 \
-  -v $PWD/data:/data \
-  ghcr.io/make-ware/garage-ware:latest
-```
-
-Pin a release instead of tracking `latest` with `ghcr.io/make-ware/garage-ware:v1.4.13`.
-
-Or build from a checkout:
-
-```bash
 git clone https://github.com/make-ware/garage-ware.git
 cd garage-ware
 
-docker build -f docker/Dockerfile -t garage-ware .
-
-docker run -d --name garage-ware \
-  -p 80:80 \
-  -v $PWD/data:/data \
-  garage-ware
+cp .env.docker.example .env.docker   # set GARAGE_ADMIN_URL, GARAGE_ADMIN_TOKEN, GARAGE_S3_ENDPOINT
+docker compose up -d
 ```
 
-Open http://localhost — Next.js on `/`, PocketBase API on `/api/`, admin on `/_/`.
+Then read the setup banner and follow it:
 
-**Everything that needs to persist lives under `/data`.** PocketBase database, uploaded files, anything else the app writes at runtime. To back up, snapshot the directory:
+```bash
+docker compose logs garage-ware | grep '\[setup\]'
+```
+
+It prints a URL and a one-time claim token. Open the URL, create your account,
+paste the token — you are now the administrator. `/admin/status` then reports
+anything still misconfigured, with the fix for each.
+
+Pin a release instead of tracking `latest` by setting the image tag to
+`ghcr.io/make-ware/garage-ware:v1.8.3`. To build from your checkout instead of
+pulling, uncomment the `build:` block in [docker-compose.yml](docker-compose.yml).
+
+Three things worth knowing before you invite anyone:
+
+- **Sign-up is invite-only by default** (`SIGNUP_MODE`). While no administrator
+  exists it stays open so you can create the account you will claim with, which
+  is why claiming promptly matters.
+- **Email needs configuring** at `/_/#/settings/mail`, or invites and password
+  resets silently never arrive.
+- **A new user has no storage** until you grant them a claim from
+  **Admin → Claims**.
+
+**Everything that needs to persist lives under `/data`.** PocketBase database, uploaded files, the generated superuser password, first-run state. To back up, snapshot the directory:
 
 ```bash
 tar czf backup.tgz -C $PWD data
 ```
 
-To restore on a new host: copy the tarball, extract, run the same `docker run` against the same path.
+To restore on a new host: copy the tarball, extract, bring the container up against the same path.
 
-First-time setup: visit `http://localhost/_/` to create your PocketBase admin account. See [docker/README.md](docker/README.md) for routing details, env vars, and logs.
+See [docker/README.md](docker/README.md) for the full environment reference, SMTP and bucket-CORS setup, and a troubleshooting table.
 
 ## Develop locally
 
@@ -61,7 +71,7 @@ yarn setup          # downloads the PocketBase binary for your OS
 yarn dev            # webapp on :3000, PocketBase on :8090, shared in watch mode
 ```
 
-Create a PocketBase admin account: `yarn workspace @garage-ware/pb admin`.
+Create a PocketBase admin account: `yarn workspace @garage-ware/pb admin <email> <password>`.
 
 ## Adding a collection
 

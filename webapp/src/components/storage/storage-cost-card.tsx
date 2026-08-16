@@ -30,9 +30,9 @@ import {
 } from '@/components/ui/tooltip';
 import { formatBytes, formatMultiple, formatUsd } from '@/lib/format';
 import {
-  HEADLINE_RATE,
   RATES_AS_OF,
   buildCostComparison,
+  cheapestAlternative,
   garageRateFor,
   type PricingConfig,
   type ProviderCost,
@@ -106,7 +106,11 @@ function CostSection({
   horizonYears: number;
 }) {
   const rows = buildCostComparison(bytes, garageRate, horizonYears);
-  const headline = rows.find((r) => r.key === HEADLINE_RATE.key);
+  // The **cheapest** commercial row, not the dearest: the headline should be
+  // the hardest test of the claim, and a reader who opens the table below then
+  // finds a larger saving they were not sold. The dearer provider is still
+  // there, in the evidence, where it is a check rather than a pitch.
+  const headline = cheapestAlternative(rows);
 
   return (
     <section>

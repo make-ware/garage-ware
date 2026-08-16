@@ -149,7 +149,7 @@ async function setupPocketBase() {
   console.log('🚀 Quick start:');
   console.log('  yarn dev                              - Start webapp + shared (watch) + PocketBase');
   console.log('  yarn workspace @garage-ware/pb dev    - Start PocketBase only (:8090)');
-  console.log('  yarn workspace @garage-ware/pb admin  - Create the PocketBase superuser');
+  console.log('  yarn workspace @garage-ware/pb admin <email> <pass>  - Create the PocketBase superuser');
 
   return executablePath;
 }

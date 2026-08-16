@@ -55,7 +55,7 @@ function required(name) {
   const value = process.env[name];
   if (!value) {
     throw new Error(
-      `${name} must be set to seed an admin. See .env.example; create the superuser with \`yarn workspace @garage-ware/pb admin\`.`
+      `${name} must be set to seed an admin. See .env.example; create the superuser with \`yarn workspace @garage-ware/pb admin <email> <password>\`.`
     );
   }
   return value;
@@ -140,7 +140,7 @@ async function seedAdmin() {
   } catch (error) {
     if (error.status === 400) {
       throw new Error(
-        `Superuser auth failed for ${adminEmail}. Check POCKETBASE_ADMIN_EMAIL / POCKETBASE_ADMIN_PASSWORD, or create the superuser with \`yarn workspace @garage-ware/pb admin\`.`
+        `Superuser auth failed for ${adminEmail}. Check POCKETBASE_ADMIN_EMAIL / POCKETBASE_ADMIN_PASSWORD, or create the superuser with \`yarn workspace @garage-ware/pb admin <email> <password>\`.`
       );
     }
     throw error;

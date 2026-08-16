@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { multiResponseSchema } from './multi-node';
 
 // ── Cluster ────────────────────────────────────────────────────────────────
 
@@ -158,3 +159,96 @@ export const GarageBucketListItemSchema = z.object({
 });
 export const GarageBucketListSchema = z.array(GarageBucketListItemSchema);
 export type GarageBucketListItem = z.infer<typeof GarageBucketListItemSchema>;
+
+// ── Workers & repair ───────────────────────────────────────────────────────
+//
+// Node-targeted endpoints (ListWorkers, LaunchRepairOperation) wrap these in
+// the `{success, error}` envelope from ./multi-node.ts — that file, not this
+// one, is where the envelope and its narrowing live, because it is a generic
+// factory plus a normalizer rather than a wire shape.
+
+const WorkerLastErrorSchema = z.object({
+  message: z.string(),
+  secsAgo: z.number().int().nonnegative(),
+});
+
+/**
+ * An **untagged** union in the spec: three bare strings, or an object carrying
+ * a throttle duration. There is no discriminant to switch on, so the object arm
+ * is matched by shape. Nothing outside `lib/garage/` should ever see this —
+ * the workers route flattens it via `describeWorkerState` so no component ends
+ * up writing `typeof state === 'string'`.
+ */
+const WorkerStateSchema = z.union([
+  z.enum(['busy', 'idle', 'done']),
+  z.object({
+    throttled: z.object({ durationSecs: z.number() }),
+  }),
+]);
+
+export const WorkerInfoSchema = z.object({
+  id: z.number().int().nonnegative(),
+  name: z.string(),
+  state: WorkerStateSchema,
+  errors: z.number().int().nonnegative(),
+  consecutiveErrors: z.number().int().nonnegative(),
+  /**
+   * Human prose. The **only** channel carrying a scrub's last-completed time —
+   * the v2.3.0 spec has no structured field for it anywhere. Parsed
+   * best-effort by lib/repair/scrub-status.ts and always rendered verbatim
+   * beside whatever that parse produced.
+   */
+  freeform: z.array(z.string()).default([]),
+  lastError: WorkerLastErrorSchema.nullable().optional(),
+  persistentErrors: z.number().int().nonnegative().nullable().optional(),
+  progress: z.string().nullable().optional(),
+  queueLength: z.number().int().nonnegative().nullable().optional(),
+  tranquility: z.number().int().nullable().optional(),
+});
+export type WorkerInfo = z.infer<typeof WorkerInfoSchema>;
+export type WorkerState = z.infer<typeof WorkerStateSchema>;
+
+export const ScrubCommandSchema = z.enum([
+  'start',
+  'pause',
+  'resume',
+  'cancel',
+]);
+export type ScrubCommand = z.infer<typeof ScrubCommandSchema>;
+
+/**
+ * A **request** shape — the only one in this file, which otherwise holds
+ * responses. It lives here anyway because it is a Garage wire shape and this is
+ * where Garage wire shapes are.
+ *
+ * Untagged again: eight of the ten variants are bare strings and the ninth is
+ * `{scrub: ScrubCommand}`. Getting this wrong sends Garage a body it rejects at
+ * best, and asks for the wrong repair at worst, so repair.test.ts pins both arms.
+ */
+export const RepairTypeSchema = z.union([
+  z.enum([
+    'tables',
+    'blocks',
+    'versions',
+    'multipartUploads',
+    'blockRefs',
+    'blockRc',
+    'rebalance',
+    'aliases',
+    'clearResyncQueue',
+  ]),
+  z.object({ scrub: ScrubCommandSchema }),
+]);
+export type RepairType = z.infer<typeof RepairTypeSchema>;
+
+export const ListWorkersMultiSchema = multiResponseSchema(
+  z.array(WorkerInfoSchema)
+);
+
+/**
+ * The spec's per-node success value for a launched repair is literally `null` —
+ * it carries no information. Parse it as `unknown` and never read it: *which
+ * map the node id landed in* is the entire result, and validating a value we
+ * will never look at is only a way to fail a call that actually succeeded.
+ */
+export const LaunchRepairMultiSchema = multiResponseSchema(z.unknown());

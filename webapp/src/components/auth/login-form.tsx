@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LoginSchema } from '@garage-ware/shared/schema';
 import type { LoginData } from '@garage-ware/shared/schema';
+import { safeRedirect } from '@/lib/safe-redirect';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -51,8 +52,11 @@ export function LoginForm({ onSuccess, redirectTo }: LoginFormProps) {
       } else {
         // Check for return URL from query parameters (for post-login redirect)
         const returnUrl = searchParams.get('returnUrl');
+        // safeRedirect, not decodeURIComponent: this value comes from the URL,
+        // so an unchecked navigation here is an open redirect off a page where
+        // the user has just typed their password.
         const destination = returnUrl
-          ? decodeURIComponent(returnUrl)
+          ? safeRedirect(returnUrl)
           : redirectTo || '/';
         router.push(destination);
       }

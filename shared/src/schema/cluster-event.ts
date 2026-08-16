@@ -12,8 +12,9 @@ import { z } from 'zod';
  *
  * The first ten are written by the detector in
  * pocketbase/pb_hooks/lib/cluster-events.js, which diffs each
- * `node-metrics-scrape` against the previous one. `note` is the only kind a
- * human writes.
+ * `node-metrics-scrape` against the previous one. The last two are written by a
+ * human: `note` is what an admin observed, `repair` is a repair operation an
+ * admin launched through POST /next-api/garage/repairs.
  *
  * Deliberately absent: anything derived from the median comparison in
  * webapp/src/lib/metrics/data-coverage.ts. That check is *comparative* and
@@ -43,9 +44,34 @@ export const CLUSTER_EVENT_KINDS = [
   'version_changed',
   /** Written by an admin. */
   'note',
+  /**
+   * An admin launched a Garage repair operation (a scrub command, a block
+   * repair, a rebalance) through /admin/repairs.
+   *
+   * **One kind, not one per operation.** `kind` says what sort of thing
+   * happened; which repair it was is in `new_value`, raw, as everything else in
+   * this collection is. Three kinds would buy three KIND_LABELS entries and
+   * three filter options for one concept.
+   */
+  'repair',
 ] as const;
 
-export const CLUSTER_EVENT_SOURCES = ['detector', 'manual'] as const;
+/**
+ * Who wrote a row.
+ *
+ * **`action` is deliberately not `manual`.** "Under repair" is
+ * `source = "manual" && ended_at = ""` (ClusterEventMutator.listOpenManual),
+ * and launching a repair is instantaneous — nothing ever closes it. A repair
+ * row written as `manual` would pin its node "under repair" for ever, amber on
+ * every node card, until somebody hand-closed a row that was never open. A
+ * third value keeps that query character-for-character correct and touches no
+ * existing filter.
+ *
+ * `action` rather than `system` or `automated` because it is neither: a human
+ * pressed a button, but the row records the action taken, not an observation
+ * and not a note.
+ */
+export const CLUSTER_EVENT_SOURCES = ['detector', 'manual', 'action'] as const;
 
 export const CLUSTER_EVENT_SEVERITIES = [
   'info',
@@ -82,9 +108,10 @@ export const CLUSTER_EVENT_CATEGORIES = [
  * change is only observable at the moment two consecutive samples disagree,
  * and if it is not written down then it does not exist anywhere.
  *
- * **One collection, two authors.** `source` separates them. The detector
- * writes through the JSVM inside the scrape transaction; a human writes
- * through POST /next-api/garage/events. Annotation is a set of fields on the
+ * **One collection, three authors.** `source` separates them. The detector
+ * writes through the JSVM inside the scrape transaction; a human writes a note
+ * through POST /next-api/garage/events; an admin launching a repair writes
+ * through POST /next-api/garage/repairs. Annotation is a set of fields on the
  * row rather than a second collection, so a detected fact and the explanation
  * for it can never drift apart or be reordered against each other.
  *

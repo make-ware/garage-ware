@@ -694,3 +694,188 @@ routerAdd(
   },
   $apis.requireSuperuserAuth()
 );
+
+// ---------------------------------------------------------------------------
+// Account creation
+// ---------------------------------------------------------------------------
+//
+// Two hooks on Users, both first-run concerns:
+//
+//   1. Who may sign up at all (SIGNUP_MODE).
+//   2. Who becomes the first administrator (SETUP_OWNER_EMAIL).
+//
+// Both have to live here rather than in a Next.js route handler: sign-up is a
+// direct client-side PocketBase call (AuthService.register -> UserMutator),
+// so nothing of ours is on that path. Neither is a collection rule, because
+// both are env-driven and a rule change would mean a migration.
+
+// Gate sign-up. The decision itself is in lib/signup-gate.js — free of Goja
+// globals so vitest can drive it from the webapp workspace; this hook is only
+// the I/O around it.
+onRecordCreateRequest((e) => {
+  const { parseSignupMode, decideSignup, refusalMessage } = require(`${__hooks}/lib/signup-gate.js`);
+
+  const email = String(e.record.email() || "").trim().toLowerCase();
+
+  // Count admins rather than asking whether the caller is one: what matters is
+  // whether ANYBODY holds the scope, which decides if we are still in the
+  // bootstrap window where sign-up must stay open.
+  //
+  // Two failure modes, and they must NOT be treated alike. A missing Admins
+  // collection means we are pre-migration, i.e. genuinely unclaimed, and
+  // refusing there would brick the bootstrap. A collection that exists but
+  // cannot be counted is an unknown state, and an access control that opens
+  // when it cannot see is the wrong way round — refuse instead.
+  let adminCount = 0;
+  let collectionExists = true;
+  try {
+    $app.findCollectionByNameOrId("Admins");
+  } catch {
+    collectionExists = false;
+  }
+  if (collectionExists) {
+    try {
+      adminCount = $app.countRecords("Admins");
+    } catch (err) {
+      console.error("[signup] could not count admins; refusing sign-up:", err);
+      throw new BadRequestError(
+        "Sign-up is temporarily unavailable. Please try again shortly."
+      );
+    }
+  }
+
+  let hasPendingInvite = false;
+  if (email) {
+    try {
+      // Bound parameter, not string interpolation — an address is user input.
+      $app.findFirstRecordByFilter(
+        "StorageInvites",
+        'to_email = {:email} && status = "pending"',
+        { email: email }
+      );
+      hasPendingInvite = true;
+    } catch {
+      // findFirstRecordByFilter throws when there is no match; that is the
+      // "no invite" answer, not an error.
+      hasPendingInvite = false;
+    }
+  }
+
+  const decision = decideSignup({
+    mode: parseSignupMode($os.getenv("SIGNUP_MODE")),
+    email: email,
+    isSuperuser: e.hasSuperuserAuth(),
+    adminCount: adminCount,
+    hasPendingInvite: hasPendingInvite,
+    ownerEmail: String($os.getenv("SETUP_OWNER_EMAIL") || "").trim().toLowerCase(),
+  });
+
+  if (!decision.allow) {
+    console.log(`[signup] refused ${email}: ${decision.reason}`);
+    throw new BadRequestError(refusalMessage(decision.reason));
+  }
+
+  e.next();
+}, "Users");
+
+// Auto-promote the configured owner to administrator.
+//
+// The alternative to the /setup claim token, for unattended installs. Guarded
+// on an EMPTY Admins collection, which is what keeps it from being a standing
+// back door: once the instance is claimed, this address is just another user.
+//
+// onRecordAfterCreateSuccess (not a request hook) because the user record must
+// exist before it can be referenced, and because a failure here must not undo
+// the sign-up — same reasoning as the StorageInvites mail hook above.
+onRecordAfterCreateSuccess((e) => {
+  const ownerEmail = String($os.getenv("SETUP_OWNER_EMAIL") || "").trim().toLowerCase();
+  if (!ownerEmail) return;
+
+  const email = String(e.record.email() || "").trim().toLowerCase();
+  if (email !== ownerEmail) return;
+
+  try {
+    if ($app.countRecords("Admins") > 0) {
+      // Already claimed. Say so rather than failing silently — an operator who
+      // left SETUP_OWNER_EMAIL set will otherwise wonder why it did nothing.
+      console.log(`[setup] SETUP_OWNER_EMAIL matched ${email} but an administrator already exists; not promoting`);
+      return;
+    }
+    const admins = $app.findCollectionByNameOrId("Admins");
+    const record = new Record(admins);
+    record.set("user", e.record.id);
+    $app.save(record);
+    console.log(`[setup] promoted ${email} to administrator via SETUP_OWNER_EMAIL`);
+  } catch (err) {
+    // Best-effort: the account is real and usable either way, and the claim
+    // token remains as the other route in.
+    console.error("[setup] SETUP_OWNER_EMAIL promotion failed:", err);
+  }
+}, "Users");
+
+// Refuse to remove the last administrator.
+//
+// Every bootstrap-window relaxation keys off `Admins` being EMPTY, not off a
+// one-time "has this instance ever been claimed": sign-up reopens
+// (lib/signup-gate.js), SETUP_OWNER_EMAIL re-arms, /next-api/status reopens to
+// any signed-in user, and `/` starts redirecting visitors to /setup. So an
+// instance that loses its last admin silently reverts to a fresh install — on
+// the internet, with public registration.
+//
+// The route there is short: Admins.deleteRule is `@collection.Admins.user ?=
+// @request.auth.id`, which asks "is the caller an admin", not "is this your own
+// row" — so any admin may delete any admin. And Admins.user cascades from
+// Users, so an admin deleting their own account from /profile takes the row
+// with it. Both paths end at zero.
+//
+// Making the window one-way instead would mean persisting "claimed" somewhere
+// the JSVM can read on every sign-up; keeping at least one admin alive is the
+// smaller and more honest guarantee — the state the relaxations describe simply
+// never recurs.
+onRecordDeleteRequest((e) => {
+  let remaining = 0;
+  try {
+    remaining = $app.countRecords("Admins");
+  } catch (err) {
+    // Cannot tell — refuse. Wrongly blocking one demotion is recoverable;
+    // wrongly allowing the last one is not.
+    console.error("[admins] could not count admins; refusing delete:", err);
+    throw new BadRequestError("Could not verify the administrator count. Try again.");
+  }
+  if (remaining <= 1) {
+    throw new BadRequestError(
+      "This is the only administrator. Promote someone else first — an instance with no administrator reopens public sign-up."
+    );
+  }
+  e.next();
+}, "Admins");
+
+// The same guarantee via the other door: deleting a user cascades their Admins
+// row away, and no Admins hook fires for a cascade.
+onRecordDeleteRequest((e) => {
+  let isAdmin = false;
+  try {
+    $app.findFirstRecordByFilter("Admins", "user = {:id}", { id: e.record.id });
+    isAdmin = true;
+  } catch {
+    isAdmin = false;
+  }
+  if (!isAdmin) {
+    e.next();
+    return;
+  }
+
+  let total = 0;
+  try {
+    total = $app.countRecords("Admins");
+  } catch (err) {
+    console.error("[admins] could not count admins; refusing user delete:", err);
+    throw new BadRequestError("Could not verify the administrator count. Try again.");
+  }
+  if (total <= 1) {
+    throw new BadRequestError(
+      "You are the only administrator of this instance. Promote someone else before deleting your account."
+    );
+  }
+  e.next();
+}, "Users");

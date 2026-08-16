@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { safeRedirect } from '@/lib/safe-redirect';
 import { useAuth } from '@/hooks/use-auth';
 import { SignupForm } from '@/components/auth/signup-form';
 import {
@@ -16,7 +17,13 @@ function SignupContent() {
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get('redirect') || '/';
+  // `returnUrl` is what ProtectedRoute/AdminRoute emit and what login-form
+  // reads after a successful sign-in; `redirect` is the older spelling still
+  // used by /profile. Accept both here so an already-authenticated visitor
+  // bounces to the page they actually asked for rather than to `/`.
+  const redirectTo = safeRedirect(
+    searchParams.get('returnUrl') ?? searchParams.get('redirect')
+  );
   // Storage invites link here with the address the invite is held against.
   const invitedEmail = searchParams.get('email') || undefined;
 

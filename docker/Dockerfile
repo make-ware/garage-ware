@@ -81,7 +81,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Install supervisor, nginx, and curl
-RUN apk add --no-cache supervisor nginx curl
+RUN apk add --no-cache supervisor nginx curl su-exec
 
 # Install Yarn v4
 RUN corepack enable && corepack prepare yarn@4.12.0 --activate
@@ -103,6 +103,11 @@ COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/pocketbase ./pb/pocket
 # Copy PocketBase hooks and migrations
 COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/pb_hooks ./pb/pb_hooks
 COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/pb_migrations ./pb/pb_migrations
+# seed-admin.mjs is the manual escape hatch for granting the app-admin scope
+# (`node /app/pb/scripts/seed-admin.mjs <email>`). Without it in the image there
+# was no in-container path from "PocketBase superuser exists" to "app admin
+# exists" — the /setup claim flow is the supported route, this is the fallback.
+COPY --from=builder --chown=nextjs:nodejs /app/pocketbase/scripts ./pb/scripts
 
 # Single /data volume holds all runtime state (PocketBase DB, file uploads,
 # any future app-level dynamic storage). Bake the directory + ownership in so
@@ -139,10 +144,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/shared/dist ./shared/dist
 # Copy supervisor and nginx configs
 COPY --chown=root:root docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY --chown=root:root docker/nginx.conf /etc/nginx/nginx.conf
-COPY --chown=nextjs:nodejs docker/start.sh /app/start.sh
+COPY --chown=nextjs:nodejs docker/entrypoint.sh /app/entrypoint.sh
 
 # Make startup script executable
-RUN chmod +x /app/start.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Create nginx user if it doesn't exist (it should from apk install)
 # Ensure nginx can read the config
@@ -152,6 +157,14 @@ EXPOSE 80
 
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+# Where the entrypoint keeps first-run state (claim token, claimed marker). Its
+# own var so nothing in the app hardcodes /data — local dev has no such path.
+ENV SETUP_STATE_DIR=/data/setup
+
+# Probes the Next.js app, which in turn probes PocketBase — nginx's /health only
+# ever proved PocketBase was alive, which is the half that rarely breaks.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD curl -fsS http://localhost/next-api/health || exit 1
 
 # Run as root initially to start supervisor (which will manage processes as appropriate users)
-CMD ["/app/start.sh"]
+CMD ["/app/entrypoint.sh"]

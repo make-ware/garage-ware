@@ -8,9 +8,9 @@ import { formatBytes, formatUsd } from '@/lib/format';
 import {
   HEADLINE_RATE,
   buildCostComparison,
+  cheapestAlternative,
   garageRateFor,
   type PricingConfig,
-  type ProviderCost,
 } from '@/lib/pricing/rates';
 import { cn } from '@/lib/utils';
 
@@ -57,18 +57,16 @@ export function StorageCostSummary({
     garageRateFor(pricing, replicationFactor)
   );
   const here = rows.find((r) => r.isGarage);
-  // A saving per provider, not just against the dearest. Quoting only the
-  // headline invites "but B2 is cheap" — showing both answers it up front, and
-  // the narrow figure is the more persuasive one for having been volunteered.
+  // A saving per provider, not just the headline one. The headline is already
+  // the *cheapest* alternative — the narrow figure, volunteered — so the dearer
+  // row beside it reads as the range rather than as the pitch.
   const savings = rows.filter((r) => !r.isGarage);
   // On a phone there is room for one comparison, and it should be the cheapest
   // provider: it is the hardest test of the claim and the one a user weighing
-  // alternatives would actually price against. Picked by total cost rather
-  // than by taking the last row, so it stays right if the list is reordered.
-  const cheapestKey = savings.reduce<ProviderCost | null>(
-    (min, r) => (!min || r.annualUsd < min.annualUsd ? r : min),
-    null
-  )?.key;
+  // alternatives would actually price against. The same row the full card
+  // headlines, through the same helper — a second hand-rolled reduce here is
+  // how the two would come to disagree about which comparison is honest.
+  const cheapestKey = cheapestAlternative(rows)?.key;
   const hasQuota = quotaBytes > 0;
 
   return (

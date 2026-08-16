@@ -5,7 +5,7 @@ function required(name) {
   const value = process.env[name];
   if (!value) {
     throw new Error(
-      `${name} must be set to run migrations. See .env.example; create the superuser with \`yarn workspace @garage-ware/pb admin\`.`
+      `${name} must be set to run migrations. See .env.example; create the superuser with \`yarn workspace @garage-ware/pb admin <email> <password>\`.`
     );
   }
   return value;

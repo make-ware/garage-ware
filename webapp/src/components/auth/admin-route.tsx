@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { useAdminStatus } from '@/hooks/use-admin-status';
 
@@ -13,17 +13,20 @@ export function AdminRoute({ children }: AdminRouteProps) {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { isAdmin, isLoading: adminLoading } = useAdminStatus();
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     if (authLoading || adminLoading) return;
     if (!isAuthenticated) {
-      router.push('/login?returnUrl=/admin');
+      // Preserve the deep destination — hardcoding /admin sent someone who
+      // clicked a link to /admin/keys to the console overview instead.
+      router.push(`/login?returnUrl=${encodeURIComponent(pathname)}`);
       return;
     }
     if (!isAdmin) {
       router.push('/dashboard');
     }
-  }, [authLoading, adminLoading, isAuthenticated, isAdmin, router]);
+  }, [authLoading, adminLoading, isAuthenticated, isAdmin, router, pathname]);
 
   if (authLoading || adminLoading || !isAuthenticated || !isAdmin) {
     return (
