@@ -2,6 +2,7 @@ import 'server-only';
 import { z } from 'zod';
 import { GarageClient, repair } from '@/lib/garage';
 import { errorResponse, requireAdmin } from '@/lib/auth/server';
+import { type NodeKey, nodeKey } from '@/lib/node-label';
 import {
   describeWorkerState,
   findScrubWorker,
@@ -46,7 +47,13 @@ export interface RepairWorkerItem {
 }
 
 export interface RepairNodeWorkers {
-  nodeId: string;
+  /**
+   * A node key. Garage keys its multi-node envelope by full node id, so these
+   * are reduced on the way out — otherwise this payload would be the one place
+   * the browser still saw a credential, and `use-repair-data` could not union
+   * these rows with the keyed ones from /cluster/nodes.
+   */
+  nodeId: NodeKey;
   /** Non-null when this node did not answer. A row must never read as idle instead. */
   error: string | null;
   workers: RepairWorkerItem[];
@@ -64,6 +71,10 @@ export interface RepairWorkersResponse {
 }
 
 const Query = z.object({
+  // `*` only, in practice: one fan-out serves all three repair pages, and the
+  // per-node form would need a layout read to resolve a key (see
+  // lib/garage/node-resolve.ts). Left open for a full id, which is what Garage
+  // itself takes.
   node: z.string().min(1).max(128).default('*'),
 });
 
@@ -81,7 +92,7 @@ export async function GET(req: Request) {
     const items: RepairNodeWorkers[] = outcomes.map((o) => {
       if (!o.ok) {
         return {
-          nodeId: o.nodeId,
+          nodeId: nodeKey(o.nodeId),
           error: o.error,
           workers: [],
           workerNames: [],
@@ -108,7 +119,7 @@ export async function GET(req: Request) {
       });
       const scrubWorker = findScrubWorker(o.value);
       return {
-        nodeId: o.nodeId,
+        nodeId: nodeKey(o.nodeId),
         error: null,
         workers,
         workerNames: o.value.map((w) => w.name),

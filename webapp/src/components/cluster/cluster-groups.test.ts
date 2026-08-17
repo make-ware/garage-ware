@@ -32,10 +32,13 @@ describe('nodeLabelFor', () => {
     );
   });
 
-  it('falls back to the shortened id', () => {
-    expect(nodeLabelFor({ tags: [], id: 'abcdef0123456789abcdef' })).toBe(
-      'abcdef01…'
-    );
+  it('falls back to the node key', () => {
+    expect(
+      nodeLabelFor({
+        tags: [],
+        id: 'abcdef0123456789fedcba98765432100123456789abcdeffedcba9876543210',
+      })
+    ).toBe('abcdef0123456789');
   });
 });
 

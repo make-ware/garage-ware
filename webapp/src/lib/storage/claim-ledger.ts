@@ -62,6 +62,15 @@ export function nodeUsableGb(ctx: ClaimContext, nodeId: string): number | null {
  *    over-claim.
  * 3. Already-allocated: the user's net granted total (claims ± transfers) must
  *    still cover the buckets they have already sized.
+ *
+ * `pb` MUST be able to read every balance row — in practice, a superuser client
+ * from `getPbAsSuperuser()`. StorageNodeBalances and StorageUserBalances are
+ * scoped `user = @request.auth.id || admin`, so handing this a non-admin
+ * caller's own client does not fail: it silently returns only that user's rows,
+ * check 1 under-counts what the node has already promised, and the guard waves
+ * through an over-claim. That became reachable the moment node owners — who are
+ * not admins — could append to the ledger. Every call site passes a superuser
+ * client for this reason, admin-initiated writes included.
  */
 export async function assertClaimDeltaAllowed(
   pb: TypedPocketBase,

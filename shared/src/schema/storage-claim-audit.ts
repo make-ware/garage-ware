@@ -17,9 +17,15 @@ export const CLAIM_AUDIT_ACTOR_TYPES = ['user', 'superuser', 'system'] as const;
  * How the change reached the database. `api` is any write that arrived over
  * the PocketBase API (our route handlers, the PB admin UI, a direct SDK call);
  * `cascade` is a claim removed as a side effect of deleting its owning user,
- * which never produces a per-row request.
+ * which never produces a per-row request; `node-owner` is a grant made by the
+ * owner of the node it is sourced from rather than by an admin.
+ *
+ * `node-owner` is carried on the request as an `X-Claim-Source` header and is
+ * honoured by the hook only under superuser auth, so it cannot be forged from
+ * a browser. An unrecognised value falls back to `api` rather than failing the
+ * save — see resolveActor() in pb_hooks/lib/claim-audit.js.
  */
-export const CLAIM_AUDIT_SOURCES = ['api', 'cascade'] as const;
+export const CLAIM_AUDIT_SOURCES = ['api', 'cascade', 'node-owner'] as const;
 
 /**
  * An immutable record of one mutation to the StorageClaims ledger.

@@ -16,12 +16,22 @@ import { Label } from '@/components/ui/label';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
 import { api } from '@/lib/api-client';
 import { formatSignedStorage, formatStorage } from '@/lib/format';
-import { nodeLabel, shortNodeId } from '@/lib/node-label';
+import { nodeKey, nodeLabel } from '@/lib/node-label';
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  userId: string;
+  /**
+   * The recipient's PB id when the caller can resolve one — admins can, because
+   * the Users listRule is self-or-admin. Omit it and `userEmail` is sent
+   * instead for the server to resolve as a superuser, which is the only form
+   * available to a node owner granting to somebody they cannot look up.
+   */
+  userId?: string;
+  /**
+   * The recipient's address. With `userId` present this is display only; with
+   * it absent the field becomes editable and this seeds it.
+   */
   userEmail: string;
   nodeId: string;
   /** The node's name, or null when no `name:` tag supplies one. */
@@ -56,7 +66,14 @@ export function SetClaimDialog({
 }: Props) {
   const [targetGb, setTargetGb] = useState(currentGb);
   const [note, setNote] = useState('');
+  const [email, setEmail] = useState(userEmail);
   const [submitting, setSubmitting] = useState(false);
+
+  // Resolving by address is the node-owner path: the Users listRule is
+  // self-or-admin, so a non-admin cannot turn an address into an id from the
+  // browser. The server does it as a superuser and 404s on an unknown one.
+  const byEmail = !userId;
+  const recipient = byEmail ? email.trim() : userEmail;
 
   const deltaGb = targetGb - currentGb;
   // Growing is bounded by what the node has left; shrinking is bounded at zero,
@@ -81,7 +98,7 @@ export function SetClaimDialog({
       await api('/next-api/garage/claims', {
         method: 'POST',
         body: {
-          user_id: userId,
+          ...(userId ? { user_id: userId } : { user_email: recipient }),
           node_id: nodeId,
           quota_gb: deltaGb,
           ...(note.trim() ? { note: note.trim() } : {}),
@@ -91,10 +108,19 @@ export function SetClaimDialog({
       // against one specific node id — so when a name is shown, the short id
       // is shown with it.
       const named = nodeName
-        ? `${nodeName} (${shortNodeId(nodeId)})`
-        : shortNodeId(nodeId);
+        ? `${nodeName} (${nodeKey(nodeId)})`
+        : nodeKey(nodeId);
+      // Two modes, two true sentences. Setting a claim knows the recipient's
+      // position, so it can report the new total. Granting by address does not
+      // — `currentGb` is 0 because nobody has resolved the address yet, which
+      // makes `targetGb` the amount *added*, not what they now hold. Reporting
+      // it as a total told an owner that a 2 TB grant to somebody already
+      // holding 5 TB had left them with 2 TB, inviting a "correction" that
+      // would take real storage away.
       toast.success(
-        `${userEmail} now claims ${formatStorage(targetGb)} on ${named} (${formatSignedStorage(deltaGb)})`
+        byEmail
+          ? `Granted ${formatStorage(deltaGb)} to ${recipient} from ${named}`
+          : `${recipient} now claims ${formatStorage(targetGb)} on ${named} (${formatSignedStorage(deltaGb)})`
       );
       onOpenChange(false);
       await onApplied();
@@ -110,18 +136,52 @@ export function SetClaimDialog({
       <DialogContent>
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>Set claim</DialogTitle>
+            <DialogTitle>{byEmail ? 'Grant storage' : 'Set claim'}</DialogTitle>
             <DialogDescription>
-              Enter what <strong>{userEmail}</strong> should have on{' '}
-              <strong>{nodeLabel(nodeName, nodeId)}</strong> after the change.
-              The difference is appended to the ledger as a single signed entry,
-              so the grant history stays intact.
+              {byEmail ? (
+                <>
+                  How much to grant{' '}
+                  <strong>{recipient || 'the recipient'}</strong> from{' '}
+                  <strong>{nodeLabel(nodeName, nodeId)}</strong>. It is appended
+                  to the ledger as one signed entry, on top of whatever they
+                  already hold on this node.
+                </>
+              ) : (
+                <>
+                  Enter what <strong>{recipient}</strong> should have on{' '}
+                  <strong>{nodeLabel(nodeName, nodeId)}</strong> after the
+                  change. The difference is appended to the ledger as a single
+                  signed entry, so the grant history stays intact.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
+            {byEmail && (
+              <div className="space-y-2">
+                <Label htmlFor="set-claim-email">Recipient email</Label>
+                <Input
+                  id="set-claim-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="them@example.com"
+                  autoComplete="off"
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  They must already have an account. To reach someone who does
+                  not, grant the storage to yourself and send it on from your
+                  dashboard.
+                </p>
+              </div>
+            )}
+
             <div className="space-y-2">
-              <Label htmlFor="set-claim-target">New total</Label>
+              <Label htmlFor="set-claim-target">
+                {byEmail ? 'Amount to grant' : 'New total'}
+              </Label>
               <StorageQuotaInput
                 id="set-claim-target"
                 valueGib={targetGb}
@@ -133,16 +193,23 @@ export function SetClaimDialog({
             </div>
 
             <p id="set-claim-summary" className="text-xs text-muted-foreground">
-              Current <strong>{formatStorage(currentGb)}</strong> →{' '}
-              <strong>{formatStorage(Math.max(targetGb, 0))}</strong> ·
-              adjustment{' '}
-              <strong
-                className={deltaGb < 0 ? 'text-destructive' : undefined}
-                data-testid="set-claim-delta"
-              >
-                {formatSignedStorage(deltaGb)}
-              </strong>
-              <br />
+              {/* No "current" when granting by address: the recipient is not
+                  resolved until the server does it, so their existing claim on
+                  this node is unknown here. */}
+              {!byEmail && (
+                <>
+                  Current <strong>{formatStorage(currentGb)}</strong> →{' '}
+                  <strong>{formatStorage(Math.max(targetGb, 0))}</strong> ·
+                  adjustment{' '}
+                  <strong
+                    className={deltaGb < 0 ? 'text-destructive' : undefined}
+                    data-testid="set-claim-delta"
+                  >
+                    {formatSignedStorage(deltaGb)}
+                  </strong>
+                  <br />
+                </>
+              )}
               Free to grant on this node:{' '}
               <strong>{formatStorage(nodeFreeGb)}</strong>
             </p>
@@ -182,7 +249,9 @@ export function SetClaimDialog({
             </Button>
             <Button
               type="submit"
-              disabled={submitting || noChange || belowZero}
+              disabled={
+                submitting || noChange || belowZero || (byEmail && !recipient)
+              }
             >
               {submitting ? 'Applying...' : 'Apply'}
             </Button>

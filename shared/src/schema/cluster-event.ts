@@ -54,6 +54,13 @@ export const CLUSTER_EVENT_KINDS = [
    * three filter options for one concept.
    */
   'repair',
+  /**
+   * A node's ownership changed — claimed by a user, released by its owner, or
+   * revoked/reassigned by an admin. `previous_value` and `new_value` hold the
+   * raw PB user ids, empty for "unowned"; which of the three it was reads off
+   * that pair, so this needs no per-verb kinds any more than `repair` does.
+   */
+  'node_owner_changed',
 ] as const;
 
 /**

@@ -7,6 +7,7 @@ import {
   getPbAsSuperuser,
   getServerUser,
 } from '@/lib/auth/server';
+import { nodeKey } from '@/lib/node-label';
 import { TIMELINE_DAYS } from '@/lib/cluster-timeline';
 import type {
   ClusterTimelineEvent,
@@ -34,7 +35,10 @@ function toTimelineEvent(e: ClusterEvent): ClusterTimelineEvent {
     kind: e.kind,
     source: e.source,
     severity: e.severity,
-    node_id: e.node_id ?? '',
+    // Keyed on the way out as well as in the row. Rows have carried keys since
+    // 1787500000_shorten_node_ids.js; normalising again costs nothing and means
+    // this projection cannot leak a full id even if something upstream regresses.
+    node_id: e.node_id ? nodeKey(e.node_id) : '',
     category: e.category ?? '',
     title: e.title,
     occurred_at: e.occurred_at,

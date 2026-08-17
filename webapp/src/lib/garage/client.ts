@@ -5,6 +5,7 @@ import {
   GarageAuthError,
   GarageConfigError,
   GarageError,
+  GarageNotEmptyError,
   GarageNotFoundError,
   GarageQuorumError,
   GarageValidationError,
@@ -153,6 +154,12 @@ export class GarageClient {
     }
     if (status === 503) {
       throw new GarageQuorumError(endpoint, body);
+    }
+    // The one precondition Garage documents on a delete. It is only ever a 400
+    // from DeleteBucket, so the endpoint is part of the match — a 400 from
+    // anywhere else means something different and must stay generic.
+    if (status === 400 && endpoint === '/v2/DeleteBucket') {
+      throw new GarageNotEmptyError(endpoint, body);
     }
     const message =
       typeof body === 'object' && body !== null && 'message' in body

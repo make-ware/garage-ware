@@ -212,7 +212,6 @@ export default function ClusterDetailPage() {
           replicationFactor={nodes.replicationFactor}
           latestMetrics={latestMetrics}
           openEventsByNode={openEventsByNode}
-          revealNodeId
           addrByNodeId={addrByNodeId}
         />
       ) : null}

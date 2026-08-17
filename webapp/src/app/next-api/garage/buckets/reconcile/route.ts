@@ -1,7 +1,11 @@
 import 'server-only';
 import { z } from 'zod';
 import { GarageClient, buckets } from '@/lib/garage';
-import { requireAdmin, errorResponse } from '@/lib/auth/server';
+import {
+  requireAdmin,
+  errorResponse,
+  getPbAsSuperuser,
+} from '@/lib/auth/server';
 import { describeQuotaDrift, syncQuotaToPb } from '@/lib/storage/quota-sync';
 import {
   effectiveMaxObjectsFor,
@@ -64,6 +68,14 @@ export async function POST(req: Request) {
     let failed = 0;
     const errors: string[] = [];
 
+    // Every write below is to Buckets, whose three write rules are null since
+    // 1787600000_lock_asset_write_rules.js — the caller's own admin client
+    // cannot write the collection at all. Resolved once, up here, rather than
+    // per branch: it is memoized, and having exactly one client in scope is
+    // what stops a second write path being added against `pb` by mistake, which
+    // is how the object-quota branch below came to be rejected on every call.
+    const writePb = await getPbAsSuperuser();
+
     await Promise.all(
       pbBuckets.map(async (pbBucket, i) => {
         const r = garageResults[i];
@@ -79,9 +91,22 @@ export async function POST(req: Request) {
         if (!fixSize && !fixObjects) return;
 
         try {
+          // Tracked rather than assumed. A bucket counts as synced only if
+          // something was actually written for it, and a refusal is reported as
+          // a failure with its reason — see the size branch below.
+          let wrote = false;
+          let refusal: string | null = null;
+
           if (body.direction === 'adopt-garage') {
             if (fixSize) {
-              await syncQuotaToPb(pb, pbBucket, r.value);
+              // The self-heal refuses an adoption that would over-allocate the
+              // owner. On a dashboard load that silence is right; here an admin
+              // has explicitly asked for the repair, so reporting `synced` for a
+              // bucket it declined to touch would claim a job the drift page
+              // contradicts on the next render.
+              const outcome = await syncQuotaToPb(pb, pbBucket, r.value);
+              if (outcome.status === 'refused') refusal = outcome.reason;
+              else if (outcome.status === 'written') wrote = true;
             }
             if (fixObjects) {
               if (drift.garageMaxObjects > 0) {
@@ -90,7 +115,7 @@ export async function POST(req: Request) {
                 // already enforces as the deliberate one. The live limit does
                 // not move — only the disagreement does, which is exactly what
                 // "adopt Garage as the truth" should mean on this axis.
-                await pb.collection('Buckets').update(pbBucket.id, {
+                await writePb.collection('Buckets').update(pbBucket.id, {
                   object_quota: drift.garageMaxObjects,
                 });
               } else {
@@ -105,7 +130,7 @@ export async function POST(req: Request) {
                 // write lands, and derive rather than read the override back —
                 // the in-memory record still holds the value just cleared.
                 if ((pbBucket.object_quota ?? 0) !== 0) {
-                  await pb
+                  await writePb
                     .collection('Buckets')
                     .update(pbBucket.id, { object_quota: 0 });
                 }
@@ -119,6 +144,7 @@ export async function POST(req: Request) {
                   },
                 });
               }
+              wrote = true;
             }
           } else {
             const quotaGb = pbBucket.quota_gb ?? 0;
@@ -131,8 +157,15 @@ export async function POST(req: Request) {
                 maxObjects: effectiveMaxObjectsFor(pbBucket),
               },
             });
+            wrote = true;
           }
-          synced++;
+
+          if (refusal) {
+            failed++;
+            errors.push(`${pbBucket.id}: size quota not adopted — ${refusal}`);
+            return;
+          }
+          if (wrote) synced++;
         } catch (err) {
           failed++;
           errors.push(`${pbBucket.id}: write failed — ${err}`);

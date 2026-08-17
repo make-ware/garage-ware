@@ -8,14 +8,18 @@ import {
   HardDrive,
   KeyRound,
   Server,
+  ServerCog,
+  Settings,
   Shield,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { useAdminStatus } from '@/hooks/use-admin-status';
+import { useAuth } from '@/hooks/use-auth';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
-import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
+import { nodeKey, nodeLabel, parseNodeTags } from '@/lib/node-label';
+import { nodeUsableGbFrom } from '@/lib/storage/ledger-math';
 import { bytesToGib, gibToBytes } from '@/lib/storage/units';
 import { usePricingConfig } from '@/lib/pricing/use-pricing-config';
 import { StorageClaimChart } from '@/components/storage/storage-claim-chart';
@@ -33,7 +37,7 @@ import {
 } from '@/components/ui/card';
 import { BucketTable } from '@/components/storage/bucket-table';
 import { Button } from '@/components/ui/button';
-import type { AccessKey, StorageInvite } from '@garage-ware/shared';
+import type { AccessKey, NodeOwner, StorageInvite } from '@garage-ware/shared';
 import type {
   BucketWithUsage,
   ClusterNodeItem,
@@ -54,6 +58,8 @@ interface DashboardData {
   summary: StorageSummary;
   transfers: TransfersResponse;
   nodeMap: Record<string, ClusterNodeItem>;
+  /** Cluster nodes this user owns — what backs the "Nodes you own" card. */
+  ownedNodes: NodeOwner[];
   usedGb: number;
   /** The cluster's replication factor — a term in the hardware cost. */
   replicationFactor: number;
@@ -66,14 +72,23 @@ interface ClaimResponse {
 }
 
 async function loadData(): Promise<DashboardData> {
-  const [bucketsResp, keysResp, summaryResp, nodesResp, transfersResp] =
-    await Promise.all([
-      api<{ items: BucketWithUsage[] }>('/next-api/garage/buckets'),
-      api<{ items: AccessKey[] }>('/next-api/garage/keys'),
-      api<StorageSummary>('/next-api/garage/storage-summary'),
-      api<ClusterNodesResponse>('/next-api/garage/cluster/nodes'),
-      api<TransfersResponse>('/next-api/garage/transfers'),
-    ]);
+  const [
+    bucketsResp,
+    keysResp,
+    summaryResp,
+    nodesResp,
+    transfersResp,
+    ownersResp,
+  ] = await Promise.all([
+    api<{ items: BucketWithUsage[] }>('/next-api/garage/buckets'),
+    api<{ items: AccessKey[] }>('/next-api/garage/keys'),
+    api<StorageSummary>('/next-api/garage/storage-summary'),
+    api<ClusterNodesResponse>('/next-api/garage/cluster/nodes'),
+    api<TransfersResponse>('/next-api/garage/transfers'),
+    // Self-scoped and PocketBase-only — it makes no Garage call, so adding it
+    // here costs the dashboard no new way to fail.
+    api<{ items: NodeOwner[] }>('/next-api/garage/nodes/owners'),
+  ]);
   const usedBytes = bucketsResp.items.reduce(
     (sum, b) => sum + (b.bytes ?? 0),
     0
@@ -85,6 +100,7 @@ async function loadData(): Promise<DashboardData> {
     summary: summaryResp,
     transfers: transfersResp,
     nodeMap,
+    ownedNodes: ownersResp.items,
     usedGb: bytesToGib(usedBytes),
     replicationFactor: nodesResp.replicationFactor,
   };
@@ -115,6 +131,8 @@ async function claimPendingInvites(): Promise<ClaimResponse | null> {
 
 function StorageDashboard() {
   const { isAdmin } = useAdminStatus();
+  // Already in context — the account card needs no fetch of its own.
+  const { user } = useAuth();
   // Deliberately its own fetch, not a sixth call in `loadData`: a failure there
   // sets `error` and the whole dashboard renders as an error string, and a
   // cosmetic panel must never be able to do that. The hook falls back to the
@@ -192,6 +210,22 @@ function StorageDashboard() {
     () => (summary?.nodeClaims ?? []).filter((n) => n.claimedGb !== 0),
     [summary?.nodeClaims]
   );
+
+  // What the nodes this user owns can back in total. `nodeUsableGbFrom`
+  // returns null for a node with no declared capacity (a gateway) and for one
+  // that has left the layout, both of which contribute nothing.
+  const ownedUsableGb = useMemo(() => {
+    if (!data) return 0;
+    return data.ownedNodes.reduce(
+      (sum, owner) =>
+        sum +
+        (nodeUsableGbFrom(
+          data.nodeMap[owner.node_id]?.capacity,
+          data.replicationFactor
+        ) ?? 0),
+      0
+    );
+  }, [data]);
 
   const available = summary?.availableGb ?? 0;
   const invites = data?.transfers.invites ?? [];
@@ -364,7 +398,12 @@ function StorageDashboard() {
             ) : claimsByNode.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 No node quotas yet. An administrator grants storage per cluster
-                node; storage gifted by other users is not tied to one.
+                node, and{' '}
+                <Link href="/dashboard/nodes" className="underline">
+                  claiming a node you contributed
+                </Link>{' '}
+                lets you grant it yourself. Storage gifted by other users is not
+                tied to a node.
               </p>
             ) : (
               <table className="w-full text-sm">
@@ -389,7 +428,7 @@ function StorageDashboard() {
                             {nodeLabel(name, node.nodeId)}
                           </span>
                           <span className="block text-xs text-muted-foreground">
-                            {name ? `${shortNodeId(node.nodeId)} · ` : ''}
+                            {name ? `${nodeKey(node.nodeId)} · ` : ''}
                             {node.nodeZone || 'no zone'}
                           </span>
                         </td>
@@ -415,6 +454,94 @@ function StorageDashboard() {
             <Link href="/dashboard/metrics" className="flex-1">
               <Button variant="outline" className="w-full">
                 <ChartLine className="mr-2 h-4 w-4" /> Metrics
+              </Button>
+            </Link>
+          </CardFooter>
+        </Card>
+      </div>
+
+      {/* Every destination in the nav gets a card here. The desktop bar shows
+          three of them inline and hides the rest behind the avatar dropdown, so
+          a user who never opens that menu would otherwise have no way to find
+          "My nodes" or their own account settings. */}
+      <div className="mb-6 grid gap-6 lg:grid-cols-2 lg:items-start">
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ServerCog className="h-5 w-5" />
+              Nodes you own
+            </CardTitle>
+            <CardDescription>
+              Claim a machine you contributed to the cluster and grant storage
+              sourced from it — to yourself or to anyone else by email.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex-1">
+            {!data ? (
+              <div
+                className="h-12 animate-pulse rounded bg-muted"
+                aria-label="Loading owned nodes"
+              />
+            ) : data.ownedNodes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                You don&apos;t own any cluster nodes yet. If you run one, claim
+                it with the full node id that <code>garage node id</code> prints
+                on the machine.
+              </p>
+            ) : (
+              <>
+                <p className="text-3xl font-bold tabular-nums">
+                  {data.ownedNodes.length}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {data.ownedNodes.length === 1 ? 'node' : 'nodes'} owned —{' '}
+                  <strong>{formatStorage(ownedUsableGb)}</strong> of usable
+                  capacity you can grant from.
+                </p>
+              </>
+            )}
+          </CardContent>
+          <CardFooter className="border-t pt-4">
+            <Link href="/dashboard/nodes" className="w-full">
+              <Button
+                className="w-full"
+                variant={
+                  data && data.ownedNodes.length > 0 ? 'outline' : 'default'
+                }
+              >
+                {data && data.ownedNodes.length > 0
+                  ? 'Manage my nodes'
+                  : 'Claim a node'}
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+            </Link>
+          </CardFooter>
+        </Card>
+
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              Account
+            </CardTitle>
+            <CardDescription>
+              Your name, password, and when we email you about a bucket filling
+              up.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex-1 space-y-1">
+            <p className="text-sm font-medium">{user?.name || 'User'}</p>
+            <p className="text-sm text-muted-foreground">{user?.email}</p>
+            <p className="text-sm text-muted-foreground">
+              Fill alerts at{' '}
+              <strong>{user?.notification_threshold_pct ?? 90}%</strong> of a
+              bucket&apos;s quota.
+            </p>
+          </CardContent>
+          <CardFooter className="border-t pt-4">
+            <Link href="/profile" className="w-full">
+              <Button className="w-full" variant="outline">
+                Profile settings <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             </Link>
           </CardFooter>

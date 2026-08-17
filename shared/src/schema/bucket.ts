@@ -69,14 +69,23 @@ export const BucketCollection = defineCollection({
       'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
     viewRule:
       'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    createRule:
-      'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    updateRule:
-      'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    deleteRule:
-      'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
+    // All three write rules are null, as on NodeOwners, StorageClaims and
+    // ClusterEvents. They used to be `user = @request.auth.id || <admin>`,
+    // which meant the Route-Handler funnel was convention rather than
+    // enforcement — and once `garage_bucket_id` became something a user can
+    // *claim* by proving they hold a credential, convention was not enough: a
+    // browser SDK call could insert a row naming any Garage bucket and
+    // itself as the owner, or repoint an existing row it already owned, and
+    // skip the proof entirely. Reads stay self-or-admin, so `loadOwned*` still
+    // resolves ownership through the caller's own client.
+    createRule: null,
+    updateRule: null,
+    deleteRule: null,
   },
   indexes: [
+    // Both UNIQUE indexes can reject a claim, and they mean different things:
+    // garage_bucket_id => already claimed; name => a different bucket is
+    // already registered here under that alias. The routes report them apart.
     'CREATE UNIQUE INDEX `idx_buckets_garage_bucket_id` ON `Buckets` (`garage_bucket_id`)',
     'CREATE UNIQUE INDEX `idx_buckets_name` ON `Buckets` (`name`)',
     'CREATE INDEX `idx_buckets_user` ON `Buckets` (`user`)',

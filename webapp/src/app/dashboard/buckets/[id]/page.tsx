@@ -6,7 +6,8 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, Cable, FolderOpen } from 'lucide-react';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { api } from '@/lib/api-client';
-import { formatStorage } from '@/lib/format';
+import { formatBytes, formatStorage } from '@/lib/format';
+import { describeBucketEmptiness } from '@/lib/storage/bucket-emptiness';
 import { bytesToGib } from '@/lib/storage/units';
 import { StorageQuotaInput } from '@/components/storage/storage-quota-input';
 import { toast } from 'sonner';
@@ -221,6 +222,8 @@ function BucketDetail({ id }: { id: string }) {
     );
     return entry?.permissions ?? {};
   }
+
+  const bucketIsEmpty = describeBucketEmptiness(data.garage).empty;
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-5xl">
@@ -529,21 +532,50 @@ function BucketDetail({ id }: { id: string }) {
         <CardHeader>
           <CardTitle className="text-destructive">Danger zone</CardTitle>
           <CardDescription>
-            Deleting a bucket is permanent. The bucket must be empty on the
-            cluster before it can be deleted.
+            Deleting a bucket is permanent, and Garage only allows it once the
+            bucket is empty.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          {/* The emptiness state is shown BEFORE the dialog, not discovered
+              after an OTP challenge and a typed bucket name. Garage refuses a
+              non-empty bucket and the app has no way to empty one, so being
+              told at the end is being told too late. */}
+          {!bucketIsEmpty && (
+            <p className="text-sm text-muted-foreground">
+              This bucket still holds{' '}
+              <strong>{formatBytes(data.garage.bytes ?? 0)}</strong> across{' '}
+              <strong>{(data.garage.objects ?? 0).toLocaleString()}</strong>{' '}
+              object(s), so it cannot be deleted yet. Empty it with your S3
+              client — the{' '}
+              <Link
+                href={`/dashboard/buckets/${id}/connect`}
+                className="underline"
+              >
+                Connect page
+              </Link>{' '}
+              has the endpoint and credentials.
+            </p>
+          )}
           <OtpConfirmDeleteDialog
-            trigger={<Button variant="destructive">Delete bucket</Button>}
+            trigger={
+              <Button variant="destructive" disabled={!bucketIsEmpty}>
+                Delete bucket
+              </Button>
+            }
             title={`Delete bucket ${data.record.name}`}
             description={
               <>
                 <p>
                   This will permanently delete the bucket from the Garage
-                  cluster and from PocketBase. This cannot be undone.
+                  cluster and from PocketBase, along with every alias pointing
+                  at it. This cannot be undone.
                 </p>
-                <p>The bucket must be empty before deletion will succeed.</p>
+                <p>
+                  The bucket is empty, so no stored data is lost — and the{' '}
+                  <strong>{data.record.name}</strong> name becomes available
+                  again.
+                </p>
               </>
             }
             confirmText={data.record.name}

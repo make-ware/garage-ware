@@ -19,12 +19,6 @@ interface ClusterMapProps {
    */
   openEventsByNode?: Map<string, ClusterTimelineEvent[]>;
   /**
-   * Show each node's full Garage id rather than its short form. **Admin pages
-   * only.** That id is the key used to add a node to the cluster, so it is
-   * treated as a secret on every user-facing surface.
-   */
-  revealNodeId?: boolean;
-  /**
    * node id → network address. Admin pages only — passing it is what makes
    * the details dialog show an address at all.
    */
@@ -46,7 +40,6 @@ export function ClusterMap({
   replicationFactor,
   latestMetrics,
   openEventsByNode,
-  revealNodeId,
   addrByNodeId,
 }: ClusterMapProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -94,7 +87,6 @@ export function ClusterMap({
         replicationFactor={replicationFactor}
         latestMetrics={latestMetrics}
         openEventsByNode={openEventsByNode}
-        revealNodeId={revealNodeId}
         addrByNodeId={addrByNodeId}
       />
     </>

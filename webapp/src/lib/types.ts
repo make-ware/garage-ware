@@ -17,11 +17,13 @@ import type {
   NodeMetric,
   GarageClusterCache,
   ClusterEvent,
+  NodeOwner,
   ClusterEventKind,
   ClusterEventSeverity,
   ClusterEventSource,
 } from '@garage-ware/shared';
 import type { NodeClaimPosition } from '@/lib/storage/ledger-math';
+import type { NodeKey } from '@/lib/node-label';
 
 export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'Users' | 'users'): RecordService<User>;
@@ -41,6 +43,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'NodeMetrics'): RecordService<NodeMetric>;
   collection(idOrName: 'GarageClusterCache'): RecordService<GarageClusterCache>;
   collection(idOrName: 'ClusterEvents'): RecordService<ClusterEvent>;
+  collection(idOrName: 'NodeOwners'): RecordService<NodeOwner>;
 }
 
 /**
@@ -84,10 +87,15 @@ export interface StorageSummary {
   availableGb: number;
 }
 
-/** One node's identity as `GET /next-api/garage/node-metrics` reports it. */
+/**
+ * One node's identity as `GET /next-api/garage/node-metrics` reports it.
+ *
+ * `node_id` is a node key, like every other node id on the wire. There is no
+ * `node_hostname`: a node is identified by its name or its key, the column has
+ * never been either, and this payload goes to any signed-in user.
+ */
 export interface MetricNode {
-  node_id: string;
-  node_hostname: string;
+  node_id: NodeKey;
   node_zone: string;
 }
 
@@ -106,7 +114,7 @@ export interface MetricNode {
  */
 export interface MetricPoint {
   t: number;
-  node_id: string;
+  node_id: NodeKey;
   samples: number;
   uptime_pct: number;
   resync_queue_length: number | null;
@@ -140,12 +148,14 @@ export interface NodeMetricsHistory {
  * `GarageClusterCache` is superuser-only).
  *
  * It also carries no `hostname`: a node is identified by its name (from a
- * `name:` tag, see lib/node-label.ts) or by its short id, never by an
- * OS-reported hostname. The field is left off so the compiler keeps it that
- * way.
+ * `name:` tag, see lib/node-label.ts) or by its key, never by an OS-reported
+ * hostname. The field is left off so the compiler keeps it that way.
+ *
+ * `id` is a **node key**, not a full node id. The full id is the credential the
+ * node-claim route accepts and never leaves the server; see lib/node-label.ts.
  */
 export interface ClusterNodeItem {
-  id: string;
+  id: NodeKey;
   zone: string;
   tags: string[];
   capacity: number | null;
@@ -157,6 +167,25 @@ export interface ClusterNodeItem {
   diskTotalBytes: number | null;
   metaFreeBytes: number | null;
   metaTotalBytes: number | null;
+}
+
+/**
+ * `GET /next-api/garage/buckets/claimable` — one bucket the caller's own access
+ * key holds Garage `owner` permission on, and which has no PocketBase row yet.
+ *
+ * Nothing here is privileged: the caller could read the same list from Garage
+ * with their own credentials.
+ */
+export interface ClaimableBucket {
+  id: string;
+  /** Global alias, or the raw id when a bucket has none. */
+  name: string;
+  bytes: number | null;
+  objects: number | null;
+  /** Garage's `maxSize`, so the UI can say what claiming would reserve. */
+  maxSize: number | null;
+  /** The caller's key that proves ownership. */
+  viaKeyId: string;
 }
 
 /** `GET /next-api/garage/cluster/nodes` — any signed-in user. */
@@ -202,7 +231,7 @@ export interface ClusterTimelineEvent {
   source: ClusterEventSource;
   severity: ClusterEventSeverity;
   /** '' for a cluster-wide event — a layout bump, or a note about no node. */
-  node_id: string;
+  node_id: NodeKey;
   /** Manual rows only; '' on a detector row, which never guesses a cause. */
   category: string;
   title: string;

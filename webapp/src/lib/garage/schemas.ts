@@ -93,9 +93,25 @@ const KeyBucketAccessSchema = z.object({
     .partial(),
 });
 
+/**
+ * A key as the admin API describes it — **without its secret**.
+ *
+ * There is deliberately no `secretAccessKey` here, and adding one back would
+ * undo the boundary it exists to hold. Garage will return the secret from
+ * `GetKeyInfo` on request (`showSecretKey=true`), and this schema was the reason
+ * it used to reach the browser: `getKeyInfo` asked for it unconditionally and
+ * `GET /next-api/garage/keys/[id]` returned the parsed result verbatim, so the
+ * live secret was served to the key's owner and to every admin — while the UI
+ * said secrets could never be retrieved after creation.
+ *
+ * The secret is now a **credential**: `POST /next-api/garage/keys/claim` accepts
+ * it as proof that you own the key. Two narrow schemas may carry one, both
+ * local to `keys.ts` and neither reachable from a response type — the create
+ * path's one-time reveal, and the claim verifier, which turns it into a boolean
+ * and never returns it.
+ */
 export const GarageKeySchema = z.object({
   accessKeyId: z.string(),
-  secretAccessKey: z.string().optional(),
   name: z.string().optional(),
   permissions: KeyPermissionsSchema.optional(),
   buckets: z.array(KeyBucketAccessSchema).optional(),
@@ -106,6 +122,12 @@ export type GarageKey = z.infer<typeof GarageKeySchema>;
 export const GarageKeyListItemSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
+  /**
+   * Garage reports this for every key in one `ListKeys` call, which is what
+   * lets `GET /next-api/garage/keys` show retired keys without mirroring the
+   * flag into a PocketBase column.
+   */
+  expired: z.boolean().optional(),
 });
 export const GarageKeyListSchema = z.array(GarageKeyListItemSchema);
 export type GarageKeyListItem = z.infer<typeof GarageKeyListItemSchema>;
@@ -144,9 +166,16 @@ export const GarageBucketSchema = z.object({
   websiteAccess: z.boolean().optional(),
   websiteConfig: BucketWebsiteSchema.nullable().optional(),
   keys: z.array(BucketKeyAccessSchema).optional(),
+  // Garage lists all of these as required; they stay `.optional()` here
+  // because the spec is self-declared "early stage" and a missing counter must
+  // degrade rather than fail the parse. `describeBucketEmptiness` treats an
+  // absent counter as "not known to be empty" so the looseness cannot become a
+  // reason to delete something.
   objects: z.number().int().nonnegative().optional(),
   bytes: z.number().int().nonnegative().optional(),
   unfinishedUploads: z.number().int().nonnegative().optional(),
+  /** Added for the delete guard — Garage reports it, we were dropping it. */
+  unfinishedMultipartUploads: z.number().int().nonnegative().optional(),
   unfinishedMultipartUploadParts: z.number().int().nonnegative().optional(),
   unfinishedMultipartUploadBytes: z.number().int().nonnegative().optional(),
   quotas: BucketQuotasSchema.optional(),

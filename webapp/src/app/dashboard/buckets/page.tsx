@@ -28,8 +28,13 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { BucketMetrics } from '@/components/storage/bucket-metrics';
+import { ClaimableBucketsCard } from '@/components/storage/claimable-buckets-card';
 import { BucketTable } from '@/components/storage/bucket-table';
-import type { BucketWithUsage, StorageSummary } from '@/lib/types';
+import type {
+  BucketWithUsage,
+  ClaimableBucket,
+  StorageSummary,
+} from '@/lib/types';
 
 function BucketsView() {
   const [buckets, setBuckets] = useState<BucketWithUsage[]>([]);
@@ -37,15 +42,22 @@ function BucketsView() {
   const [allocated, setAllocated] = useState(0);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
+  const [claimable, setClaimable] = useState<ClaimableBucket[]>([]);
 
   // Net grant and allocated total both come from the single shared calculator
   // (`getUserStorageSummary` behind /storage-summary) so transfers and
   // decommissioned-node filtering are accounted for, matching the dashboard.
   async function refresh() {
-    const [bucketsResp, summary] = await Promise.all([
+    const [bucketsResp, summary, claimableResp] = await Promise.all([
       api<{ items: BucketWithUsage[] }>('/next-api/garage/buckets'),
       api<StorageSummary>('/next-api/garage/storage-summary'),
+      // Enrichment, so a Garage hiccup costs the onboarding aid rather than the
+      // page. Same trade the cluster timeline makes on /dashboard/cluster.
+      api<{ items: ClaimableBucket[] }>(
+        '/next-api/garage/buckets/claimable'
+      ).catch(() => ({ items: [] as ClaimableBucket[] })),
     ]);
+    setClaimable(claimableResp.items);
     setBuckets(bucketsResp.items);
     setGranted(summary.netGrantedGb);
     setAllocated(summary.allocatedGb);
@@ -117,6 +129,12 @@ function BucketsView() {
         allocatedGb={allocated}
         grantedGb={granted}
         className="mb-6"
+      />
+
+      <ClaimableBucketsCard
+        items={claimable}
+        freeGb={free}
+        onClaimed={refresh}
       />
 
       <Card>

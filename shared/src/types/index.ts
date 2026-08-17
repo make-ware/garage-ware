@@ -15,6 +15,7 @@ import type { StorageInvite } from '../schema/storage-invite';
 import type { NodeMetric } from '../schema/node-metric';
 import type { GarageClusterCache } from '../schema/garage-cluster-cache';
 import type { ClusterEvent } from '../schema/cluster-event';
+import type { NodeOwner } from '../schema/node-owner';
 
 // Typed PocketBase interface
 export interface TypedPocketBase extends PocketBase {
@@ -35,6 +36,7 @@ export interface TypedPocketBase extends PocketBase {
   collection(idOrName: 'NodeMetrics'): RecordService<NodeMetric>;
   collection(idOrName: 'GarageClusterCache'): RecordService<GarageClusterCache>;
   collection(idOrName: 'ClusterEvents'): RecordService<ClusterEvent>;
+  collection(idOrName: 'NodeOwners'): RecordService<NodeOwner>;
 }
 
 // PocketBase response types

@@ -1,5 +1,9 @@
 import 'server-only';
-import { AccessKeyMutator, BucketMutator } from '@garage-ware/shared/mutators';
+import {
+  AccessKeyMutator,
+  BucketMutator,
+  NodeOwnerMutator,
+} from '@garage-ware/shared/mutators';
 import type { AccessKey, Bucket, User } from '@garage-ware/shared';
 import type { TypedPocketBase } from '@/lib/types';
 import { HttpError, getServerUser, isUserAdmin } from './server';
@@ -74,4 +78,38 @@ export async function assertKeyOwner(
   if (key.user === userId) return;
   const admin = isAdmin ?? (await isUserAdmin(pb, userId));
   if (!admin) throw new HttpError(403, 'Not your key');
+}
+
+/**
+ * Assert that `userId` owns the Garage node `nodeId`, or is an admin.
+ *
+ * Unlike buckets and keys there is no record to hand in: ownership lives in its
+ * own collection, and the lookup runs through the **caller's own** `pb`. That is
+ * deliberate and needs no superuser auth — the NodeOwners listRule is
+ * `user = @request.auth.id || admin`, so a lookup by node id returns a row iff
+ * the caller owns that node. The same self-scoped-lookup trick `isUserAdmin`
+ * plays against Admins.
+ *
+ * A null result therefore means "not yours", which is not the same as
+ * "unowned". Nothing here should be read as evidence that a node is free to
+ * claim; the UNIQUE index on `node_id` is the authority on that.
+ *
+ * Returns whether the caller passed as an admin, so a handler that already
+ * needs to know can avoid a second Admins query.
+ */
+export async function assertNodeOwner(
+  pb: TypedPocketBase,
+  nodeId: string,
+  userId: string,
+  isAdmin?: boolean
+): Promise<{ isAdmin: boolean }> {
+  if (isAdmin) return { isAdmin: true };
+
+  const owners = new NodeOwnerMutator(pb);
+  const record = await owners.findByNode(nodeId);
+  if (record && record.user === userId) return { isAdmin: false };
+
+  const admin = await isUserAdmin(pb, userId);
+  if (!admin) throw new HttpError(403, 'You do not own this node');
+  return { isAdmin: true };
 }

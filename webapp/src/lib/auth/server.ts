@@ -220,6 +220,19 @@ function garageErrorResponse(err: GarageError): Response {
         },
         { status: 502 }
       );
+    case 'not_empty':
+      // 409, not 400: the request was well formed and the bucket simply is not
+      // in a state where it can be deleted. The route usually catches this on
+      // its own pre-flight and says how full the bucket is; reaching here means
+      // something landed between that read and the delete.
+      return Response.json(
+        {
+          error:
+            'That bucket is not empty. Remove its objects with your S3 client first — see the bucket’s Connect page.',
+          code: err.code,
+        },
+        { status: 409 }
+      );
     case 'schema':
       return Response.json(
         {

@@ -2,7 +2,6 @@
 
 import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { ArrowLeft, Copy } from 'lucide-react';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { api } from '@/lib/api-client';
@@ -15,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { OtpConfirmDeleteDialog } from '@/components/ui/otp-confirm-delete-dialog';
+import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import type { AccessKey } from '@garage-ware/shared';
 import type { GarageKey } from '@/lib/garage';
 
@@ -25,7 +24,6 @@ interface DetailResponse {
 }
 
 function KeyDetail({ id }: { id: string }) {
-  const router = useRouter();
   const [data, setData] = useState<DetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -48,10 +46,42 @@ function KeyDetail({ id }: { id: string }) {
     };
   }, [id]);
 
-  async function handleDelete() {
-    await api(`/next-api/garage/keys/${id}`, { method: 'DELETE' });
-    toast.success(`Revoked ${data?.record.name || data?.record.garage_key_id}`);
-    router.push('/dashboard/keys');
+  /**
+   * Retire the key, or bring it back.
+   *
+   * Stays on the page rather than routing away: the key still exists and its
+   * state has changed, so the useful thing to show is the key with its new
+   * state and the button that undoes it.
+   */
+  async function setExpired(expired: boolean) {
+    await api(`/next-api/garage/keys/${id}/expiry`, {
+      method: 'POST',
+      body: { expired },
+    });
+    const label = data?.record.name || data?.record.garage_key_id;
+    toast.success(expired ? `Expired ${label}` : `Re-enabled ${label}`);
+    const fresh = await api<DetailResponse>(`/next-api/garage/keys/${id}`);
+    setData(fresh);
+  }
+
+  /**
+   * The un-expire click, with the error handling the confirm dialog does for
+   * the other direction.
+   *
+   * Reversibility is the safety property this whole design leans on — a retire
+   * button with no way back would be the griefing lever the app refuses
+   * everywhere else — so a failed re-enable must say so. Bare
+   * `void setExpired(false)` swallowed it into an unhandled rejection: no toast,
+   * the card still reading "Key is expired", and a user clicking again.
+   */
+  async function reEnable() {
+    try {
+      await setExpired(false);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Could not re-enable the key'
+      );
+    }
   }
 
   if (loading || !data) {
@@ -64,6 +94,7 @@ function KeyDetail({ id }: { id: string }) {
 
   const { record } = data;
   const confirmText = record.name || record.garage_key_id;
+  const expired = data.garage.expired === true;
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-5xl">
@@ -107,35 +138,48 @@ function KeyDetail({ id }: { id: string }) {
         </CardContent>
       </Card>
 
-      <Card className="border-destructive/40">
+      <Card>
         <CardHeader>
-          <CardTitle className="text-destructive">Danger zone</CardTitle>
+          <CardTitle>
+            {expired ? 'Key is expired' : 'Retire this key'}
+          </CardTitle>
           <CardDescription>
-            Revoking this key immediately disables it on the cluster. Any
-            application using it will lose access.
+            {expired
+              ? 'This key no longer works for S3. Its bucket permissions are kept, so re-enabling it restores exactly the access it had.'
+              : 'Expiring a key stops it working for S3 straight away, while keeping it and its bucket permissions on record. This is the way to rotate onto a new key: create the replacement, point your tools at it, then expire this one.'}
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <OtpConfirmDeleteDialog
-            trigger={<Button variant="destructive">Revoke key</Button>}
-            title={`Revoke key ${confirmText}`}
-            description={
-              <>
-                <p>
-                  This will permanently delete the key from the Garage cluster
-                  and from PocketBase. This cannot be undone.
-                </p>
-                <p>
-                  Applications still configured with this key will start failing
-                  immediately.
-                </p>
-              </>
-            }
-            confirmText={confirmText}
-            confirmLabel="Revoke key"
-            otpActionLabel="revoke this key"
-            onConfirm={handleDelete}
-          />
+        <CardContent className="space-y-3">
+          {expired ? (
+            <Button variant="outline" onClick={() => void reEnable()}>
+              Re-enable key
+            </Button>
+          ) : (
+            <ConfirmDeleteDialog
+              trigger={<Button variant="outline">Expire key</Button>}
+              variant="default"
+              title={`Expire key ${confirmText}`}
+              description={
+                <>
+                  <p>
+                    Applications still configured with{' '}
+                    <strong>{confirmText}</strong> will start failing
+                    immediately.
+                  </p>
+                  <p>
+                    You can re-enable it here afterwards — nothing is destroyed.
+                    To remove a key from the cluster for good, use{' '}
+                    <code className="font-mono">garage key delete</code> on the
+                    cluster itself.
+                  </p>
+                </>
+              }
+              confirmText={confirmText}
+              confirmLabel="Expire key"
+              pendingLabel="Expiring..."
+              onConfirm={() => setExpired(true)}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

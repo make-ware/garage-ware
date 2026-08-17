@@ -45,9 +45,16 @@ export const StorageClaimCollection = defineCollection({
       'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
     viewRule:
       'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    createRule: '@collection.Admins.user ?= @request.auth.id',
-    updateRule: '@collection.Admins.user ?= @request.auth.id',
-    deleteRule: '@collection.Admins.user ?= @request.auth.id',
+    // All three null. Every claim write now goes through
+    // /next-api/garage/claims, which authenticates as a superuser and passes
+    // the real actor in request headers (see pb_hooks/lib/claim-audit.js).
+    // Locking them is not cosmetic: it is what makes the Route-Handler funnel
+    // genuine ENFORCEMENT for this collection rather than convention, so
+    // neither an admin nor a node owner can skip assertClaimDeltaAllowed with
+    // a direct SDK call from a browser.
+    createRule: null,
+    updateRule: null,
+    deleteRule: null,
   },
   indexes: [
     // Deliberately NOT unique: many ledger entries per (user, node).

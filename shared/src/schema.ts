@@ -12,3 +12,4 @@ export * from './schema/storage-invite.js';
 export * from './schema/node-metric.js';
 export * from './schema/garage-cluster-cache.js';
 export * from './schema/cluster-event.js';
+export * from './schema/node-owner.js';

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Copy } from 'lucide-react';
+import { ArrowLeft, Plus, Copy, KeyRound } from 'lucide-react';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { OtpGatedDialog } from '@/components/auth/otp-gated-dialog';
 import { api } from '@/lib/api-client';
@@ -20,6 +20,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
+  Dialog,
+  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -33,7 +35,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
 import type { AccessKey } from '@garage-ware/shared';
+
+type KeyRow = AccessKey & { expired?: boolean | null };
 
 interface CreatedSecret {
   garage_key_id: string;
@@ -43,15 +48,21 @@ interface CreatedSecret {
 
 function KeysView() {
   const router = useRouter();
-  const [keys, setKeys] = useState<AccessKey[]>([]);
+  // `expired` is joined on by GET /keys from a single Garage ListKeys call;
+  // null means Garage could not be reached, not "fine".
+  const [keys, setKeys] = useState<KeyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [secret, setSecret] = useState<CreatedSecret | null>(null);
   const [name, setName] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [claimOpen, setClaimOpen] = useState(false);
+  const [claimId, setClaimId] = useState('');
+  const [claimSecret, setClaimSecret] = useState('');
+  const [claiming, setClaiming] = useState(false);
 
   async function refresh() {
-    const result = await api<{ items: AccessKey[] }>('/next-api/garage/keys');
+    const result = await api<{ items: KeyRow[] }>('/next-api/garage/keys');
     setKeys(result.items);
   }
 
@@ -107,6 +118,38 @@ function KeysView() {
     }
   }
 
+  /**
+   * Claim a key that already exists on the cluster by proving its secret.
+   *
+   * The secret is sent once, verified server-side against Garage and
+   * discarded — it is never stored, and `AccessKeys` has no column for one. It
+   * is cleared from React state here on every outcome, success or failure, so a
+   * failed attempt does not leave it sitting in a form the user walks away
+   * from.
+   */
+  async function claimKey(e: React.FormEvent) {
+    e.preventDefault();
+    const id = claimId.trim();
+    const secretValue = claimSecret.trim();
+    if (!id || !secretValue) return;
+    setClaiming(true);
+    try {
+      await api('/next-api/garage/keys/claim', {
+        method: 'POST',
+        body: { access_key_id: id, secret_access_key: secretValue },
+      });
+      toast.success('Key claimed');
+      setClaimId('');
+      setClaimOpen(false);
+      await refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Claim failed');
+    } finally {
+      setClaimSecret('');
+      setClaiming(false);
+    }
+  }
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-5xl">
       <div className="mb-6">
@@ -124,9 +167,14 @@ function KeysView() {
               creation.
             </p>
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" /> New key
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setClaimOpen(true)}>
+              <KeyRound className="mr-2 h-4 w-4" /> Claim existing
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" /> New key
+            </Button>
+          </div>
           <OtpGatedDialog
             open={createOpen}
             onOpenChange={setCreateOpen}
@@ -159,6 +207,61 @@ function KeysView() {
               </DialogFooter>
             </form>
           </OtpGatedDialog>
+
+          <Dialog open={claimOpen} onOpenChange={setClaimOpen}>
+            <DialogContent>
+              <form onSubmit={claimKey}>
+                <DialogHeader>
+                  <DialogTitle>Claim an existing key</DialogTitle>
+                  <DialogDescription>
+                    For a key made outside this app — with the Garage CLI, or
+                    before you had an account here. Holding the secret is what
+                    proves the key is yours. It is checked against the cluster
+                    and discarded; it is never stored here, and nothing on this
+                    site can show it to you again.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="claim-key-id">Access key ID</Label>
+                    <Input
+                      id="claim-key-id"
+                      value={claimId}
+                      onChange={(e) => setClaimId(e.target.value)}
+                      placeholder="GK31c5b1f2a9d4e7c0"
+                      className="font-mono"
+                      autoComplete="off"
+                      maxLength={128}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="claim-key-secret">Secret access key</Label>
+                    <Input
+                      id="claim-key-secret"
+                      type="password"
+                      value={claimSecret}
+                      onChange={(e) => setClaimSecret(e.target.value)}
+                      className="font-mono"
+                      autoComplete="off"
+                      maxLength={512}
+                      required
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button
+                    type="submit"
+                    disabled={
+                      claiming || !claimId.trim() || !claimSecret.trim()
+                    }
+                  >
+                    {claiming ? 'Checking...' : 'Claim key'}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
@@ -195,7 +298,12 @@ function KeysView() {
       <Card>
         <CardHeader>
           <CardTitle>Your keys</CardTitle>
-          <CardDescription>{keys.length} active</CardDescription>
+          <CardDescription>
+            {keys.filter((k) => k.expired !== true).length} active
+            {keys.some((k) => k.expired === true)
+              ? `, ${keys.filter((k) => k.expired === true).length} expired`
+              : ''}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -219,6 +327,11 @@ function KeysView() {
                   >
                     <TableCell className="font-medium">
                       {k.name || '(unnamed)'}
+                      {k.expired === true && (
+                        <Badge variant="secondary" className="ml-2">
+                          expired
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell className="font-mono text-xs">
                       {k.garage_key_id}

@@ -44,7 +44,7 @@ interface Point {
 }
 
 interface History {
-  nodes: Array<{ node_id: string; node_hostname: string; node_zone: string }>;
+  nodes: Array<{ node_id: string; node_zone: string }>;
   points: Point[];
 }
 
@@ -226,8 +226,8 @@ describe('bucketHistory', () => {
   it('keeps nodes separate and labels each with its latest identity', () => {
     const result = bucketHistory(
       [
-        row({ created: T0, node_id: 'node-b', node_hostname: 'old-name' }),
-        row({ created: T5, node_id: 'node-b', node_hostname: 'new-name' }),
+        row({ created: T0, node_id: 'node-b', node_zone: 'old-zone' }),
+        row({ created: T5, node_id: 'node-b', node_zone: 'new-zone' }),
         row({ created: T0 }),
       ],
       900
@@ -235,8 +235,20 @@ describe('bucketHistory', () => {
 
     // Sorted by node_id for stable chart color assignment.
     expect(result.nodes.map((n) => n.node_id)).toEqual(['node-a', 'node-b']);
-    expect(result.nodes[1].node_hostname).toBe('new-name');
+    expect(result.nodes[1].node_zone).toBe('new-zone');
     expect(result.points).toHaveLength(2);
+  });
+
+  it('never labels a node with its hostname', () => {
+    // A node is identified by its name or its key. The column survives on the
+    // row for the event differ; it must not reach this payload, which any
+    // signed-in user can read.
+    const result = bucketHistory(
+      [row({ created: T0, node_id: 'node-a', node_hostname: 'garage-1' })],
+      900
+    ) as History;
+
+    expect(result.nodes[0]).not.toHaveProperty('node_hostname');
   });
 
   it('serves every range the history endpoint advertises', () => {

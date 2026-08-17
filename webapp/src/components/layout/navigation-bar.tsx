@@ -11,6 +11,7 @@ import {
   KeyRound,
   ChartLine,
   Server,
+  ServerCog,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -76,6 +77,7 @@ export function NavigationBar({ className }: NavigationBarProps) {
     { href: '/dashboard/keys', label: 'Access Keys', icon: KeyRound },
     { href: '/dashboard/metrics', label: 'Metrics', icon: ChartLine },
     { href: '/dashboard/cluster', label: 'Cluster', icon: Server },
+    { href: '/dashboard/nodes', label: 'My Nodes', icon: ServerCog },
     { href: '/profile', label: 'Profile', icon: Settings },
   ];
 

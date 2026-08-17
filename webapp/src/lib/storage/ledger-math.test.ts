@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allocatedExcluding,
   computeStorageSummary,
   computeSummaryFromBalances,
   filterPresentClaims,
@@ -654,5 +655,36 @@ describe('positionsForAuditTrail', () => {
 
   it('returns an empty map for an empty trail', () => {
     expect(positionsForAuditTrail([], 40000).size).toBe(0);
+  });
+});
+
+/**
+ * `StorageUserBalances.allocated_gb` is the owner's TOTAL allocation, and every
+ * quota edit replaces one bucket's share of it rather than adding to it. Getting
+ * that subtraction wrong refuses increases that plainly fit, which is how a
+ * guard turns into a bug report.
+ */
+describe('allocatedExcluding', () => {
+  it('takes the bucket under edit back out of the total', () => {
+    // 30 of the 50 allocated is this bucket, so 20 is spoken for elsewhere.
+    expect(allocatedExcluding(50, 30)).toBe(20);
+  });
+
+  it('lets a lone bucket grow to the whole grant', () => {
+    // The failing case: the bucket IS the entire allocation, so nothing else
+    // reserves anything and a raise is bounded only by what was granted.
+    expect(allocatedExcluding(30, 30)).toBe(0);
+  });
+
+  it('treats an absent quota as zero', () => {
+    expect(allocatedExcluding(40, undefined)).toBe(40);
+    expect(allocatedExcluding(40, null)).toBe(40);
+  });
+
+  it('clamps a drifted balance at zero rather than inventing headroom', () => {
+    // If the cache has fallen behind the bucket's own quota, the honest answer
+    // is "nothing else is allocated", never a negative that would enlarge the
+    // room the caller appears to have.
+    expect(allocatedExcluding(5, 30)).toBe(0);
   });
 });

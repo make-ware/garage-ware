@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  NODE_KEY_CHARS,
   buildNodeNameMap,
+  isFullNodeId,
+  isNodeKey,
+  nodeKey,
   nodeLabel,
   parseNodeTags,
-  shortNodeId,
 } from './node-label';
+
+/** A realistic Garage node id: 64 hex characters. */
+const FULL_ID =
+  '1f104208aab74215c9e3a5f70b1d8c4e2b6079d3af51e8c07d24b93fa6e10852';
+const KEY = '1f104208aab74215';
 
 describe('parseNodeTags', () => {
   it('reads the name out of a name: tag', () => {
@@ -71,15 +79,59 @@ describe('parseNodeTags', () => {
   });
 });
 
-describe('shortNodeId', () => {
-  it('keeps the first 8 characters and marks the truncation', () => {
-    expect(shortNodeId('abcdef0123456789abcdef')).toBe('abcdef01…');
+describe('nodeKey', () => {
+  it('keeps the first 16 characters, as the Garage CLI prints them', () => {
+    expect(NODE_KEY_CHARS).toBe(16);
+    expect(nodeKey(FULL_ID)).toBe(KEY);
+    expect(nodeKey(FULL_ID)).toHaveLength(16);
   });
 
-  it('returns a short id whole — an ellipsis must mean something was cut', () => {
-    expect(shortNodeId('node-a')).toBe('node-a');
-    expect(shortNodeId('abcdefgh')).toBe('abcdefgh');
-    expect(shortNodeId('abcdefghi')).toBe('abcdefgh…');
+  it('adds no ellipsis — the key must be a valid prefix of the id', () => {
+    // It is matched back against the layout server-side to recover the full
+    // id, which `a1b2c3d4…` could never be.
+    expect(nodeKey(FULL_ID)).not.toContain('…');
+    expect(FULL_ID.startsWith(nodeKey(FULL_ID))).toBe(true);
+  });
+
+  it('is idempotent, so it is safe at any boundary', () => {
+    expect(nodeKey(nodeKey(FULL_ID))).toBe(KEY);
+  });
+
+  it('lowercases, so a pasted id and a stored key compare equal', () => {
+    expect(nodeKey(FULL_ID.toUpperCase())).toBe(KEY);
+  });
+
+  it('returns a short id whole — every test fixture in the repo is one', () => {
+    expect(nodeKey('node-a')).toBe('node-a');
+    expect(nodeKey('n1')).toBe('n1');
+  });
+});
+
+describe('isFullNodeId / isNodeKey', () => {
+  it('accepts a real 64-character id', () => {
+    expect(isFullNodeId(FULL_ID)).toBe(true);
+  });
+
+  it('REFUSES a node key — the claim route must never take a prefix', () => {
+    // The key is public: it is on screen, in every payload and in every URL.
+    // Accepting it as proof of node control would hand ownership of any node
+    // to anyone who can read a page.
+    expect(isFullNodeId(KEY)).toBe(false);
+    expect(isFullNodeId(FULL_ID.slice(0, 63))).toBe(false);
+    expect(isFullNodeId(FULL_ID + 'a')).toBe(false);
+  });
+
+  it('refuses anything that is not lowercase hex', () => {
+    expect(isFullNodeId(FULL_ID.toUpperCase())).toBe(false);
+    expect(isFullNodeId('*')).toBe(false);
+    expect(isFullNodeId('self')).toBe(false);
+  });
+
+  it('recognises a key, and rejects the wildcards Garage would accept', () => {
+    expect(isNodeKey(KEY)).toBe(true);
+    expect(isNodeKey(FULL_ID)).toBe(false);
+    expect(isNodeKey('*')).toBe(false);
+    expect(isNodeKey('self')).toBe(false);
   });
 });
 
@@ -88,21 +140,32 @@ describe('nodeLabel', () => {
     expect(nodeLabel('vault-01', 'abcdef0123456789')).toBe('vault-01');
   });
 
-  it('falls back to the short id', () => {
-    expect(nodeLabel(null, 'abcdef0123456789')).toBe('abcdef01…');
-    expect(nodeLabel(undefined, 'abcdef0123456789')).toBe('abcdef01…');
+  it('falls back to the node key', () => {
+    expect(nodeLabel(null, FULL_ID)).toBe(KEY);
+    expect(nodeLabel(undefined, FULL_ID)).toBe(KEY);
   });
 
-  it('leaves two nodes sharing a name distinguishable by their ids', () => {
+  it('leaves two nodes sharing a name distinguishable by their keys', () => {
     // The label alone is ambiguous, which is why admin views pair it with the
-    // short id rather than showing the name on its own.
-    expect(nodeLabel('sofia', 'aaaaaaaa1111')).toBe('sofia');
-    expect(nodeLabel('sofia', 'bbbbbbbb2222')).toBe('sofia');
-    expect(shortNodeId('aaaaaaaa1111')).not.toBe(shortNodeId('bbbbbbbb2222'));
+    // key rather than showing the name on its own.
+    const a = 'aaaaaaaa11111111' + '0'.repeat(48);
+    const b = 'bbbbbbbb22222222' + '0'.repeat(48);
+    expect(nodeLabel('sofia', a)).toBe('sofia');
+    expect(nodeLabel('sofia', b)).toBe('sofia');
+    expect(nodeKey(a)).not.toBe(nodeKey(b));
   });
 });
 
 describe('buildNodeNameMap', () => {
+  it('keys by node key, not by the full id the layout carries', () => {
+    // The layout comes from Garage with full ids; every row looked up against
+    // this map carries a key. If these two disagreed, no historical row would
+    // ever resolve a name.
+    const map = buildNodeNameMap([{ id: FULL_ID, tags: ['name:vault-01'] }]);
+    expect(map.get(KEY)).toBe('vault-01');
+    expect(map.has(FULL_ID)).toBe(false);
+  });
+
   it('maps only the named nodes', () => {
     const map = buildNodeNameMap([
       { id: 'n1', tags: ['name:alpha'] },

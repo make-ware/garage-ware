@@ -13,6 +13,7 @@ import {
   HeartPulse,
   History,
   Key,
+  ServerCog,
   Users,
   Wrench,
 } from 'lucide-react';
@@ -22,6 +23,7 @@ import { cn } from '@/lib/utils';
 const links = [
   { href: '/admin', label: 'Overview', icon: Activity },
   { href: '/admin/cluster', label: 'Cluster', icon: Database },
+  { href: '/admin/nodes', label: 'Nodes', icon: ServerCog },
   { href: '/admin/events', label: 'Events', icon: CalendarClock },
   { href: '/admin/repairs', label: 'Repairs', icon: Wrench },
   { href: '/admin/users', label: 'Users', icon: Users },

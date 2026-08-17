@@ -2,9 +2,14 @@ import { z } from 'zod';
 import { BucketMutator } from '@garage-ware/shared/mutators';
 import { GarageClient, buckets, cluster } from '@/lib/garage';
 import { formatStorage } from '@/lib/format';
-import { getUserGrantedGb } from '@/lib/storage/claims';
+import { getUserPosition } from '@/lib/storage/summary';
 import { bytesToGib } from '@/lib/storage/units';
-import { HttpError, errorResponse, requireAdmin } from '@/lib/auth/server';
+import {
+  HttpError,
+  errorResponse,
+  getPbAsSuperuser,
+  requireAdmin,
+} from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,11 +39,13 @@ export async function POST(req: Request) {
     ]);
     const quotaGb = bytesToGib(info.quotas?.maxSize ?? 0);
 
-    const claimGb = await getUserGrantedGb(pb, body.user_id, {
-      onlyPresent: true,
-      layout,
-    });
-    const allocatedGb = await bucketMutator.sumAllocatedGb(body.user_id);
+    // The caller is an admin, so their own client can read the target user's
+    // balance rows — both collections are scoped `user = self || admin`.
+    const { netGrantedGb: claimGb, allocatedGb } = await getUserPosition(
+      pb,
+      body.user_id,
+      layout
+    );
     if (allocatedGb + quotaGb > claimGb) {
       throw new HttpError(
         400,
@@ -48,7 +55,8 @@ export async function POST(req: Request) {
 
     const name = info.globalAliases[0] ?? info.id;
 
-    const record = await pb.collection('Buckets').create({
+    const writePb = await getPbAsSuperuser();
+    const record = await writePb.collection('Buckets').create({
       user: body.user_id,
       garage_bucket_id: info.id,
       name,

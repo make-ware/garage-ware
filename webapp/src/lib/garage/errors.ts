@@ -17,6 +17,7 @@ export type GarageFailureCode =
   | 'timeout'
   | 'auth'
   | 'not_found'
+  | 'not_empty'
   | 'quorum'
   | 'schema'
   | 'http';
@@ -106,6 +107,28 @@ export class GarageAuthError extends GarageError {
       code: 'auth',
     });
     this.name = 'GarageAuthError';
+  }
+}
+
+/**
+ * Garage refused to delete a bucket because it still holds something.
+ *
+ * The only precondition Garage documents on either delete, and the one that
+ * makes exposing bucket deletion safe at all. It arrives as a bare `400`, so
+ * without this it would land in the generic tail of `throwForStatus` as an
+ * anonymous `GarageError` whose message depends entirely on whether Garage
+ * happened to send a `message` field — and the route could not tell "not empty"
+ * apart from any other bad request.
+ */
+export class GarageNotEmptyError extends GarageError {
+  constructor(endpoint: string, body?: unknown) {
+    super('Bucket is not empty', {
+      status: 409,
+      endpoint,
+      body,
+      code: 'not_empty',
+    });
+    this.name = 'GarageNotEmptyError';
   }
 }
 

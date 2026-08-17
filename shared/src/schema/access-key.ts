@@ -28,14 +28,24 @@ export const AccessKeyCollection = defineCollection({
       'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
     viewRule:
       'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    createRule:
-      'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    updateRule:
-      'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
-    deleteRule:
-      'user = @request.auth.id || @collection.Admins.user ?= @request.auth.id',
+    // All three write rules are null, as on NodeOwners, StorageClaims and
+    // ClusterEvents. They used to be `user = @request.auth.id || <admin>`,
+    // which meant the Route-Handler funnel was convention rather than
+    // enforcement — and once `garage_key_id` became something a user can
+    // *claim* by proving they hold a credential, convention was not enough: a
+    // browser SDK call could insert a row naming any Garage access key and
+    // itself as the owner, or repoint an existing row it already owned, and
+    // skip the proof entirely. Reads stay self-or-admin, so `loadOwned*` still
+    // resolves ownership through the caller's own client.
+    createRule: null,
+    updateRule: null,
+    deleteRule: null,
   },
   indexes: [
+    // UNIQUE, and it is the concurrency control for claiming rather than a mere
+    // constraint — the same role it plays on NodeOwners.node_id. Two
+    // simultaneous claims mean one insert and one uniqueness violation, which
+    // the route maps to 409; there is no pre-flight existence check to race.
     'CREATE UNIQUE INDEX `idx_accesskeys_garage_key_id` ON `AccessKeys` (`garage_key_id`)',
     'CREATE INDEX `idx_accesskeys_user` ON `AccessKeys` (`user`)',
   ],

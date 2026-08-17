@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { AccessKeyMutator } from '@garage-ware/shared/mutators';
 import { GarageClient, keys } from '@/lib/garage';
-import { HttpError, errorResponse, requireAdmin } from '@/lib/auth/server';
+import {
+  HttpError,
+  errorResponse,
+  getPbAsSuperuser,
+  requireAdmin,
+} from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,7 +32,8 @@ export async function POST(req: Request) {
     const garage = GarageClient.fromEnv();
     const info = await keys.getKeyInfo(garage, body.garage_key_id);
 
-    const record = await pb.collection('AccessKeys').create({
+    const writePb = await getPbAsSuperuser();
+    const record = await writePb.collection('AccessKeys').create({
       user: body.user_id,
       garage_key_id: info.accessKeyId,
       name: info.name,

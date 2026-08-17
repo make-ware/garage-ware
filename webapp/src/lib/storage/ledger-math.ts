@@ -14,6 +14,7 @@
 import type { StorageClaim, StorageTransfer } from '@garage-ware/shared';
 import { sumEntries } from '@garage-ware/shared/mutators';
 import type { ClusterLayout } from '@/lib/garage';
+import { type NodeKey, nodeKey } from '@/lib/node-label';
 import { bytesToGib } from '@/lib/storage/units';
 
 export { sumEntries };
@@ -23,9 +24,16 @@ export function sumTransfers(transfers: readonly StorageTransfer[]): number {
   return transfers.reduce((sum, t) => sum + (Number(t.quota_gb) || 0), 0);
 }
 
-/** Ids of the nodes currently carrying a role in the layout. */
-export function presentNodeIdSet(layout: ClusterLayout): Set<string> {
-  return new Set(layout.roles.map((r) => r.id));
+/**
+ * Keys of the nodes currently carrying a role in the layout.
+ *
+ * **Keyed, not raw.** The layout comes straight from Garage and carries full
+ * node ids; every ledger row carries a node key. Normalising here — and in
+ * `nodeUsableGbInLayout` below — is what keeps every comparison in the
+ * accounting path key-to-key. See `lib/node-label.ts`.
+ */
+export function presentNodeIdSet(layout: ClusterLayout): Set<NodeKey> {
+  return new Set(layout.roles.map((r) => nodeKey(r.id)));
 }
 
 /**
@@ -41,7 +49,7 @@ export function filterPresentClaims(
 ): StorageClaim[] {
   if (!layout) return [...claims];
   const present = presentNodeIdSet(layout);
-  return claims.filter((c) => present.has(c.node_id));
+  return claims.filter((c) => present.has(nodeKey(c.node_id)));
 }
 
 /**
@@ -57,13 +65,21 @@ export function nodeUsableGbFrom(
   return bytesToGib(capacityBytes) / Math.max(replicationFactor, 1);
 }
 
-/** Look a node's usable GB up directly from a layout. */
+/**
+ * Look a node's usable GB up directly from a layout, by node key.
+ *
+ * `nodeId` is a key, and the layout's role ids are full ids, so the match runs
+ * through `nodeKey` on both sides. Passing a full id still works — `nodeKey` is
+ * idempotent — which is what makes this safe to call from either side of the
+ * boundary.
+ */
 export function nodeUsableGbInLayout(
   layout: ClusterLayout | null | undefined,
-  nodeId: string,
+  nodeId: NodeKey,
   replicationFactor: number
 ): number | null {
-  const role = layout?.roles.find((r) => r.id === nodeId);
+  const key = nodeKey(nodeId);
+  const role = layout?.roles.find((r) => nodeKey(r.id) === key);
   return nodeUsableGbFrom(role?.capacity, replicationFactor);
 }
 
@@ -137,7 +153,7 @@ export function rollUpClaimsByUserNode(
         nodeId: claim.node_id,
         nodeZone: claim.node_zone,
         claimedGb: 0,
-        presentInLayout: present ? present.has(claim.node_id) : true,
+        presentInLayout: present ? present.has(nodeKey(claim.node_id)) : true,
         entryCount: 0,
         entries: [],
       };
@@ -176,7 +192,7 @@ export function rollUpClaimsByNode(
         nodeId: claim.node_id,
         nodeZone: claim.node_zone,
         claimedGb: 0,
-        presentInLayout: present ? present.has(claim.node_id) : true,
+        presentInLayout: present ? present.has(nodeKey(claim.node_id)) : true,
         entryCount: 0,
         entries: [],
       };
@@ -318,6 +334,28 @@ export interface ComputedStorageSummary {
   availableGb: number;
 }
 
+/**
+ * What a user's *other* buckets reserve, given their whole allocation and the
+ * current quota of the one being changed.
+ *
+ * `StorageUserBalances.allocated_gb` is the total, this bucket included, and
+ * every quota edit *replaces* this bucket's share of it rather than adding to
+ * it — so checking `allocated + next <= granted` without taking the current
+ * value back out refuses every increase on a user's largest bucket, and refuses
+ * a no-op re-save of a bucket that already fits.
+ *
+ * Clamped at zero: a balance that has drifted below this bucket's own quota
+ * would otherwise come back negative and manufacture headroom that does not
+ * exist. Failing towards "you have less room than you think" is the safe
+ * direction for a guard.
+ */
+export function allocatedExcluding(
+  allocatedGb: number,
+  bucketQuotaGb: number | undefined | null
+): number {
+  return Math.max(allocatedGb - (Number(bucketQuotaGb) || 0), 0);
+}
+
 /** The subset of a StorageNodeBalances row the arithmetic needs. */
 export interface NodeBalanceLike {
   node_id: string;
@@ -346,7 +384,7 @@ export function nodePositionsFromBalances(
     // but deliberately not projected — see NodeClaimPosition.
     nodeZone: b.node_zone || undefined,
     claimedGb: Number(b.claimed_gb) || 0,
-    presentInLayout: present ? present.has(b.node_id) : true,
+    presentInLayout: present ? present.has(nodeKey(b.node_id)) : true,
     entryCount: Number(b.entry_count) || 0,
   }));
 }

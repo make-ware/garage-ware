@@ -9,10 +9,11 @@ vi.mock('@/lib/api-client', () => ({
 }));
 
 const toastError = vi.fn();
+const toastSuccess = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
     error: (...args: unknown[]) => toastError(...args),
-    success: vi.fn(),
+    success: (...args: unknown[]) => toastSuccess(...args),
   },
 }));
 
@@ -48,9 +49,61 @@ function apply() {
   fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 }
 
+/**
+ * The node-owner form: no `userId`, so the address is typed in and resolved
+ * server-side, and `currentGb` is 0 because the recipient's existing position is
+ * simply not knowable from here.
+ */
+function renderGrantDialog() {
+  render(
+    <SetClaimDialog
+      open
+      onOpenChange={vi.fn()}
+      userEmail=""
+      nodeId="node-a"
+      nodeName="box1"
+      currentGb={0}
+      nodeFreeGb={tbToGib(10)}
+      onApplied={vi.fn()}
+    />
+  );
+}
+
 beforeEach(() => {
   api.mockReset().mockResolvedValue({});
   toastError.mockReset();
+  toastSuccess.mockReset();
+});
+
+describe('SetClaimDialog confirmation copy', () => {
+  it('reports the new total when the recipient position is known', async () => {
+    renderDialog({ currentGb: tbToGib(4) });
+    fireEvent.change(target(), { target: { value: '6' } });
+    apply();
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(String(toastSuccess.mock.calls[0][0])).toContain('now claims 6 TB');
+  });
+
+  it('reports the amount ADDED when granting by address', async () => {
+    // `currentGb` is 0 here because nobody has resolved the address yet, so the
+    // typed figure is what is being added — not what the recipient ends up
+    // holding. Reporting it as a total told an owner that a 2 TB grant to
+    // somebody already holding 5 TB had left them with 2 TB.
+    renderGrantDialog();
+    fireEvent.change(screen.getByLabelText('Recipient email'), {
+      target: { value: 'bob@example.com' },
+    });
+    fireEvent.change(screen.getByLabelText('Amount to grant'), {
+      target: { value: '2' },
+    });
+    apply();
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    const message = String(toastSuccess.mock.calls[0][0]);
+    expect(message).toContain('Granted 2 TB to bob@example.com');
+    expect(message).not.toContain('now claims');
+  });
 });
 
 describe('SetClaimDialog', () => {

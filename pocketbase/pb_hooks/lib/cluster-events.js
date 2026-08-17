@@ -105,10 +105,19 @@ function pct(fraction) {
   return (100 * fraction).toFixed(1) + "%";
 }
 
-/** A node's label for event copy. Names live in the layout, which rows do not
- * carry — the UI resolves those; this is only the fallback the row stores. */
-function shortId(nodeId) {
-  return nodeId.length > 8 ? nodeId.slice(0, 8) + "…" : nodeId;
+/**
+ * A node's label for event copy: its key, verbatim.
+ *
+ * Rows carry node keys (see pb_hooks/lib/node-key.js), so there is nothing to
+ * truncate here — this file used to keep its own 8-character shortener, whose
+ * output was frozen into `title` and shipped to non-admins.
+ *
+ * Deliberately NOT the hostname, which this used to prefer. A node is
+ * identified by its name or its key and by nothing else; names live in the
+ * layout, which rows do not carry, and the UI resolves those at display time.
+ */
+function nodeLabel(nodeId) {
+  return String(nodeId || "");
 }
 
 /** Used bytes on a partition, or null when there was no reading (total 0). */
@@ -231,7 +240,7 @@ function diffObservations(prevRows, curRows) {
     const p = prev[cur.node_id];
     if (!p) continue; // no diff base — see the docblock
 
-    const label = cur.node_hostname || shortId(cur.node_id);
+    const label = nodeLabel(cur.node_id);
     const base = {
       node_id: cur.node_id,
       node_hostname: cur.node_hostname,
@@ -473,8 +482,7 @@ function diffObservations(prevRows, curRows) {
         node_hostname: p.node_hostname,
         node_zone: p.node_zone,
         title:
-          (p.node_hostname || shortId(p.node_id)) +
-          " is no longer part of the cluster",
+          nodeLabel(p.node_id) + " is no longer part of the cluster",
         detail:
           "Garage stopped listing this node entirely. It was last seen " +
           (p.is_up ? "connected" : "disconnected") +

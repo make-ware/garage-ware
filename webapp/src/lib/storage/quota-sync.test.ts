@@ -19,6 +19,60 @@ vi.mock('@/lib/garage', () => ({
   buckets: { getBucketInfo: garageMock.getBucketInfo },
 }));
 
+/**
+ * Writes go through `getPbAsSuperuser()` since Buckets' write rules were locked
+ * to null — the `pb` argument these functions still take is the caller's client
+ * and is now read-only. `makeMockPb` registers the client it builds here, so a
+ * test asserting on `mockUpdate` is asserting on the write that actually
+ * happens.
+ *
+ * `grantedGb` / `allocatedGb` are the owner's position, which `syncQuotaToPb`
+ * checks before adopting an increase. It defaults to plenty of room, so the
+ * tests that predate that guard are unaffected by it; the ones that exercise it
+ * set `grantedGb` down.
+ *
+ * **`allocatedGb` is the owner's TOTAL allocation, this bucket included** —
+ * that is what `StorageUserBalances.allocated_gb` holds, and the guard subtracts
+ * the bucket's own current quota to get what the rest reserve. It used to be
+ * "allocated elsewhere", because the guard read `BucketMutator.sumAllocatedGb`
+ * with the bucket excluded; that aggregate reads one page of a growing
+ * collection and the accounting path may not use it.
+ */
+const superuser = vi.hoisted(() => ({
+  client: null as unknown,
+  grantedGb: 1_000_000,
+  allocatedGb: 0,
+  /** Simulates a balance read that fails, so the fail-closed path is testable. */
+  readThrows: false,
+}));
+
+vi.mock('@/lib/auth/server', () => ({
+  getPbAsSuperuser: async () => superuser.client,
+}));
+
+vi.mock('@/lib/garage/cached', () => ({
+  getCachedLayout: async () => ({ version: 1, roles: [] }),
+}));
+
+// The real `computeSummaryFromBalances` runs on top of this, so the guard's
+// arithmetic is exercised rather than stubbed. The grant rides in on
+// `received_gb`, which is node-agnostic and so passes through the layout filter
+// untouched — putting it on a node balance would need the mocked layout to
+// carry a matching role, which is a detail this file is not about.
+vi.mock('@/lib/storage/balances', () => ({
+  getUserBalances: async () => {
+    if (superuser.readThrows) throw new Error('balances unreadable');
+    return {
+      nodeBalances: [],
+      userBalance: {
+        received_gb: superuser.grantedGb,
+        sent_gb: 0,
+        allocated_gb: superuser.allocatedGb,
+      },
+    };
+  },
+}));
+
 const AVG_ENV = 'GARAGE_AVG_OBJECT_SIZE_MB';
 
 function makePbBucket(quota_gb: number, object_quota?: number): Bucket {
@@ -49,12 +103,17 @@ function makeGarageInfo(
 }
 
 function makeMockPb(updateFn = vi.fn()) {
-  return { collection: () => ({ update: updateFn }) } as never;
+  const client = { collection: () => ({ update: updateFn }) };
+  superuser.client = client;
+  return client as never;
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env[AVG_ENV];
+  superuser.grantedGb = 1_000_000;
+  superuser.allocatedGb = 0;
+  superuser.readThrows = false;
 });
 
 describe('describeQuotaDrift', () => {
@@ -272,7 +331,7 @@ describe('syncQuotaToPb', () => {
 });
 
 describe('syncUsageToPbBackground', () => {
-  it('caches bytes, objects, max_size, max_objects, and a timestamp', () => {
+  it('caches bytes, objects, max_size, max_objects, and a timestamp', async () => {
     const mockUpdate = vi.fn().mockResolvedValue({});
     const garageInfo: GarageBucket = {
       id: 'garage-1',
@@ -286,7 +345,7 @@ describe('syncUsageToPbBackground', () => {
       makePbBucket(10),
       garageInfo
     );
-    expect(mockUpdate).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mockUpdate).toHaveBeenCalledOnce());
     const [id, payload] = mockUpdate.mock.calls[0];
     expect(id).toBe('pb-bucket-1');
     expect(payload.bytes).toBe(12_345);
@@ -296,18 +355,176 @@ describe('syncUsageToPbBackground', () => {
     expect(typeof payload.usage_updated_at).toBe('string');
   });
 
-  it('defaults missing usage + quotas to 0 (no cap configured)', () => {
+  it('defaults missing usage + quotas to 0 (no cap configured)', async () => {
     const mockUpdate = vi.fn().mockResolvedValue({});
     syncUsageToPbBackground(
       makeMockPb(mockUpdate),
       makePbBucket(0),
       makeGarageInfo(null)
     );
+    // Awaited: the write resolves the superuser client first, so it lands a
+    // microtask later than it used to. Still fire-and-forget to the caller.
+    await vi.waitFor(() => expect(mockUpdate).toHaveBeenCalledOnce());
     const [, payload] = mockUpdate.mock.calls[0];
     expect(payload.bytes).toBe(0);
     expect(payload.objects).toBe(0);
     expect(payload.max_size).toBe(0);
     expect(payload.max_objects).toBe(0);
+  });
+});
+
+/**
+ * The self-heal is the one path that raises `quota_gb` — and so `allocated_gb`,
+ * via the Buckets update hook — without a human asking for it. It runs on every
+ * dashboard load, so if it could breach `sum(quota_gb) <= netGranted` there
+ * would be no request to reject and nothing to notice.
+ */
+describe('syncQuotaToPb over-allocation guard', () => {
+  it('refuses an increase the owner has no room for', async () => {
+    superuser.grantedGb = 5;
+    superuser.allocatedGb = 0;
+    const mockUpdate = vi.fn().mockResolvedValue({});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await syncQuotaToPb(
+      makeMockPb(mockUpdate),
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(20))
+    );
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(' ')).toContain('refusing');
+  });
+
+  it('adopts an increase that fits', async () => {
+    superuser.grantedGb = 50;
+    superuser.allocatedGb = 0;
+    const mockUpdate = vi.fn().mockResolvedValue({});
+
+    await syncQuotaToPb(
+      makeMockPb(mockUpdate),
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(20))
+    );
+
+    expect(mockUpdate).toHaveBeenCalledWith('pb-bucket-1', { quota_gb: 20 });
+  });
+
+  it('excludes the bucket being adopted from what is already allocated', async () => {
+    // The whole 30 GiB of allocation IS this bucket, so raising it to 45 uses
+    // 45 of the 50 granted — not 75. Counting the bucket against itself would
+    // refuse every increase on a user's largest bucket.
+    superuser.grantedGb = 50;
+    superuser.allocatedGb = 30;
+    const mockUpdate = vi.fn().mockResolvedValue({});
+
+    await syncQuotaToPb(
+      makeMockPb(mockUpdate),
+      makePbBucket(30),
+      makeGarageInfo(gibToBytes(45))
+    );
+
+    expect(mockUpdate).toHaveBeenCalledWith('pb-bucket-1', { quota_gb: 45 });
+  });
+
+  it('counts what the owner has already allocated elsewhere', async () => {
+    // 46 allocated of which 1 is this bucket, so 45 is spoken for elsewhere and
+    // a 20 GiB adoption cannot fit in 50. This is the case a naive
+    // `nextGb <= granted` would miss.
+    superuser.grantedGb = 50;
+    superuser.allocatedGb = 46;
+    const mockUpdate = vi.fn().mockResolvedValue({});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await syncQuotaToPb(
+      makeMockPb(mockUpdate),
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(20))
+    );
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('reports the refusal, so an explicit reconcile can say so', async () => {
+    // The silence is right on a dashboard load and wrong on POST /reconcile,
+    // where an admin has asked for the repair: a `synced` for a bucket nothing
+    // was written to is a success the drift page contradicts on the next
+    // render. The reason travels with it so the admin knows which it was.
+    superuser.grantedGb = 5;
+    superuser.allocatedGb = 0;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const outcome = await syncQuotaToPb(
+      makeMockPb(vi.fn()),
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(20))
+    );
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome).toHaveProperty(
+      'reason',
+      expect.stringContaining('over-allocate')
+    );
+  });
+
+  it('distinguishes "does not fit" from "could not tell"', async () => {
+    // Fails closed either way, but the two are different things to an admin:
+    // one is a decision, the other is a fault.
+    superuser.grantedGb = 1_000_000;
+    superuser.allocatedGb = 0;
+    superuser.readThrows = true;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const outcome = await syncQuotaToPb(
+      makeMockPb(vi.fn()),
+      makePbBucket(1),
+      makeGarageInfo(gibToBytes(20))
+    );
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome).toHaveProperty(
+      'reason',
+      expect.stringContaining('could not be read')
+    );
+  });
+
+  it('reports what it wrote, and reports agreement as unchanged', async () => {
+    superuser.grantedGb = 50;
+    superuser.allocatedGb = 0;
+    const mockUpdate = vi.fn().mockResolvedValue({});
+
+    expect(
+      await syncQuotaToPb(
+        makeMockPb(mockUpdate),
+        makePbBucket(1),
+        makeGarageInfo(gibToBytes(20))
+      )
+    ).toEqual({ status: 'written', quotaGb: 20 });
+
+    expect(
+      await syncQuotaToPb(
+        makeMockPb(mockUpdate),
+        makePbBucket(10),
+        makeGarageInfo(gibToBytes(10))
+      )
+    ).toEqual({ status: 'unchanged' });
+  });
+
+  it('always allows a DECREASE, whatever the position', async () => {
+    // Lowering a quota can only free capacity, so it never needs the check —
+    // and must not be blocked by a user who is already over-allocated.
+    superuser.grantedGb = 0;
+    superuser.allocatedGb = 999;
+    const mockUpdate = vi.fn().mockResolvedValue({});
+
+    await syncQuotaToPb(
+      makeMockPb(mockUpdate),
+      makePbBucket(100),
+      makeGarageInfo(gibToBytes(10))
+    );
+
+    expect(mockUpdate).toHaveBeenCalledWith('pb-bucket-1', { quota_gb: 10 });
   });
 });
 

@@ -1,9 +1,6 @@
-import {
-  StorageTransferMutator,
-  BucketMutator,
-} from '@garage-ware/shared/mutators';
+import { StorageTransferMutator } from '@garage-ware/shared/mutators';
 import { formatStorage } from '@/lib/format';
-import { getUserGrantedGb } from '@/lib/storage/claims';
+import { getUserPosition } from '@/lib/storage/summary';
 import { GarageClient, cluster } from '@/lib/garage';
 import {
   HttpError,
@@ -37,12 +34,14 @@ export async function DELETE(
     // Safety check: would the recipient be over-allocated without this transfer?
     const garage = GarageClient.fromEnv();
     const layout = await cluster.getLayout(garage);
-    const [grantedGbAfter, allocatedGb] = await Promise.all([
-      getUserGrantedGb(pb, record.to_user, { onlyPresent: true, layout }).then(
-        (g) => g - (Number(record.quota_gb) || 0)
-      ),
-      new BucketMutator(pb).sumAllocatedGb(record.to_user),
-    ]);
+    // One read, not two: the recipient is either the caller or the caller is an
+    // admin, so their own client can see these rows.
+    const { netGrantedGb, allocatedGb } = await getUserPosition(
+      pb,
+      record.to_user,
+      layout
+    );
+    const grantedGbAfter = netGrantedGb - (Number(record.quota_gb) || 0);
 
     if (grantedGbAfter < allocatedGb) {
       throw new HttpError(

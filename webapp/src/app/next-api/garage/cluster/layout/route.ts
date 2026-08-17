@@ -3,6 +3,7 @@ import {
   getCachedReplicationFactor,
 } from '@/lib/garage/cached';
 import { errorResponse, requireAdmin } from '@/lib/auth/server';
+import { nodeKey } from '@/lib/node-label';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,14 @@ export async function GET(req: Request) {
       getCachedLayout(),
       getCachedReplicationFactor(),
     ]);
-    return Response.json({ ...layout, replicationFactor });
+    // Role ids reduced to node keys. Its three readers (/admin, /admin/claims,
+    // /admin/ledger) use them only to label rows and to fill node pickers, and
+    // every row they are matched against carries a key.
+    return Response.json({
+      ...layout,
+      roles: layout.roles.map((r) => ({ ...r, id: nodeKey(r.id) })),
+      replicationFactor,
+    });
   } catch (err) {
     return errorResponse(err);
   }

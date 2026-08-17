@@ -136,9 +136,11 @@ function bucketHistory(rows, bucketSec) {
     }
     if (ms > node.labelMs) {
       node.labelMs = ms;
+      // No node_hostname. A node is identified by its name or its key and by
+      // nothing else, and this payload reaches any signed-in user; the column
+      // stays on the row for the event differ, but nothing charts it.
       node.label = {
         node_id: nodeId,
-        node_hostname: row.node_hostname || "",
         node_zone: row.node_zone || "",
       };
     }
@@ -248,6 +250,12 @@ function adminGet(baseUrl, token, path) {
  * history the charts draw from.
  */
 function scrapeOnce(app, opts) {
+  // Required here rather than at module scope for two reasons: Goja runs every
+  // callback in a fresh executor, and `__hooks` does not exist under vitest,
+  // which imports this file to drive bucketHistory. Same arrangement as the
+  // cluster-events require further down.
+  const { nodeKey } = require(`${__hooks}/lib/node-key.js`);
+
   const baseUrl = $os.getenv("GARAGE_ADMIN_URL").replace(/\/+$/, "");
   const token = $os.getenv("GARAGE_ADMIN_TOKEN");
   if (!baseUrl || !token) {
@@ -331,8 +339,13 @@ function scrapeOnce(app, opts) {
 
         // Built once and used twice — written to the row, then diffed — so the
         // timeline can never describe a sample different from the stored one.
+        //
+        // NOTE the three joins above (statsSuccess, rolesById, node itself) run
+        // on the FULL id, because that is what all three Garage responses are
+        // keyed by. Only the observation carries the key: nothing this hook
+        // writes may hold a full node id. See pb_hooks/lib/node-key.js.
         const observation = {
-          node_id: node.id,
+          node_id: nodeKey(node.id),
           node_hostname: node.hostname || "",
           node_zone: (node.role && node.role.zone) || "",
           is_up: !!node.isUp,

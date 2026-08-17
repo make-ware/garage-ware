@@ -31,7 +31,7 @@ import {
 } from '@/lib/metrics/data-coverage';
 import { CATEGORY_LABELS, SEVERITY_LABEL } from '@/lib/cluster-timeline';
 import type { ClusterNodeItem, ClusterTimelineEvent } from '@/lib/types';
-import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
+import { nodeKey, nodeLabel, parseNodeTags } from '@/lib/node-label';
 import { cn } from '@/lib/utils';
 
 interface NodeDetailsDialogProps {
@@ -46,13 +46,6 @@ interface NodeDetailsDialogProps {
    * which is what a page that doesn't fetch the timeline wants.
    */
   openEventsByNode?: Map<string, ClusterTimelineEvent[]>;
-  /**
-   * Show the node's full Garage id instead of its short form. **Admin pages
-   * only.** The id is the public key a node is added to the cluster with, so
-   * it is treated as a secret everywhere else — `shortNodeId` is enough to
-   * tell two nodes apart, which is all a user needs it for.
-   */
-  revealNodeId?: boolean;
   /**
    * node id → network address. Only ever passed on the admin page; omitting it
    * hides the address row entirely, since the non-admin payload never carries
@@ -209,7 +202,6 @@ export function NodeDetailsDialog({
   replicationFactor,
   latestMetrics,
   openEventsByNode,
-  revealNodeId,
   addrByNodeId,
 }: NodeDetailsDialogProps) {
   // Selection clears the instant the dialog is dismissed, but Radix keeps the
@@ -255,7 +247,6 @@ export function NodeDetailsDialog({
             coverage={coverageByNode?.byNode.get(shown.id) ?? null}
             medianBytesPerPartition={coverageByNode?.median ?? null}
             openEvents={openEventsByNode?.get(shown.id) ?? []}
-            revealNodeId={revealNodeId ?? false}
             addr={
               addrByNodeId ? (addrByNodeId.get(shown.id) ?? null) : undefined
             }
@@ -273,7 +264,6 @@ function NodeDetailsBody({
   coverage,
   medianBytesPerPartition,
   openEvents,
-  revealNodeId,
   addr,
 }: {
   item: ClusterNodeItem;
@@ -282,7 +272,6 @@ function NodeDetailsBody({
   coverage: NodeCoverage | null;
   medianBytesPerPartition: number | null;
   openEvents: ClusterTimelineEvent[];
-  revealNodeId: boolean;
   addr?: string | null;
 }) {
   const usableGib = nodeUsableGbFrom(item.capacity, replicationFactor);
@@ -303,9 +292,13 @@ function NodeDetailsBody({
           {nodeLabel(name, item.id)}
         </DialogTitle>
         <DialogDescription className="break-all font-mono text-xs">
-          {/* Short by default. The full id is the key a node joins the cluster
-              with — admin surfaces only. */}
-          {revealNodeId ? item.id : shortNodeId(item.id)}
+          {/* The node key, on every page including the admin ones. There used
+              to be a `revealNodeId` prop that showed the full id to admins;
+              it was deleted rather than re-plumbed. The full id is the
+              credential the node-claim route accepts, an admin who needs one
+              reads it from `garage status`, and a render site that exists is a
+              render site that can end up on the wrong page. */}
+          {nodeKey(item.id)}
         </DialogDescription>
         <div className="flex flex-wrap items-center gap-1 pt-1">
           {item.isUp === null ? (

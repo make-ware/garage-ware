@@ -6,6 +6,7 @@ import {
   errorResponse,
   getServerUser,
   isUserAdmin,
+  getPbAsSuperuser,
 } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -30,22 +31,56 @@ export async function GET(req: Request) {
         const result = await accessKeys.getList(1, 200, undefined, undefined, [
           'user',
         ]);
-        return Response.json({ items: result.items });
+        return Response.json({ items: await withExpiry(result.items) });
       }
       const result = await accessKeys.listByUser(requestedUserId!);
-      return Response.json({ items: result.items });
+      return Response.json({ items: await withExpiry(result.items) });
     }
 
     const result = await accessKeys.listByUser(user.id);
-    return Response.json({ items: result.items });
+    return Response.json({ items: await withExpiry(result.items) });
   } catch (err) {
     return errorResponse(err);
   }
 }
 
+/**
+ * Attach Garage's `expired` flag to each row.
+ *
+ * `AccessKeys` deliberately has no `expired` column — expiry is Garage state
+ * and mirroring it would be duplicating what Garage owns. `ListKeys` reports it
+ * for every key in the cluster in **one** request, so the join costs a single
+ * call however many keys the caller has, and no row goes stale.
+ *
+ * Degrades rather than fails: if Garage is unreachable the list still renders
+ * with `expired: null`, which the UI shows as unknown. A key list that refuses
+ * to load because the cluster is down would be the worse trade — the rows come
+ * from PocketBase and are perfectly readable.
+ */
+async function withExpiry<T extends { garage_key_id: string }>(
+  items: T[]
+): Promise<(T & { expired: boolean | null })[]> {
+  if (items.length === 0) return [];
+  let expiredById = new Map<string, boolean>();
+  try {
+    const garage = GarageClient.fromEnv();
+    const all = await keys.listKeys(garage);
+    expiredById = new Map(all.map((k) => [k.id, k.expired ?? false]));
+  } catch (err) {
+    console.error('[keys] expiry lookup failed:', err);
+    return items.map((item) => ({ ...item, expired: null }));
+  }
+  return items.map((item) => ({
+    ...item,
+    expired: expiredById.get(item.garage_key_id) ?? null,
+  }));
+}
+
 export async function POST(req: Request) {
   try {
-    const { pb, user } = await getServerUser(req);
+    // No `pb`: AccessKeys' write rules are null, so the create below is a
+    // superuser write.
+    const { user } = await getServerUser(req);
     const body = CreateBody.parse(await req.json());
 
     const garage = GarageClient.fromEnv();
@@ -53,7 +88,8 @@ export async function POST(req: Request) {
 
     let pbRecord;
     try {
-      pbRecord = await pb.collection('AccessKeys').create({
+      const writePb = await getPbAsSuperuser();
+      pbRecord = await writePb.collection('AccessKeys').create({
         user: user.id,
         garage_key_id: created.accessKeyId,
         name: body.name,

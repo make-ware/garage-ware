@@ -38,7 +38,7 @@ import {
 import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import { api } from '@/lib/api-client';
 import { formatPbDate, formatSignedStorage, formatStorage } from '@/lib/format';
-import { buildNodeNameMap, nodeLabel, shortNodeId } from '@/lib/node-label';
+import { buildNodeNameMap, nodeKey, nodeLabel } from '@/lib/node-label';
 import { NodeIdentity } from '@/components/cluster/node-identity';
 import type { AdminUser, LayoutResponse } from '@/lib/admin-types';
 import {
@@ -304,8 +304,8 @@ function AdminClaimsView() {
       // outcome identically is what makes that visible.
       const nodeName = nodeNames.get(formNode) ?? null;
       const named = nodeName
-        ? `${nodeName} (${shortNodeId(formNode)})`
-        : shortNodeId(formNode);
+        ? `${nodeName} (${nodeKey(formNode)})`
+        : nodeKey(formNode);
       toast.success(
         `${userById.get(formUser)?.email ?? 'User'} now claims ${formatStorage(
           selectedPairEffectiveGb + formQuotaGib
@@ -394,7 +394,7 @@ function AdminClaimsView() {
                         {nodeLabel(r.name, r.id)}
                         {r.name ? (
                           <span className="ml-2 font-mono text-xs text-muted-foreground">
-                            {shortNodeId(r.id)}
+                            {nodeKey(r.id)}
                           </span>
                         ) : null}
                       </SelectItem>

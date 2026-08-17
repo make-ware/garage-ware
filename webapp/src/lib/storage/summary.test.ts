@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getStorageSummariesForUsers, getUserStorageSummary } from './summary';
+import {
+  getStorageSummariesForUsers,
+  getUserPosition,
+  getUserStorageSummary,
+} from './summary';
 import { computeStorageSummary } from './ledger-math';
 import { GIBIBYTE } from './units';
 import type { ClusterLayout } from '@/lib/garage';
@@ -303,6 +307,55 @@ describe('getUserStorageSummary (balance-backed)', () => {
     // One roll-up row, regardless of how many entries produced it.
     expect(summary.nodeClaims).toHaveLength(1);
     expect(summary.nodeClaims[0].entryCount).toBe(5000);
+  });
+});
+
+/**
+ * The call every guard on the per-user invariant now makes. It has to give the
+ * same numbers as the full summary — the difference is only the two transfer-row
+ * queries it does not run — because the whole reason it exists is that the grant
+ * and the allocation used to be fetched from two different places and could
+ * disagree.
+ */
+describe('getUserPosition', () => {
+  it('agrees with the full summary and skips the transfer reads', async () => {
+    addClaim('u1', 'node-a', 100);
+    addTransfer('u1', 'u2', 30);
+    addTransfer('u3', 'u1', 5);
+    addBucket('u1', 25);
+    materialize();
+
+    listCalls = 0;
+    const position = await getUserPosition(fakePb(), 'u1', layout());
+    const positionReads = listCalls;
+
+    listCalls = 0;
+    const full = await getUserStorageSummary(fakePb(), 'u1', layout());
+
+    expect(position.netGrantedGb).toBe(full.netGrantedGb);
+    expect(position.allocatedGb).toBe(full.allocatedGb);
+    expect(position.availableGb).toBe(full.availableGb);
+    expect(positionReads).toBeLessThan(listCalls);
+    // Balances hold sums, not rows; the handoffs are the caller's business.
+    expect(position.sentTransfers).toEqual([]);
+  });
+
+  it('values a claim on a node missing from the layout at zero', async () => {
+    addClaim('u1', 'node-a', 100);
+    addClaim('u1', 'node-gone', 500);
+    materialize();
+
+    const position = await getUserPosition(fakePb(), 'u1', layout());
+
+    expect(position.netGrantedGb).toBe(100);
+  });
+
+  it('returns a zeroed position for a user with no rows at all', async () => {
+    const position = await getUserPosition(fakePb(), 'nobody', layout());
+
+    expect(position.netGrantedGb).toBe(0);
+    expect(position.allocatedGb).toBe(0);
+    expect(position.availableGb).toBe(0);
   });
 });
 

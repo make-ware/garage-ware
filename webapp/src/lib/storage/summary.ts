@@ -1,11 +1,46 @@
 import 'server-only';
 import { StorageTransferMutator } from '@garage-ware/shared/mutators';
 import type { ClusterLayout } from '@/lib/garage';
-import { computeSummaryFromBalances } from '@/lib/storage/ledger-math';
+import {
+  computeSummaryFromBalances,
+  type ComputedStorageSummary,
+} from '@/lib/storage/ledger-math';
 import { getAllBalances, getUserBalances } from '@/lib/storage/balances';
 import type { StorageSummary, TypedPocketBase } from '@/lib/types';
 
 export type { StorageSummary };
+
+/**
+ * One user's position, in one query, without the transfer rows.
+ *
+ * **This is the call a guard should reach for.** Every check of the per-user
+ * invariant needs both halves of `sum(bucket.quota_gb) <= netGranted`, and
+ * taking them from one read makes them provably consistent. They used to come
+ * from two places — `getUserGrantedGb` for the grant and
+ * `BucketMutator.sumAllocatedGb` for the allocation — and the second read a
+ * single 1000-row page of a collection that only grows, so on a busy account it
+ * silently under-reported and the guard waved the write through.
+ *
+ * `getUserStorageSummary` is this plus two queries for the individual handoffs,
+ * which only the dashboard's transfer table wants.
+ *
+ * The numbers are the hook-maintained cache rather than the ledgers themselves;
+ * that is the whole balances design, and the nightly `storage-balance-rebuild`
+ * is what makes drift loud rather than permanent.
+ *
+ * `pb` must be able to read the target user's balance rows. Both collections
+ * are scoped `user = self || admin`, so the caller's own client suffices when
+ * they are the subject or an admin. Unlike `assertClaimDeltaAllowed` this never
+ * reads *other* users' rows, so it needs no superuser client of its own.
+ */
+export async function getUserPosition(
+  pb: TypedPocketBase,
+  userId: string,
+  layout?: ClusterLayout
+): Promise<ComputedStorageSummary> {
+  const { nodeBalances, userBalance } = await getUserBalances(pb, userId);
+  return computeSummaryFromBalances(nodeBalances, userBalance, layout);
+}
 
 /**
  * A user's complete storage position, read from the materialized balances.

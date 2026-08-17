@@ -1,35 +1,38 @@
 import 'server-only';
 import { z } from 'zod';
-import { GarageClient, repair } from '@/lib/garage';
-import {
-  errorResponse,
-  getPbAsSuperuser,
-  requireAdmin,
-} from '@/lib/auth/server';
+import { GarageClient, cluster, repair } from '@/lib/garage';
+import { resolveNodeKey } from '@/lib/garage/node-resolve';
+import type { NodeKey } from '@/lib/node-label';
+import { errorResponse, requireAdmin } from '@/lib/auth/server';
+import { writeTimelineActionRow } from '@/lib/cluster/timeline-write';
 import { REPAIR_ACTIONS, REPAIR_ACTION_IDS } from '@/lib/repair/operations';
 
 export const dynamic = 'force-dynamic';
 
 const Body = z.object({
   /**
-   * The `[A-Za-z0-9._-]+` character class is what rejects `*` — a wildcard here
-   * would fan the repair across every node in the cluster while the operator's
-   * confirmation dialog named exactly one. `self` is refused separately: it is
-   * whichever node answers the admin API, routinely not the one clicked.
-   * `launchRepair` guards both again; this is the outer of two.
+   * A node key — 16 hex characters, what every payload in the app carries.
+   *
+   * The pattern is what rejects `*`: a wildcard here would fan the repair
+   * across every node in the cluster while the operator's confirmation dialog
+   * named exactly one. Hex also rejects `self`, which is whichever node answers
+   * the admin API and routinely not the one clicked — but the explicit refusal
+   * stays, because two guards on the same thing is not one too many, and
+   * `launchRepair` makes it three.
    */
   nodeId: z
     .string()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9._-]+$/, 'nodeId must name one node')
+    .trim()
+    .toLowerCase()
+    .regex(/^[0-9a-f]{16}$/, 'nodeId must be a 16-character node key')
     .refine((v) => v !== 'self', 'nodeId must name one node, not "self"'),
   action: z.enum(REPAIR_ACTION_IDS),
 });
 
 export interface LaunchRepairResponse {
   ok: true;
-  nodeId: string;
+  /** The node key that was named, echoed back — never the resolved full id. */
+  nodeId: NodeKey;
   action: string;
   /** False when the repair ran but the timeline entry could not be written. */
   logged: boolean;
@@ -61,6 +64,13 @@ export interface LaunchRepairResponse {
  * tell the operator it hadn't, and they would click again — turning a logging
  * outage into a duplicated cluster-wide block repair. `logged: false` is how
  * the page says so instead.
+ *
+ * **It now makes a layout call**, which an earlier version of this handler
+ * deliberately did not. The browser names a node key and Garage's `?node=`
+ * takes a full id and nothing else — `lib/garage/node-resolve.ts` explains why
+ * guessing that a prefix would work is unsafe — so the key has to be resolved
+ * before the call. The read is live, not `cached.ts`: launching a repair is an
+ * action, and a stale layout must not decide which node it lands on.
  */
 export async function POST(req: Request) {
   try {
@@ -69,10 +79,13 @@ export async function POST(req: Request) {
 
     const garage = GarageClient.fromEnv();
 
-    // No layout call: Garage's own error map is the authority on whether this
-    // node exists, and fetching the layout would buy a second failure mode for
-    // no extra safety.
-    //
+    // Key -> full id. A 404 here (no such node) and a 409 (two nodes sharing a
+    // key, which needs a 64-bit collision) both come out of resolveNodeKey as
+    // HttpErrors and are reported as themselves. Garage's error map remains the
+    // authority on everything *else* about the node.
+    const layout = await cluster.getLayout(garage);
+    const fullNodeId = resolveNodeKey(layout, nodeId);
+
     // Two distinct failure shapes, and the row has to be written for both.
     // Garage reports a *per-node* problem in the envelope's `error` map, but
     // rejects a request-level one — an unknown node id, a bad token, an
@@ -84,7 +97,10 @@ export async function POST(req: Request) {
     let outcome: Awaited<ReturnType<typeof repair.launchRepair>> = null;
     let thrown: unknown = null;
     try {
-      outcome = await repair.launchRepair(garage, { nodeId, action });
+      outcome = await repair.launchRepair(garage, {
+        nodeId: fullNodeId,
+        action,
+      });
     } catch (err) {
       thrown = err;
     }
@@ -102,9 +118,11 @@ export async function POST(req: Request) {
       : (failure ??
         'Garage returned no result for this node — the repair may not have started.');
 
-    const logged = await writeTimelineRow({
+    const logged = await writeTimelineActionRow({
+      kind: 'repair',
+      logLabel: '[repairs] repair launched but',
       nodeId,
-      action,
+      newValue: action,
       title: succeeded ? copy.launched : copy.failed,
       severity: succeeded ? 'info' : 'warning',
       detail,
@@ -131,54 +149,5 @@ export async function POST(req: Request) {
       return Response.json({ error: err.message }, { status: 400 });
     }
     return errorResponse(err);
-  }
-}
-
-/**
- * Append the row. Returns whether it landed; never throws.
- *
- * `ended_at` is set equal to `occurred_at`, for two reasons. It is honest — the
- * *launch* is the instant being recorded, and we have no idea when a scrub
- * finishes, so claiming a duration would be a fabrication. And it is belt and
- * braces against the "under repair" marker: that state is
- * `source = "manual" && ended_at = ""`, which `source: 'action'` already
- * excludes, but a row that is closed the moment it opens cannot be caught by a
- * future query that keys on `ended_at` alone either.
- */
-async function writeTimelineRow(input: {
-  nodeId: string;
-  action: string;
-  title: string;
-  severity: 'info' | 'warning';
-  detail: string;
-  actorId: string;
-  actorEmail: string;
-}): Promise<boolean> {
-  const occurredAt = new Date().toISOString();
-  try {
-    const pb = await getPbAsSuperuser();
-    await pb.collection('ClusterEvents').create({
-      kind: 'repair',
-      source: 'action',
-      severity: input.severity,
-      category: 'maintenance',
-      node_id: input.nodeId,
-      node_hostname: '',
-      node_zone: '',
-      // No node name in the title: the timeline resolves names live from the
-      // layout via <NodeIdentity>, and this repo never denormalizes one onto a row.
-      title: input.title,
-      detail: input.detail,
-      // Raw, as this collection requires — the UI formats by `kind`.
-      new_value: input.action,
-      occurred_at: occurredAt,
-      ended_at: occurredAt,
-      actor_id: input.actorId,
-      actor_email: input.actorEmail,
-    });
-    return true;
-  } catch (err) {
-    console.error('[repairs] repair launched but timeline row failed', err);
-    return false;
   }
 }

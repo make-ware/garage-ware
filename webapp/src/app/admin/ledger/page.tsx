@@ -35,7 +35,7 @@ import {
   formatSignedStorage,
   formatStorage,
 } from '@/lib/format';
-import { buildNodeNameMap, nodeLabel, shortNodeId } from '@/lib/node-label';
+import { buildNodeNameMap, nodeKey, nodeLabel } from '@/lib/node-label';
 import { NodeIdentity } from '@/components/cluster/node-identity';
 import type { AdminUser, LayoutResponse } from '@/lib/admin-types';
 import {
@@ -256,7 +256,7 @@ function AdminLedgerView() {
                       {nodeLabel(r.name, r.id)}
                       {r.name ? (
                         <span className="ml-2 font-mono text-xs text-muted-foreground">
-                          {shortNodeId(r.id)}
+                          {nodeKey(r.id)}
                         </span>
                       ) : null}
                     </SelectItem>

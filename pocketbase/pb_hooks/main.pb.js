@@ -70,7 +70,7 @@
 // for the same Goja reason as the other helpers.
 
 onRecordCreateRequest((e) => {
-  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { writeClaimAudit, resolveActor } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
   const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   withRecordTx(e, (txApp) => {
@@ -81,8 +81,7 @@ onRecordCreateRequest((e) => {
       claim: e.record,
       previousGb: 0,
       newGb: amountGb,
-      auth: e.auth,
-      source: "api",
+      actor: resolveActor(e),
     });
     applyClaimDelta(txApp, {
       userId: e.record.getString("user"),
@@ -96,7 +95,7 @@ onRecordCreateRequest((e) => {
 }, "StorageClaims");
 
 onRecordUpdateRequest((e) => {
-  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { writeClaimAudit, resolveActor } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
   const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   // original() is the record as it was loaded from the DB, before the request
@@ -115,8 +114,7 @@ onRecordUpdateRequest((e) => {
       claim: e.record,
       previousGb: previousGb,
       newGb: newGb,
-      auth: e.auth,
-      source: "api",
+      actor: resolveActor(e),
     });
 
     if (previousUserId === userId && previousNodeId === nodeId) {
@@ -152,7 +150,7 @@ onRecordUpdateRequest((e) => {
 }, "StorageClaims");
 
 onRecordDeleteRequest((e) => {
-  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { writeClaimAudit, resolveActor } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyClaimDelta } = require(`${__hooks}/lib/storage-balance.js`);
   const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
   const previousGb = e.record.getFloat("quota_gb");
@@ -165,8 +163,7 @@ onRecordDeleteRequest((e) => {
       claim: e.record,
       previousGb: previousGb,
       newGb: 0,
-      auth: e.auth,
-      source: "api",
+      actor: resolveActor(e),
     });
     applyClaimDelta(txApp, {
       userId: userId,
@@ -186,7 +183,7 @@ onRecordDeleteRequest((e) => {
 // first would leave the trail claiming a deletion that a failed request never
 // performed. The deleted claim records stay readable in memory afterwards.
 onRecordDeleteRequest((e) => {
-  const { writeClaimAudit } = require(`${__hooks}/lib/claim-audit.js`);
+  const { writeClaimAudit, resolveActor } = require(`${__hooks}/lib/claim-audit.js`);
   const { applyTransferDelta } = require(`${__hooks}/lib/storage-balance.js`);
   const { withRecordTx } = require(`${__hooks}/lib/record-tx.js`);
 
@@ -260,7 +257,7 @@ onRecordDeleteRequest((e) => {
         claim: snapshot.claim,
         previousGb: snapshot.previousGb,
         newGb: 0,
-        auth: e.auth,
+        actor: resolveActor(e),
         source: "cascade",
         userEmail: userEmail,
       });

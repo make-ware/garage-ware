@@ -11,7 +11,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api-client';
 import { formatBytes } from '@/lib/format';
-import { nodeLabel, parseNodeTags, shortNodeId } from '@/lib/node-label';
+import { nodeKey, nodeLabel, parseNodeTags } from '@/lib/node-label';
 import type { ClusterHealth, ClusterStatus } from '@/lib/garage';
 import type { LayoutResponse } from '@/lib/admin-types';
 
@@ -132,7 +132,7 @@ export default function AdminOverviewPage() {
                       <div className="truncate text-xs text-muted-foreground font-mono">
                         {/* The short id joins this line only when the line above
                           is a name — otherwise it would appear twice. */}
-                        {name ? `${shortNodeId(n.id)} · ` : ''}
+                        {name ? `${nodeKey(n.id)} · ` : ''}
                         {n.addr ?? '—'} · {n.role?.zone ?? 'no zone'}
                       </div>
                     </div>

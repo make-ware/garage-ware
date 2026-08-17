@@ -4,7 +4,7 @@ import { BucketInputSchema } from '@garage-ware/shared/schema';
 import type { Bucket } from '@garage-ware/shared';
 import { GarageClient, buckets, cluster } from '@/lib/garage';
 import { formatStorage } from '@/lib/format';
-import { getUserGrantedGb } from '@/lib/storage/claims';
+import { getUserPosition } from '@/lib/storage/summary';
 import { gibToBytes } from '@/lib/storage/units';
 import { maxObjectsForQuotaGib } from '@/lib/storage/object-quota';
 import { refreshBucketsFromGarageBackground } from '@/lib/storage/quota-sync';
@@ -14,6 +14,7 @@ import {
   errorResponse,
   getServerUser,
   isUserAdmin,
+  getPbAsSuperuser,
 } from '@/lib/auth/server';
 
 export const dynamic = 'force-dynamic';
@@ -130,14 +131,13 @@ export async function POST(req: Request) {
     const { pb, user } = await getServerUser(req);
     const body = CreateBody.parse(await req.json());
 
-    const bucketMutator = new BucketMutator(pb);
     const garage = GarageClient.fromEnv();
     const layout = await cluster.getLayout(garage);
-    const granted = await getUserGrantedGb(pb, user.id, {
-      onlyPresent: true,
-      layout,
-    });
-    const allocated = await bucketMutator.sumAllocatedGb(user.id);
+    // Both halves of the invariant from one balance read, so they cannot
+    // disagree. Layout-filtered: a claim on a node that has left the cluster
+    // values at zero and cannot back a new bucket.
+    const { netGrantedGb: granted, allocatedGb: allocated } =
+      await getUserPosition(pb, user.id, layout);
     if (allocated + body.quota_gb > granted) {
       throw new HttpError(
         400,
@@ -160,7 +160,8 @@ export async function POST(req: Request) {
 
     let pbRecord;
     try {
-      pbRecord = await pb.collection('Buckets').create({
+      const writePb = await getPbAsSuperuser();
+      pbRecord = await writePb.collection('Buckets').create({
         user: user.id,
         garage_bucket_id: created.id,
         name: body.name,

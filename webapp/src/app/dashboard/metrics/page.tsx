@@ -46,7 +46,7 @@ import {
   MIN_PEER_READINGS,
   type NodeCoverage,
 } from '@/lib/metrics/data-coverage';
-import { buildNodeNameMap, nodeLabel } from '@/lib/node-label';
+import { buildNodeNameMap, nodeKey, nodeLabel } from '@/lib/node-label';
 import { cn } from '@/lib/utils';
 
 const RANGES = ['6h', '24h', '7d', '30d'] as const;
@@ -74,9 +74,14 @@ const compactNumber = new Intl.NumberFormat('en', {
   maximumFractionDigits: 1,
 });
 
-/** Chart series key for a node — short, and CSS-var safe (hex id). */
+/**
+ * Chart series key for a node — CSS-var safe, since a node key is hex.
+ *
+ * The whole key, not a slice of it: two nodes sharing the first 8 characters
+ * would otherwise share a colour slot.
+ */
 function nodeKeyFor(node: MetricNode): string {
-  return `n${node.node_id.slice(0, 8)}`;
+  return `n${nodeKey(node.node_id)}`;
 }
 
 /**
