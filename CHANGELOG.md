@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.10.0](https://github.com/make-ware/garage-ware/compare/v1.9.0...v1.10.0) (2026-08-19)
+
+
+### Features
+
+* add feature flags for deployments ([b4cb7fa](https://github.com/make-ware/garage-ware/commit/b4cb7fa618e378103548ac4710028826b9f9ef08))
+* add node and key claim mechanism ([60961a6](https://github.com/make-ware/garage-ware/commit/60961a695a1c87e1bc2d569e264124ebf2896c5c))
+* cluster events ([93cc768](https://github.com/make-ware/garage-ware/commit/93cc76866662ed6b273acdfd72e470f0e765c5a4))
+
 ## [1.9.0](https://github.com/make-ware/garage-ware/compare/v1.8.3...v1.9.0) (2026-08-16)
 
 
