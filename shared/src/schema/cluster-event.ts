@@ -2,6 +2,7 @@ import {
   baseSchema,
   DateField,
   defineCollection,
+  NumberField,
   SelectField,
   TextField,
 } from 'pocketbase-zod-schema';
@@ -64,10 +65,28 @@ export const CLUSTER_EVENT_KINDS = [
 ] as const;
 
 /**
+ * The kinds that describe a **condition** rather than a transition: something
+ * that starts, persists, and later stops. They are the only rows the detector
+ * ever leaves open — see the `ended_at` docblock for the three-state rule.
+ *
+ * The other eleven kinds are instants. `capacity_changed` or `tags_changed` has
+ * no inverse to close on: the capacity is simply the new capacity from then on.
+ * Only these two have a state that can be re-read on a later scrape and found
+ * to be over — a node answering again, or being listed with a role again.
+ *
+ * **The canonical copy.** pocketbase/pb_hooks/lib/cluster-events.js re-declares
+ * it, because a Goja hook cannot import from this workspace, and
+ * cluster-events-lib.test.ts asserts the two are identical — the same
+ * arrangement as DISK_CHANGE_TOLERANCE and its siblings.
+ */
+export const ONGOING_KINDS = ['node_state', 'node_removed'] as const;
+
+/**
  * Who wrote a row.
  *
  * **`action` is deliberately not `manual`.** "Under repair" is
- * `source = "manual" && ended_at = ""` (ClusterEventMutator.listOpenManual),
+ * a `manual` row with `ended_at = ""` (ClusterEventMutator.listOpen, split on
+ * source by the caller),
  * and launching a repair is instantaneous — nothing ever closes it. A repair
  * row written as `manual` would pin its node "under repair" for ever, amber on
  * every node card, until somebody hand-closed a row that was never open. A
@@ -167,14 +186,38 @@ export const ClusterEventSchema = z
      */
     occurred_at: DateField(),
     /**
-     * Empty means still open. An open manual row pinned to a node is what puts
-     * that node in the "under repair" state on /admin/events — one rule, no
-     * extra column, and closing the row is what clears it.
+     * When it stopped. Three states, one column:
+     *
+     *   ended_at = ""            still open — an unresolved condition
+     *   ended_at = occurred_at   an instant: the eleven point-in-time kinds,
+     *                            and every `action` row (see timeline-write.ts,
+     *                            which has stamped this since it was written)
+     *   ended_at > occurred_at   a resolved condition; the pair bounds it
+     *
+     * An open row pinned to a node is what marks that node on the cluster map —
+     * "under repair" for a `manual` row, the condition's own word for a
+     * detector one. One rule, no status column, and closing the row is what
+     * clears the marker.
+     *
+     * Rows written before this rule existed all had it empty, whatever they
+     * described. 1787800000_close_legacy_events.js is what makes the rule true
+     * of the history as well as of new rows.
      */
     ended_at: DateField().optional(),
     annotation: TextField({ max: 2000 }).optional(),
     annotated_by: TextField({ max: 255 }).optional(),
     annotated_at: DateField().optional(),
+    /**
+     * How many times an ONGOING_KINDS condition has *opened* on this row.
+     *
+     * 1 when the detector opens one, incremented when the same condition
+     * recurs within FLAP_WINDOW_SEC and re-opens this row rather than appending
+     * a new one — which is what keeps a flapping node to a single timeline
+     * entry. 0 on every point-in-time row, and on every row predating the
+     * column, since an absent PocketBase number field reads back as 0; the UI
+     * renders the count only from 2 up.
+     */
+    occurrence_count: NumberField({ min: 0 }).int().default(0),
     /** Who wrote a manual row. Detector rows leave both empty. */
     actor_id: TextField({ max: 32 }).optional(),
     actor_email: TextField({ max: 255 }).optional(),
@@ -198,6 +241,7 @@ export const ClusterEventInputSchema = z.object({
   annotation: z.string().max(2000).optional(),
   annotated_by: z.string().max(255).optional(),
   annotated_at: z.string().optional(),
+  occurrence_count: z.number().int().min(0).optional(),
   actor_id: z.string().max(32).optional(),
   actor_email: z.string().max(255).optional(),
 });
@@ -231,6 +275,7 @@ export default ClusterEventCollection;
 export type ClusterEvent = z.infer<typeof ClusterEventSchema>;
 export type ClusterEventInput = z.infer<typeof ClusterEventInputSchema>;
 export type ClusterEventKind = (typeof CLUSTER_EVENT_KINDS)[number];
+export type ClusterEventOngoingKind = (typeof ONGOING_KINDS)[number];
 export type ClusterEventSource = (typeof CLUSTER_EVENT_SOURCES)[number];
 export type ClusterEventSeverity = (typeof CLUSTER_EVENT_SEVERITIES)[number];
 export type ClusterEventCategory = (typeof CLUSTER_EVENT_CATEGORIES)[number];

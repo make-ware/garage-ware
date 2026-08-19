@@ -10,8 +10,13 @@ import {
   DATA_DROP_MIN_BYTES,
   DATA_DROP_PCT,
   DISK_CHANGE_TOLERANCE,
+  FLAP_WINDOW_SEC,
+  ONGOING_KINDS,
+  conditionActive,
   diffObservations,
+  reconcileOngoing,
 } from '../../../../pocketbase/pb_hooks/lib/cluster-events.js';
+import { ONGOING_KINDS as SHARED_ONGOING_KINDS } from '@garage-ware/shared';
 
 interface Observation {
   node_id: string;
@@ -39,6 +44,35 @@ interface Event {
   detail: string;
   previous_value: string;
   new_value: string;
+  /** True when this event OPENS a condition rather than recording an instant. */
+  ongoing: boolean;
+}
+
+/** A row as `readOpenConditions` hands it to `reconcileOngoing`. */
+interface OpenRow {
+  id: string;
+  kind: string;
+  node_id: string;
+  /** '' for open; any value means closed, and inside the flap window. */
+  ended_at: string;
+  occurrence_count: number;
+}
+
+interface Plan {
+  creates: Event[];
+  reopens: Array<{ id: string; occurrence_count: number }>;
+  closes: Array<{ id: string }>;
+}
+
+function openRow(over: Partial<OpenRow> = {}): OpenRow {
+  return {
+    id: 'row1',
+    kind: 'node_state',
+    node_id: 'a1b2c3d4e5f6',
+    ended_at: '',
+    occurrence_count: 1,
+    ...over,
+  };
 }
 
 const TB = 1e12;
@@ -102,14 +136,21 @@ describe('diffObservations', () => {
 
     it('still reports the status-derived changes on such a row', () => {
       // role_ok gates the layout fields only. Connectivity and disk size come
-      // from GetClusterStatus and are readable on any row.
+      // from GetClusterStatus and are readable on any row. Going offline is
+      // used rather than coming back, because a recovery is no longer an event
+      // at all — it closes the row the outage opened.
       const before = node({
+        role_ok: false,
+        role_capacity_bytes: 0,
+        node_tags: '',
+      });
+      const after = node({
         role_ok: false,
         role_capacity_bytes: 0,
         node_tags: '',
         is_up: false,
       });
-      expect(kinds(diffObservations([before], [node()]))).toEqual([
+      expect(kinds(diffObservations([before], [after]))).toEqual([
         'node_state',
       ]);
     });
@@ -224,13 +265,19 @@ describe('diffObservations', () => {
       expect(events[0].new_value).toBe('down');
     });
 
-    it('reports coming back as info', () => {
+    it('opens a condition rather than recording an instant', () => {
       const events: Event[] = diffObservations(
-        [node({ is_up: false })],
-        [node()]
+        [node()],
+        [node({ is_up: false })]
       );
-      expect(events[0].severity).toBe('info');
-      expect(events[0].new_value).toBe('up');
+      expect(events[0].ongoing).toBe(true);
+    });
+
+    it('says nothing when a node comes back — the close pass owns that', () => {
+      // There is deliberately no "back online" row any more. A recovery closes
+      // the row the outage opened; filing a second, unlinked row beside it is
+      // what made a flapping node unreadable on the timeline.
+      expect(diffObservations([node({ is_up: false })], [node()])).toEqual([]);
     });
 
     it('is edge-triggered, so a node that stays down is not re-reported', () => {
@@ -360,6 +407,14 @@ describe('diffObservations', () => {
     expect(events[0].severity).toBe('warning');
   });
 
+  it('does not report a node whose row failed to write as removed', () => {
+    // It is missing from `curRows` for a local reason, and saying the cluster
+    // lost it would now cost an OPEN condition rather than one stray row.
+    const before = [node({ node_id: 'n1' }), node({ node_id: 'n2' })];
+    const after = [node({ node_id: 'n1' })];
+    expect(diffObservations(before, after, ['n2'])).toEqual([]);
+  });
+
   it('records several changes on one node as separate entries', () => {
     const events: Event[] = diffObservations(
       [node()],
@@ -377,5 +432,223 @@ describe('diffObservations', () => {
       'disk_changed',
       'node_state',
     ]);
+  });
+});
+
+describe('ONGOING_KINDS', () => {
+  it('matches the copy in the shared schema', () => {
+    // The detector runs in Goja and cannot import from `shared`, so the list
+    // exists twice. This is what stops the two drifting — the same arrangement
+    // the four thresholds above use.
+    expect([...ONGOING_KINDS]).toEqual([...SHARED_ONGOING_KINDS]);
+  });
+
+  it('exports its flap window so the copy and the query cannot drift', () => {
+    expect(FLAP_WINDOW_SEC).toBe(1800);
+  });
+});
+
+describe('conditionActive', () => {
+  it('keeps an outage open while the node is still silent', () => {
+    expect(conditionActive('node_state', node({ is_up: false }), false)).toBe(
+      true
+    );
+  });
+
+  it('ends an outage when the node answers again', () => {
+    expect(conditionActive('node_state', node(), false)).toBe(false);
+  });
+
+  it('cannot tell when the node is not reported at all', () => {
+    // Whether that is an outage or a removal is node_removed's question.
+    // Answering it here would resolve an outage on a node that has vanished.
+    expect(conditionActive('node_state', undefined, false)).toBeNull();
+  });
+
+  it('cannot tell when the node failed to record this scrape', () => {
+    expect(conditionActive('node_state', undefined, true)).toBeNull();
+    expect(conditionActive('node_state', node(), true)).toBeNull();
+  });
+
+  it('keeps node_removed open while the node is unlisted', () => {
+    expect(conditionActive('node_removed', undefined, false)).toBe(true);
+  });
+
+  it('ends node_removed when the node is listed with a role again', () => {
+    expect(conditionActive('node_removed', node(), false)).toBe(false);
+  });
+
+  it('keeps node_removed open for a node listed with no role', () => {
+    expect(
+      conditionActive('node_removed', node({ role_capacity_bytes: 0 }), false)
+    ).toBe(true);
+  });
+
+  it('cannot tell when the layout could not be read', () => {
+    // The same gate the diff applies. Without role_ok a capacity of 0 is
+    // indistinguishable from an absent field, and closing on it would announce
+    // a node had rejoined the layout because the layout failed to load.
+    expect(
+      conditionActive('node_removed', node({ role_ok: false }), false)
+    ).toBeNull();
+  });
+});
+
+describe('reconcileOngoing', () => {
+  const down = node({ is_up: false });
+  const opening: Event[] = diffObservations([node()], [down]);
+
+  it('passes a point-in-time event straight through to creates', () => {
+    const events: Event[] = diffObservations(
+      [node()],
+      [node({ node_tags: 'ssd,name:renamed' })]
+    );
+    const plan: Plan = reconcileOngoing(events, [node()], [], []);
+    expect(plan.creates.map((e) => e.kind)).toEqual(['tags_changed']);
+    expect(plan.reopens).toEqual([]);
+    expect(plan.closes).toEqual([]);
+  });
+
+  it('creates the first row for a condition with no history', () => {
+    const plan: Plan = reconcileOngoing(opening, [down], [], []);
+    expect(plan.creates.map((e) => e.kind)).toEqual(['node_state']);
+    expect(plan.reopens).toEqual([]);
+  });
+
+  it('drops an opening event when the condition is already open', () => {
+    // The noise suppression. Without this a node whose outage was recorded by
+    // an earlier scrape would gain a second row the moment any edge recurred.
+    const plan: Plan = reconcileOngoing(opening, [down], [openRow()], []);
+    expect(plan.creates).toEqual([]);
+    expect(plan.reopens).toEqual([]);
+    expect(plan.closes).toEqual([]);
+  });
+
+  it('closes an open row when the node answers again', () => {
+    const plan: Plan = reconcileOngoing([], [node()], [openRow()], []);
+    expect(plan.closes).toEqual([{ id: 'row1' }]);
+    expect(plan.creates).toEqual([]);
+  });
+
+  it('closes with no diff at all, so a recovery survives a gap in the cron', () => {
+    // This is the whole reason closing reads current state instead of an edge:
+    // after a gap wider than PREV_WINDOW_SEC there is no previous sample, so
+    // `diffObservations` is not even called, and an edge-triggered close would
+    // leave the outage open for ever.
+    const plan: Plan = reconcileOngoing([], [node()], [openRow()], []);
+    expect(plan.closes).toHaveLength(1);
+  });
+
+  it('leaves a row alone when this scrape cannot tell', () => {
+    const plan: Plan = reconcileOngoing([], [], [openRow()], []);
+    expect(plan.closes).toEqual([]);
+  });
+
+  it('leaves a row alone when its node failed to record', () => {
+    const plan: Plan = reconcileOngoing(
+      [],
+      [node()],
+      [openRow()],
+      ['a1b2c3d4e5f6']
+    );
+    expect(plan.closes).toEqual([]);
+  });
+
+  it('re-opens a recently closed row instead of appending a new one', () => {
+    // The flap rule. `readOpenConditions` has already bounded its query by
+    // FLAP_WINDOW_SEC, so any closed row reaching here is inside the window —
+    // which is what keeps this function clockless.
+    const plan: Plan = reconcileOngoing(
+      opening,
+      [down],
+      [openRow({ ended_at: '2026-08-19 09:15:00.000Z', occurrence_count: 1 })],
+      []
+    );
+    expect(plan.creates).toEqual([]);
+    expect(plan.reopens).toEqual([{ id: 'row1', occurrence_count: 2 }]);
+  });
+
+  it('re-opens the most recently closed row when several are in the window', () => {
+    const plan: Plan = reconcileOngoing(
+      opening,
+      [down],
+      [
+        openRow({ id: 'old', ended_at: '2026-08-19 09:00:00.000Z' }),
+        openRow({ id: 'new', ended_at: '2026-08-19 09:15:00.000Z' }),
+      ],
+      []
+    );
+    expect(plan.reopens.map((r) => r.id)).toEqual(['new']);
+  });
+
+  it('counts a row that predates the counter as having opened once already', () => {
+    const plan: Plan = reconcileOngoing(
+      opening,
+      [down],
+      [openRow({ ended_at: '2026-08-19 09:15:00.000Z', occurrence_count: 0 })],
+      []
+    );
+    expect(plan.reopens).toEqual([{ id: 'row1', occurrence_count: 2 }]);
+  });
+
+  it('does not re-open a row belonging to a different node', () => {
+    const plan: Plan = reconcileOngoing(
+      opening,
+      [down],
+      [
+        openRow({
+          node_id: 'someoneelse',
+          ended_at: '2026-08-19 09:15:00.000Z',
+        }),
+      ],
+      []
+    );
+    expect(plan.reopens).toEqual([]);
+    expect(plan.creates.map((e) => e.kind)).toEqual(['node_state']);
+  });
+
+  it('does not re-open a row of a different kind', () => {
+    const plan: Plan = reconcileOngoing(
+      opening,
+      [down],
+      [openRow({ kind: 'node_removed', ended_at: '2026-08-19 09:15:00.000Z' })],
+      []
+    );
+    expect(plan.reopens).toEqual([]);
+    expect(plan.creates.map((e) => e.kind)).toEqual(['node_state']);
+  });
+
+  it('closes a node_removed when the node rejoins with a role', () => {
+    // The rejoining node has no previous observation, so the diff is silent —
+    // there is no "node added" edge to key on. Only current state closes this.
+    const plan: Plan = reconcileOngoing(
+      [],
+      [node()],
+      [openRow({ kind: 'node_removed' })],
+      []
+    );
+    expect(plan.closes).toEqual([{ id: 'row1' }]);
+  });
+
+  it('resolves one node while opening a condition on another', () => {
+    const other = node({ node_id: 'n2' });
+    const plan: Plan = reconcileOngoing(
+      diffObservations([other], [node({ node_id: 'n2', is_up: false })]),
+      [node(), node({ node_id: 'n2', is_up: false })],
+      [openRow()],
+      []
+    );
+    expect(plan.closes).toEqual([{ id: 'row1' }]);
+    expect(plan.creates.map((e) => e.node_id)).toEqual(['n2']);
+  });
+
+  it('ignores an open row of a kind that is not a condition', () => {
+    const plan: Plan = reconcileOngoing(
+      [],
+      [node()],
+      [openRow({ kind: 'capacity_changed' })],
+      []
+    );
+    expect(plan.closes).toEqual([]);
   });
 });

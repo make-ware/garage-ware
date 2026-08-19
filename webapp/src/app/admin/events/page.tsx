@@ -47,7 +47,10 @@ import {
   CATEGORY_LABELS,
   KIND_LABELS,
   SEVERITY_TONE,
+  STATUS_LABEL,
+  STATUS_TONE,
   eventBadgeLabel,
+  eventStatus,
 } from '@/lib/cluster-timeline';
 import { formatCapacity, formatPbDateTime } from '@/lib/format';
 import { buildNodeNameMap, nodeLabel } from '@/lib/node-label';
@@ -77,12 +80,22 @@ const BYTE_KINDS = new Set<ClusterEventKind>([
   'node_removed',
 ]);
 
-type NodeState = 'online' | 'offline' | 'under-repair' | 'unknown';
+/**
+ * `under-repair` is a human saying so — an open `manual` row. `unresolved` is
+ * the detector saying so — an open condition it has not seen clear, which on
+ * this strip means a node that lost its role or left the layout. They read the
+ * same amber because they mean the same thing to an operator (someone needs to
+ * look at this node); they are separate values because only one of them is
+ * something a person chose to write down.
+ */
+type NodeState =
+  'online' | 'offline' | 'under-repair' | 'unresolved' | 'unknown';
 
 const STATE_CHIP: Record<NodeState, string> = {
   online: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
   offline: 'bg-destructive/10 text-destructive',
   'under-repair': 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  unresolved: 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
   unknown: 'bg-muted text-muted-foreground',
 };
 
@@ -90,12 +103,13 @@ const STATE_LABEL: Record<NodeState, string> = {
   online: 'Online',
   offline: 'Offline',
   'under-repair': 'Under repair',
+  unresolved: 'Unresolved',
   unknown: 'No samples',
 };
 
 interface NodeRow extends NodeChoice {
   state: NodeState;
-  /** The open note holding this node in `under-repair`, for the tooltip. */
+  /** The open row holding this node in `under-repair`/`unresolved`. */
   openNote: string | null;
 }
 
@@ -130,6 +144,7 @@ function AdminEventsView() {
   const [page, setPage] = useState(1);
 
   const [data, setData] = useState<ClusterEventsResponse | null>(null);
+  /** Every unresolved row, whatever wrote it — see `openByNode`. */
   const [openNotes, setOpenNotes] = useState<ClusterEvent[]>([]);
   const [nodes, setNodes] = useState<ClusterNodesResponse | null>(null);
   const [coverage, setCoverage] = useState<NodeCoverage[]>([]);
@@ -203,9 +218,9 @@ function AdminEventsView() {
     };
   }, [query, refreshKey]);
 
-  // Node identity, live state, the open notes that mark a node under repair,
-  // and the coverage suggestions — all unfiltered, because the strip at the top
-  // of the page describes the cluster, not the current filter.
+  // Node identity, live state, the open rows that mark a node as wanting
+  // attention, and the coverage suggestions — all unfiltered, because the strip
+  // at the top of the page describes the cluster, not the current filter.
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -214,13 +229,17 @@ function AdminEventsView() {
           api<ClusterNodesResponse>('/next-api/garage/cluster/nodes').catch(
             () => null
           ),
+          // `status=ongoing` rather than the whole page filtered client-side,
+          // and no `source` filter: an open detector condition marks a node
+          // just as an open note does. Point-in-time rows are born closed, so
+          // this returns only what is genuinely unresolved.
           api<ClusterEventsResponse>(
-            '/next-api/garage/events?source=manual&perPage=200'
+            '/next-api/garage/events?status=ongoing&perPage=200'
           ),
         ]);
         if (cancelled) return;
         setNodes(nodesResp);
-        setOpenNotes(notesResp.items.filter((e) => !e.ended_at));
+        setOpenNotes(notesResp.items);
 
         const ids = (nodesResp?.items ?? []).map((n) => n.id);
         if (ids.length === 0) return;
@@ -261,11 +280,23 @@ function AdminEventsView() {
     };
   }, [refreshKey]);
 
-  /** node_id → the open note holding it under repair. */
-  const repairByNode = useMemo(() => {
+  /**
+   * node_id → the open row that gives it a state, manual rows winning.
+   *
+   * A note someone wrote outranks a condition the detector opened: if an admin
+   * has said "replacing the disk in this node", that is the more useful thing
+   * to show a reader than "it is not responding", which is the symptom they
+   * already wrote the note about. Cluster-wide rows carry no node_id and are
+   * skipped — this is a per-node state.
+   */
+  const openByNode = useMemo(() => {
     const map = new Map<string, ClusterEvent>();
-    for (const note of openNotes) {
-      if (note.node_id && !map.has(note.node_id)) map.set(note.node_id, note);
+    for (const row of openNotes) {
+      if (!row.node_id) continue;
+      const held = map.get(row.node_id);
+      if (!held || (held.source !== 'manual' && row.source === 'manual')) {
+        map.set(row.node_id, row);
+      }
     }
     return map;
   }, [openNotes]);
@@ -274,21 +305,32 @@ function AdminEventsView() {
     () =>
       (nodes?.items ?? [])
         .map((n) => {
-          const repair = repairByNode.get(n.id);
+          const open = openByNode.get(n.id);
+          const live = nodeStates.get(n.id) ?? 'unknown';
+          // A hand-written note outranks everything: it is the only one of
+          // these a person chose to say. Liveness then outranks an open
+          // detected condition, because "offline" is the more specific word
+          // for the commonest one of those, and repeating it as "unresolved"
+          // would say the same thing twice.
+          const state: NodeState = open
+            ? open.source === 'manual'
+              ? 'under-repair'
+              : live === 'offline'
+                ? 'offline'
+                : 'unresolved'
+            : live;
           return {
             nodeId: n.id,
             name: nodeNames.get(n.id) ?? null,
             zone: n.zone,
-            state: repair
-              ? ('under-repair' as NodeState)
-              : (nodeStates.get(n.id) ?? 'unknown'),
-            openNote: repair?.title ?? null,
+            state,
+            openNote: open?.title ?? null,
           };
         })
         .sort((a, b) =>
           nodeLabel(a.name, a.nodeId).localeCompare(nodeLabel(b.name, b.nodeId))
         ),
-    [nodes, nodeNames, nodeStates, repairByNode]
+    [nodes, nodeNames, nodeStates, openByNode]
   );
 
   const changeFilter = useCallback(
@@ -392,6 +434,15 @@ function AdminEventsView() {
         itself, so a change only exists here if it was written down as it
         happened. Everything else is what an operator records by hand.
       </p>
+      <p className="text-muted-foreground mb-6">
+        A node going offline or dropping out of the layout is one entry, not
+        two: it opens marked <em>In progress</em> and is closed with an end date
+        when the cluster recovers. If the same thing recurs within half an hour
+        it folds back into that entry with an occurrence count rather than
+        starting a new one, so a flapping node stays one line. Entries with no
+        status are moments, not conditions — there is nothing for them to
+        resolve into.
+      </p>
 
       {error && <p className="text-destructive mb-4">{error}</p>}
 
@@ -402,7 +453,8 @@ function AdminEventsView() {
             <CardDescription>
               Connectivity is sampled every 15 minutes, so a state here can be
               up to one interval behind. &ldquo;Under repair&rdquo; is a node
-              with an open note against it.
+              with an open note against it; &ldquo;unresolved&rdquo; is one with
+              a detected condition that has not cleared.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -635,13 +687,36 @@ function AdminEventsView() {
                               <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                                 {eventBadgeLabel(e)}
                               </span>
-                              {!e.ended_at && e.source === 'manual' && (
-                                <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-                                  open
+                              {/* The one element that makes an outage read as
+                                  one thing. A point-in-time row is `instant`
+                                  and shows no pill at all, so the eleven kinds
+                                  that are not conditions look exactly as they
+                                  did. */}
+                              {eventStatus(e) !== 'instant' && (
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-xs ${STATUS_TONE[eventStatus(e)]}`}
+                                >
+                                  {STATUS_LABEL[eventStatus(e)]}
                                 </span>
                               )}
                               <span className="font-medium">{e.title}</span>
                             </div>
+
+                            {/* Absolute datetimes, never a computed "open for
+                                4 days": that reads the clock during render,
+                                which `react-hooks/purity` refuses and which
+                                node-details-dialog.tsx already documents. */}
+                            {eventStatus(e) !== 'instant' && (
+                              <p className="text-xs text-muted-foreground">
+                                Started {formatPbDateTime(e.occurred_at)}
+                                {e.ended_at
+                                  ? ` · ended ${formatPbDateTime(e.ended_at)}`
+                                  : ' · still open'}
+                                {(e.occurrence_count ?? 0) >= 2
+                                  ? ` · ${e.occurrence_count} occurrences`
+                                  : ''}
+                              </p>
+                            )}
 
                             {e.node_id && (
                               <NodeIdentity
@@ -718,7 +793,12 @@ function AdminEventsView() {
                                   <MessageSquarePlus className="mr-1 h-3 w-3" />
                                   {e.annotation ? 'Edit note' : 'Annotate'}
                                 </Button>
-                                {e.source === 'manual' && !e.ended_at && (
+                                {/* Also offered on an open DETECTED row — a
+                                    decommissioned node's condition never
+                                    resolves on its own, and would otherwise sit
+                                    in progress for ever. The route allows the
+                                    close but still refuses a re-open. */}
+                                {!e.ended_at && e.source !== 'action' && (
                                   <Button
                                     size="sm"
                                     variant="ghost"

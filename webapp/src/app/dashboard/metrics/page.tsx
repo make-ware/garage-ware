@@ -473,18 +473,26 @@ function MetricsView() {
       const result = await api<{
         recorded: number;
         statsFailed: number;
-        events: number;
+        events: { created: number; reopened: number; closed: number };
       }>('/next-api/garage/node-metrics/scrape', { method: 'POST' });
+      // Logged and resolved are separate sentences to a reader: "2 logged" and
+      // "1 resolved" are different news about a cluster, and a scrape that only
+      // closed an outage would otherwise report nothing at all.
+      const logged = result.events.created + result.events.reopened;
+      const timeline = [
+        logged > 0
+          ? `${logged} cluster event${logged === 1 ? '' : 's'} logged`
+          : '',
+        result.events.closed > 0 ? `${result.events.closed} resolved` : '',
+      ]
+        .filter(Boolean)
+        .join(', ');
       toast.success(
         `Recorded ${result.recorded} node sample${result.recorded === 1 ? '' : 's'}` +
           (result.statsFailed > 0
             ? ` (${result.statsFailed} without resync stats)`
             : '') +
-          // The scrape also diffs against the previous sample; mention the
-          // timeline only when it actually gained something.
-          (result.events > 0
-            ? ` — ${result.events} cluster event${result.events === 1 ? '' : 's'} logged`
-            : '')
+          (timeline ? ` — ${timeline}` : '')
       );
       setRefreshKey((k) => k + 1);
     } catch (err) {

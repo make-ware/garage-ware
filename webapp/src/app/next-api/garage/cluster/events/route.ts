@@ -43,6 +43,11 @@ function toTimelineEvent(e: ClusterEvent): ClusterTimelineEvent {
     title: e.title,
     occurred_at: e.occurred_at,
     ended_at: e.ended_at ?? '',
+    // Carried for the same reason as `category`: it is rendered. A count of
+    // how many times a node dropped off the network is a plain integer that
+    // identifies nobody, and without it a recurring outage reads as a single
+    // one. The free-text columns beside it are still not carried.
+    occurrence_count: e.occurrence_count ?? 0,
   };
 }
 
@@ -93,17 +98,19 @@ export async function GET(req: Request) {
 
     const pb = await getPbAsSuperuser();
     const events = new ClusterEventMutator(pb);
-    // `openEvents` is deliberately **not** windowed. A repair that has been
-    // open for six weeks is exactly the one worth flagging, and scoping it to
-    // the timeline's 30 days would quietly clear the marker on the node that
-    // has been broken longest. `listOpenManual` is the collection's own query
-    // for this — `(source, ended_at)` is indexed for it.
+    // `openEvents` is deliberately **not** windowed. A repair — or an outage —
+    // that has been open for six weeks is exactly the one worth flagging, and
+    // scoping it to the timeline's 30 days would quietly clear the marker on
+    // the node that has been broken longest. `listOpen` is the collection's own
+    // query for this — `(source, ended_at)` is indexed for it. It returns open
+    // rows from every source; the pages split on `source` for wording, because
+    // "under repair" is a human saying so and an open `node_state` row is not.
     const [windowed, open] = await Promise.all([
       events.search(1, MAX_ITEMS, {
         since: windowStart.toISOString(),
         until: windowEnd.toISOString(),
       }),
-      events.listOpenManual(),
+      events.listOpen(),
     ]);
 
     const body: ClusterTimelineResponse = {

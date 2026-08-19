@@ -30,6 +30,13 @@
 // observation IS the previous NodeMetrics row, which is what the `role_*`,
 // `layout_version` and `garage_version` columns are there for.
 //
+// The same block also RESOLVES timeline rows. An outage is one row that is
+// opened and later closed, not a row per edge, so this scrape both appends what
+// started and closes what has stopped — `reconcileOngoing` reads the open rows
+// back through `readOpenConditions` in the same transaction. That half needs no
+// previous sample, only the current state, which is why it runs even when the
+// diff cannot.
+//
 // Lives in a plain `.js` (not `*.pb.js`, which PocketBase would load as a hook
 // file in its own right) and is `require`d INSIDE each handler: Goja runs
 // every callback in a fresh executor and will not carry top-level declarations
@@ -314,7 +321,7 @@ function scrapeOnce(app, opts) {
   let layoutFailed = 0;
   let errors = 0;
   let pruned = 0;
-  let events = 0;
+  let events = { created: 0, reopened: 0, closed: 0 };
 
   app.runInTransaction((txApp) => {
     const collection = txApp.findCollectionByNameOrId(COLLECTION);
@@ -328,6 +335,10 @@ function scrapeOnce(app, opts) {
       console.warn("[node-metrics] previous-sample read failed; no events this run:", err);
     }
     const current = [];
+    // Nodes whose row threw below. They are missing from `current` for a local
+    // reason, and the timeline must not read that as the cluster losing them —
+    // which would now cost an *open* condition rather than one stray row.
+    const failedNodeIds = [];
 
     for (const node of status.nodes || []) {
       try {
@@ -397,20 +408,44 @@ function scrapeOnce(app, opts) {
         if (!layoutOk) layoutFailed++;
       } catch (err) {
         errors++;
+        failedNodeIds.push(nodeKey(node.id));
         console.error("[node-metrics] failed to record node:", node.id, err);
       }
     }
 
     // Best-effort, and deliberately so: the samples are the thing the charts
     // need, and losing a whole scrape because the differ threw would be the
-    // worse trade. A node that failed to record above is absent from `current`
-    // and so is not diffed at all, rather than being reported as removed.
-    if (previous.length > 0 && current.length > 0) {
+    // worse trade. A node that failed to record above is absent from `current`,
+    // so it is passed as `failedNodeIds` and excluded rather than being
+    // reported as removed.
+    //
+    // **The guard is on the diff, not on the reconciliation.** Opening a
+    // condition needs two samples that disagree, so it needs `previous`.
+    // Closing one needs only the current state and a row already open — and a
+    // node that recovered during a gap in the cron is precisely the case with
+    // no `previous` to compare against and an outage still marked running.
+    // Gating both on `previous.length` would leave that outage open for ever.
+    if (current.length > 0) {
       try {
-        const { diffObservations, recordEvents } = require(`${__hooks}/lib/cluster-events.js`);
+        const {
+          diffObservations,
+          reconcileOngoing,
+          readOpenConditions,
+          recordEvents,
+          FLAP_WINDOW_SEC,
+        } = require(`${__hooks}/lib/cluster-events.js`);
+
+        const detected =
+          previous.length > 0
+            ? diffObservations(previous, current, failedNodeIds)
+            : [];
+        const openRows = readOpenConditions(
+          txApp,
+          toPbDate(Date.now() - FLAP_WINDOW_SEC * 1000)
+        );
         events = recordEvents(
           txApp,
-          diffObservations(previous, current),
+          reconcileOngoing(detected, current, openRows, failedNodeIds),
           toPbDate(Date.now())
         );
       } catch (err) {

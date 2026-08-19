@@ -23,6 +23,20 @@ export const dynamic = 'force-dynamic';
  * knowable when the row is created — it is what closes an open repair and
  * clears a node's "under repair" state. Passing an empty string re-opens one.
  *
+ * **A detector row may be closed by hand, but only while it is open, and only
+ * closed.** The detector opens a condition on a node going offline or leaving
+ * the layout and resolves it when the node comes back — but some never come
+ * back. A decommissioned node's `node_removed` would sit "in progress" for
+ * ever, amber on the cluster map, waiting on an event that cannot happen. This
+ * is that escape hatch, and it is deliberately one-way: re-opening a closed
+ * detected row would let an admin re-write something a machine measured, which
+ * is the whole reason the observed fields are immutable above. The detector may
+ * still re-open a row it closed itself, within its flap window; that is a
+ * recurrence it observed, not an edit.
+ *
+ * `action` rows are refused outright — they are born closed, record an instant
+ * that had no duration, and were never open to close.
+ *
  * All writes go through a superuser: the collection's write rules are null, so
  * this route is the only door.
  */
@@ -63,14 +77,35 @@ export async function PATCH(
     }
     if (body.endedAt !== undefined) {
       // Annotation stays open to every source — saying more later is always
-      // useful. Redefining *when* something happened is not: a detected change
-      // and a launched repair are both instants somebody else measured, and an
-      // admin does not get to move them.
-      if (existing.source !== 'manual') {
+      // useful. Redefining *when* something happened is not: a launched repair
+      // is an instant somebody else measured, and an admin does not get to move
+      // it. See the docblock for why a detector row is the one exception, and
+      // why that exception only closes.
+      const isOpenDetected =
+        existing.source === 'detector' && !existing.ended_at;
+      if (existing.source !== 'manual' && !isOpenDetected) {
         throw new HttpError(
           409,
-          'Only a hand-written note has an end date an admin can set'
+          existing.source === 'detector'
+            ? 'This detected event is already closed — annotate it instead'
+            : 'A recorded action has no end date an admin can set'
         );
+      }
+      if (isOpenDetected && !body.endedAt) {
+        throw new HttpError(
+          409,
+          'A detected event cannot be re-opened by hand'
+        );
+      }
+      // An end before the start would invert the pair and render as a negative
+      // duration. Cheap to check, and the datetime-local field behind the
+      // manual path makes it an easy typo.
+      if (
+        body.endedAt &&
+        new Date(body.endedAt) <
+          new Date(String(existing.occurred_at).replace(' ', 'T'))
+      ) {
+        throw new HttpError(400, 'An end date cannot precede the start');
       }
       patch.ended_at = body.endedAt;
     }

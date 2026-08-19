@@ -119,8 +119,9 @@ function ClusterLayoutPage() {
     [data]
   );
 
-  // Open manual notes, keyed by the node they pin to. Cluster-wide notes carry
-  // an empty node_id and are skipped — "under repair" is a per-node state.
+  // Open rows, keyed by the node they pin to, whatever wrote them.
+  // Cluster-wide rows carry an empty node_id and are skipped — these are
+  // per-node states. ClusterMap splits them by source.
   const openEventsByNode = useMemo(() => {
     const map = new Map<string, ClusterTimelineEvent[]>();
     for (const event of timeline?.openEvents ?? []) {

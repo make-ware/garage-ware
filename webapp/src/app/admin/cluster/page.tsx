@@ -77,8 +77,9 @@ export default function ClusterDetailPage() {
           api<ClusterHealth>('/next-api/garage/cluster/health'),
           api<ClusterStatus>('/next-api/garage/cluster/status'),
           api<ClusterNodesResponse>('/next-api/garage/cluster/nodes'),
-          // Only for the open notes that mark a node under repair in the
-          // details dialog. Best-effort: the map is the page.
+          // Only for the open rows that mark a node in the details dialog —
+          // a note someone wrote, or a condition the detector has not seen
+          // clear. Best-effort: the map is the page.
           api<ClusterTimelineResponse>('/next-api/garage/cluster/events').catch(
             () => null
           ),
@@ -114,8 +115,10 @@ export default function ClusterDetailPage() {
     };
   }, [refreshKey]);
 
-  // Open manual notes keyed by node; cluster-wide notes carry no node_id and
-  // are skipped, since "under repair" is a per-node state.
+  // Open rows keyed by node, whatever wrote them; cluster-wide rows carry no
+  // node_id and are skipped, since these are per-node states. ClusterMap splits
+  // them by source — "under repair" is a person saying so, an open detected
+  // condition is not.
   const openEventsByNode = useMemo(() => {
     const map = new Map<string, ClusterTimelineEvent[]>();
     for (const event of openEvents) {

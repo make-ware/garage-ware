@@ -14,6 +14,7 @@ import {
   SEVERITY_TONE,
   TIMELINE_DAYS,
   eventBadgeLabel,
+  eventStatus,
   groupEventsByWeek,
 } from '@/lib/cluster-timeline';
 import { formatPbDateTime } from '@/lib/format';
@@ -47,7 +48,10 @@ function EventRow({
   event: ClusterTimelineEvent;
   nodeNames: Map<string, string | null>;
 }) {
-  const ongoing = event.source === 'manual' && !event.ended_at;
+  // Any unresolved row, not just a hand-written one: a node that is still
+  // offline is exactly what a reader of this card wants marked. `instant`
+  // covers the eleven point-in-time kinds, which get no chip.
+  const status = eventStatus(event);
   return (
     <li className="relative pl-6">
       <span
@@ -63,9 +67,16 @@ function EventRow({
           className="font-mono text-xs tabular-nums text-muted-foreground"
         >
           {formatPbDateTime(event.occurred_at)}
+          {/* The end is appended to the start rather than given a line of its
+              own: on this card a resolved condition is one fact — it ran from
+              here to here — and the admin page is where the detail lives. */}
+          {status === 'resolved'
+            ? ` → ${formatPbDateTime(event.ended_at)}`
+            : ''}
         </time>
         <Chip>{eventBadgeLabel(event)}</Chip>
-        {ongoing && <Chip>ongoing</Chip>}
+        {status === 'ongoing' && <Chip>ongoing</Chip>}
+        {event.occurrence_count >= 2 && <Chip>{event.occurrence_count}×</Chip>}
       </div>
       <p className="mt-0.5 text-sm">
         {/* Severity reaches a screen reader in words; the dot is colour only. */}

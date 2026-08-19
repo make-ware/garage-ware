@@ -48,14 +48,35 @@ export function ClusterMap({
     : null;
 
   const groups = useMemo(() => groupNodesByZone(items), [items]);
-  // Cluster-wide notes carry no node_id and are skipped: "under repair" is a
-  // per-node state, and a note about the cluster shouldn't amber every card.
+  // Cluster-wide rows carry no node_id and are skipped: these are per-node
+  // states, and a note about the cluster shouldn't amber every card.
+  //
+  // Two sets, not one. `openEventsByNode` now carries the detector's open
+  // conditions as well as hand-written notes, and the two do not mean the same
+  // thing to a reader: "under repair" is a person saying they are working on
+  // it, while an open `node_removed` is a machine saying nobody has. Collapsing
+  // them would put a node under repair because it went offline.
   const underRepairNodes = useMemo(
     () =>
       new Set(
-        [...(openEventsByNode?.keys() ?? [])].filter(
-          (nodeId) => nodeId && (openEventsByNode?.get(nodeId)?.length ?? 0) > 0
-        )
+        [...(openEventsByNode?.entries() ?? [])]
+          .filter(
+            ([nodeId, rows]) =>
+              nodeId && rows.some((r) => r.source === 'manual')
+          )
+          .map(([nodeId]) => nodeId)
+      ),
+    [openEventsByNode]
+  );
+  const unresolvedNodes = useMemo(
+    () =>
+      new Set(
+        [...(openEventsByNode?.entries() ?? [])]
+          .filter(
+            ([nodeId, rows]) =>
+              nodeId && rows.some((r) => r.source !== 'manual')
+          )
+          .map(([nodeId]) => nodeId)
       ),
     [openEventsByNode]
   );
@@ -77,6 +98,7 @@ export function ClusterMap({
             group={group}
             selectedId={selectedId}
             underRepairNodes={underRepairNodes}
+            unresolvedNodes={unresolvedNodes}
             onSelect={setSelectedId}
           />
         ))}

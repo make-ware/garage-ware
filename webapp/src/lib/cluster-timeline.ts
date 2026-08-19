@@ -106,6 +106,59 @@ export function eventBadgeLabel(event: {
   return KIND_LABELS[event.kind] ?? event.kind;
 }
 
+/**
+ * Whether a row describes an instant, something still running, or something
+ * that ran and stopped.
+ *
+ * Derived from `ended_at` alone — there is no status column, and deliberately
+ * so. The three states are:
+ *
+ *   ''                     ongoing   — unresolved
+ *   equal to occurred_at   instant   — the eleven point-in-time kinds, and
+ *                                      every `action` row
+ *   after occurred_at      resolved  — the pair bounds a duration
+ *
+ * The one place this is decided, so /admin/events, the dashboard timeline and
+ * the node cards cannot disagree about what "open" means — the mistake
+ * `CATEGORY_LABELS` was already making twice before it moved here.
+ */
+export type EventStatus = 'instant' | 'ongoing' | 'resolved';
+
+export function eventStatus(event: {
+  occurred_at: string;
+  ended_at?: string;
+}): EventStatus {
+  if (!event.ended_at) return 'ongoing';
+  // Parsed, not compared as strings. Both timestamps come back from PocketBase
+  // as `2026-08-11 09:15:00.000Z` and are written from the same instant, so a
+  // string comparison would work today — but a row closed through the API
+  // carries a real ISO string with the `T` in it, and that would then sort
+  // after every space-separated date on the same day.
+  const started = parseEventDate(event.occurred_at).getTime();
+  const ended = parseEventDate(event.ended_at).getTime();
+  if (Number.isNaN(started) || Number.isNaN(ended)) return 'instant';
+  return ended > started ? 'resolved' : 'instant';
+}
+
+/** The word for each state. `instant` has none — such a row shows no pill. */
+export const STATUS_LABEL: Record<EventStatus, string> = {
+  instant: '',
+  ongoing: 'In progress',
+  resolved: 'Resolved',
+};
+
+/**
+ * Pill classes per state. Amber for something still running, matching the
+ * "under repair" marker on the node cards, which is the same idea; muted for
+ * something finished, so a resolved outage recedes rather than competing with
+ * the live ones.
+ */
+export const STATUS_TONE: Record<EventStatus, string> = {
+  instant: '',
+  ongoing: 'bg-amber-500/10 text-amber-700 dark:text-amber-400 font-medium',
+  resolved: 'bg-muted text-muted-foreground',
+};
+
 export interface WeekBucket<T> {
   /** Local Monday 00:00. Also the bucket's identity. */
   weekStart: Date;

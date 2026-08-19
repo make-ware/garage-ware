@@ -13,8 +13,14 @@ interface ScrapeResult {
   statsFailed: number;
   layoutFailed: number;
   pruned: number;
-  /** ClusterEvents rows the diff against the previous scrape produced. */
-  events: number;
+  /**
+   * What this scrape did to the cluster timeline. Three figures rather than
+   * one, because closing an outage and opening one are different facts about a
+   * cluster: `created` is new rows, `reopened` is conditions that recurred
+   * inside the flap window and folded back into their existing row, `closed` is
+   * conditions this scrape found had cleared.
+   */
+  events: { created: number; reopened: number; closed: number };
   errors: number;
 }
 
@@ -34,8 +40,9 @@ interface ScrapeResult {
  * silently empty "success".
  *
  * The same call also advances the cluster timeline: the scraper diffs this
- * sample against the previous one and appends any ClusterEvents rows it
- * produced, reported back as `events`.
+ * sample against the previous one to append what changed, and closes any open
+ * condition — a node offline, a node out of the layout — that this sample shows
+ * has cleared. Both are reported back as `events`.
  */
 export async function POST(req: Request) {
   try {

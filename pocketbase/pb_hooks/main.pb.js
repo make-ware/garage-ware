@@ -638,7 +638,8 @@ cronAdd("bucket-usage-alerts", "0 9 * * *", () => {
 // warns-and-skips when they are absent, like APP_PUBLIC_URL above. The same
 // run prunes rows older than NODE_METRICS_RETENTION_DAYS (default 90), and
 // diffs this scrape against the previous one to append any ClusterEvents rows
-// the change produced — see pb_hooks/lib/cluster-events.js.
+// the change produced, and closes the ones whose condition has since cleared —
+// see pb_hooks/lib/cluster-events.js.
 
 cronAdd("node-metrics-scrape", "*/15 * * * *", () => {
   const { scrapeOnce } = require(`${__hooks}/lib/node-metrics.js`);
@@ -646,7 +647,7 @@ cronAdd("node-metrics-scrape", "*/15 * * * *", () => {
     const result = scrapeOnce($app, { prune: true });
     if (result.skipped) return; // scrapeOnce already warned
     console.log(
-      `[node-metrics] recorded ${result.recorded} node(s), statsFailed=${result.statsFailed}, layoutFailed=${result.layoutFailed}, pruned=${result.pruned}, events=${result.events}, errors=${result.errors}`
+      `[node-metrics] recorded ${result.recorded} node(s), statsFailed=${result.statsFailed}, layoutFailed=${result.layoutFailed}, pruned=${result.pruned}, events=+${result.events.created}/~${result.events.reopened}/-${result.events.closed}, errors=${result.errors}`
     );
   } catch (err) {
     console.error("[node-metrics] scrape failed:", err);

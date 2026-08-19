@@ -32,6 +32,12 @@ export interface ClusterEventQuery {
   since?: string;
   /** Inclusive upper bound on `occurred_at`, as a PB date string. */
   until?: string;
+  /**
+   * Open conditions or finished ones. `ended_at = ""` means unresolved for
+   * every source — see the field's docblock; `resolved` therefore also matches
+   * the point-in-time rows, which are born closed.
+   */
+  status?: 'ongoing' | 'resolved';
 }
 
 /**
@@ -73,11 +79,25 @@ export class ClusterEventMutator extends BaseMutator<
   }
 
   /**
-   * Open manual rows — the ones that put a node "under repair". Cluster-wide
-   * notes are included; the caller keys by `node_id` and ignores the blanks.
+   * Every unresolved row, whatever wrote it — an admin's open note (which puts
+   * a node "under repair") and the detector's open conditions alike.
+   *
+   * **One predicate, not one per source.** `ended_at = ""` means unresolved
+   * across the whole collection now that point-in-time rows are born closed and
+   * 1787800000_close_legacy_events.js has said the same of the history. This
+   * used to filter `source = "manual"` because that was the only source that
+   * ever left a row open; keeping the filter would have hidden every detected
+   * outage from the cluster map, which is the surface that most wants one.
+   *
+   * Callers key by `node_id` and ignore the blanks — a cluster-wide note has
+   * none — and split on `source` for wording, since "under repair" is a human
+   * saying so and an open `node_state` row is not.
+   *
+   * Deliberately unwindowed: an outage that has been running for six weeks is
+   * exactly the one worth flagging. `(source, ended_at)` is indexed for it.
    */
-  async listOpenManual(): Promise<ListResult<ClusterEvent>> {
-    return this.getList(1, 200, ['source = "manual"', 'ended_at = ""']);
+  async listOpen(): Promise<ListResult<ClusterEvent>> {
+    return this.getList(1, 200, ['ended_at = ""']);
   }
 
   /** Paged, filtered browse for /admin/events. */
@@ -94,6 +114,10 @@ export class ClusterEventMutator extends BaseMutator<
     if (query.category) filters.push(`category = "${query.category}"`);
     if (query.since) filters.push(`occurred_at >= "${quote(query.since)}"`);
     if (query.until) filters.push(`occurred_at <= "${quote(query.until)}"`);
+    if (query.status)
+      filters.push(
+        query.status === 'ongoing' ? 'ended_at = ""' : 'ended_at != ""'
+      );
     return this.getList(page, perPage, filters);
   }
 }

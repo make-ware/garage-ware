@@ -19,12 +19,15 @@ export function ZoneGroupCard({
   group,
   selectedId,
   underRepairNodes,
+  unresolvedNodes,
   onSelect,
 }: {
   group: ZoneGroup;
   selectedId: string | null;
-  /** Node ids carrying an open manual note. */
+  /** Node ids carrying an open manual note — a person is on it. */
   underRepairNodes: ReadonlySet<string>;
+  /** Node ids carrying an open detected condition — nobody is, yet. */
+  unresolvedNodes: ReadonlySet<string>;
   onSelect: (nodeId: string) => void;
 }) {
   // The dashed/muted treatment below is shared with the cluster events
@@ -51,6 +54,7 @@ export function ZoneGroupCard({
             item={item}
             selected={item.id === selectedId}
             underRepair={underRepairNodes.has(item.id)}
+            unresolved={unresolvedNodes.has(item.id)}
             onSelect={onSelect}
           />
         ))}

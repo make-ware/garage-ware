@@ -8,11 +8,20 @@
 // observable in the moment two consecutive samples disagree, which is exactly
 // what this file looks for. See shared/src/schema/cluster-event.ts.
 //
-// `diffObservations` is a pure function (no Goja globals, no requires) so it
-// can be unit tested from the webapp's vitest setup, the same arrangement as
-// `bucketHistory` in node-metrics.js. `recordEvents` is the thin writer around
-// it, called by scrapeOnce inside the scrape's own transaction so a sample and
-// the events derived from it commit together.
+// `diffObservations` and `reconcileOngoing` are pure functions (no Goja
+// globals, no requires, not even a clock) so they can be unit tested from the
+// webapp's vitest setup, the same arrangement as `bucketHistory` in
+// node-metrics.js. `readOpenConditions` and `recordEvents` are the thin reader
+// and writer around them, called by scrapeOnce inside the scrape's own
+// transaction so a sample and the rows derived from it commit together.
+//
+// **Not every row is an instant.** The two ONGOING_KINDS describe a condition
+// that starts and later stops, and get one row that is opened, possibly
+// re-opened, and finally closed — rather than one row per edge. A node going
+// offline and coming back is a single timeline entry with a start and an end,
+// not a "not responding" row and an unlinked "back online" row fifteen minutes
+// later. `ended_at` carries all three states; see the field's docblock in
+// shared/src/schema/cluster-event.ts.
 //
 // An "observation" is the subset of a NodeMetrics row this needs, as a plain
 // object. scrapeOnce builds the current ones on its way to writing the rows and
@@ -31,6 +40,40 @@
 // timeline entry ever gets a cause attached to it.
 
 const COLLECTION = "ClusterEvents";
+
+/**
+ * The kinds that describe a **condition** rather than a transition: something
+ * that starts, persists, and later stops. They are the only rows this file ever
+ * leaves open (`ended_at = ""`), and the only ones reconcileOngoing will close.
+ *
+ * Everything else here is an instant. A capacity change has no inverse to close
+ * on — the capacity is simply the new capacity from then on. These two have a
+ * state that a later scrape can re-read and find to be over: a node answering
+ * again, or being listed with a role again.
+ *
+ * **Kept in step with shared/src/schema/cluster-event.ts by a test**, not by
+ * care — a Goja hook cannot import from that workspace, so
+ * cluster-events-lib.test.ts asserts the two arrays are identical, exactly as
+ * it does for the four thresholds below.
+ */
+const ONGOING_KINDS = ["node_state", "node_removed"];
+
+/**
+ * How soon a condition may recur and still count as the same incident.
+ *
+ * A node that flaps every scrape used to cost two rows per interval — one
+ * "not responding", one "back online" — and at 50 rows to a page a single
+ * flapping node filled the admin timeline and pushed real events off it. Within
+ * this window the detector re-opens the row it just closed and bumps its
+ * occurrence count instead of appending another, so a flap is one entry reading
+ * "3 occurrences" rather than six rows.
+ *
+ * Two scrape intervals. Wide enough that the common case — down at one scrape,
+ * up at the next, down again at the one after — folds into a single incident;
+ * narrow enough that an outage on Tuesday and an unrelated one on Thursday stay
+ * two entries, which is what a reader of a timeline wants them to be.
+ */
+const FLAP_WINDOW_SEC = 1800;
 
 /**
  * How far a total may move before it counts as a different disk. Filesystem
@@ -172,6 +215,14 @@ function event(fields) {
   return {
     kind: fields.kind,
     source: "detector",
+    /**
+     * True for an ONGOING_KINDS row: this event OPENS a condition, and the
+     * writer must leave `ended_at` empty rather than stamping it closed.
+     * reconcileOngoing is what routes it — it may end up re-opening an existing
+     * row instead of creating this one, or dropping it because the condition is
+     * already recorded as open.
+     */
+    ongoing: !!fields.ongoing,
     severity: fields.severity || "info",
     node_id: fields.node_id || "",
     node_hostname: fields.node_hostname || "",
@@ -205,13 +256,26 @@ function event(fields) {
  *     every storage node. See the migration 1786800000_updated_NodeMetrics.js.
  *   - Partition kinds require a non-zero total on both rows, because 0 means
  *     "no reading", not "no space".
- *   - Emission is edge-triggered only. A node flapping every scrape therefore
- *     costs at most two rows per interval, so no debounce is needed.
+ *   - Emission is edge-triggered, including for the two ONGOING_KINDS: this
+ *     function reports that a condition STARTED, never that one is still
+ *     running and never that one ended. Opening on an edge is what preserves
+ *     the two guarantees above — a fresh database and a scrape after a long gap
+ *     both stay silent, because "we were not looking" is not an observation.
+ *     Closing is the opposite: reconcileOngoing reads current state, so a node
+ *     that recovers during a cron outage is still resolved even though there is
+ *     no edge left to see. Neither can invent a row — one needs two samples
+ *     that disagree, the other needs a row already open.
+ *
+ * `failedNodeIds` is the set of nodes whose row failed to write this scrape.
+ * They are missing from `curRows` for a local reason, so they are excluded from
+ * the "no longer reported" pass rather than being reported as removed.
  */
-function diffObservations(prevRows, curRows) {
+function diffObservations(prevRows, curRows, failedNodeIds) {
   const events = [];
   const prev = byNode(prevRows);
   const seenNow = byNode(curRows);
+  const failed = {};
+  for (const id of failedNodeIds || []) failed[id] = true;
 
   // ---- cluster-scoped ----------------------------------------------------
   const prevVersion = layoutVersionOf(prevRows);
@@ -247,23 +311,27 @@ function diffObservations(prevRows, curRows) {
       node_zone: cur.node_zone,
     };
 
-    // -- connectivity. Sampled every 15 minutes, so the timestamp bounds the
-    //    transition to the preceding interval rather than pinning it; the page
-    //    says so, and this stays a state change rather than an outage record.
-    if (!!p.is_up !== !!cur.is_up) {
+    // -- connectivity. An outage is a *condition*, so only the down edge is
+    //    an event: it OPENS a row that stays open for as long as the node stays
+    //    silent. There is deliberately no "back online" row any more. A
+    //    recovery closes the row it belongs to — see reconcileOngoing — rather
+    //    than filing a second, unlinked row beside it, which is what made a
+    //    flapping node unreadable on the timeline.
+    //
+    //    Sampled every 15 minutes, so occurred_at bounds the transition to the
+    //    preceding interval rather than pinning it; the page says so.
+    if (!!p.is_up && !cur.is_up) {
       events.push(
         event(
           Object.assign({}, base, {
             kind: "node_state",
-            severity: cur.is_up ? "info" : "warning",
-            title: cur.is_up
-              ? label + " is back online"
-              : label + " is not responding",
-            detail: cur.is_up
-              ? "The node answered this scrape after being disconnected at the previous one."
-              : "The node was disconnected at this scrape. Sampling is every 15 minutes, so it went down somewhere in the preceding interval.",
-            previous_value: p.is_up ? "up" : "down",
-            new_value: cur.is_up ? "up" : "down",
+            ongoing: true,
+            severity: "warning",
+            title: label + " is not responding",
+            detail:
+              "The node was disconnected at this scrape. Sampling is every 15 minutes, so it went down somewhere in the preceding interval.",
+            previous_value: "up",
+            new_value: "down",
           })
         )
       );
@@ -412,6 +480,7 @@ function diffObservations(prevRows, curRows) {
           event(
             Object.assign({}, base, {
               kind: "node_removed",
+              ongoing: true,
               severity: "warning",
               title: label + " lost its storage role",
               detail:
@@ -472,11 +541,19 @@ function diffObservations(prevRows, curRows) {
   // ---- nodes that stopped being reported ---------------------------------
   // A node losing its role is caught above; this is a node Garage no longer
   // lists at all, which produces no row and so cannot be caught there.
+  //
+  // `failed` is the set of nodes whose NodeMetrics row threw while being
+  // written this scrape. They are absent from curRows for a reason that has
+  // nothing to do with the cluster, and reporting one as removed would be a
+  // fabrication — one that now costs an *open* condition rather than a stray
+  // row. scrapeOnce collects them; see the docblock.
   for (const p of prevRows || []) {
     if (seenNow[p.node_id]) continue;
+    if (failed[p.node_id]) continue;
     events.push(
       event({
         kind: "node_removed",
+        ongoing: true,
         severity: "warning",
         node_id: p.node_id,
         node_hostname: p.node_hostname,
@@ -497,34 +574,244 @@ function diffObservations(prevRows, curRows) {
 }
 
 /**
- * Persist detector events. `occurredAt` is a PocketBase date string supplied by
- * the caller so every event from one scrape shares an instant — and so this
- * file needs no clock, which is what keeps `diffObservations` testable.
+ * Is an ongoing condition still true at this scrape?
  *
- * `app` must be the transactional app from the scrape: an event and the sample
- * it was derived from commit together or not at all.
+ * Three answers, and the third is the one that matters: `null` means **this
+ * scrape cannot tell**, and the row is left exactly as it is. Treating "cannot
+ * tell" as "over" would resolve a real outage the moment the layout failed to
+ * load, which is the one thing a timeline must never do.
+ *
+ *   true  — still going, leave the row open
+ *   false — over, close the row
+ *   null  — indeterminate, touch nothing
  */
-function recordEvents(app, events, occurredAt) {
-  if (!events || events.length === 0) return 0;
-  const collection = app.findCollectionByNameOrId(COLLECTION);
-  let written = 0;
-  for (const e of events) {
-    const record = new Record(collection);
-    record.set("kind", e.kind);
-    record.set("source", e.source);
-    record.set("severity", e.severity);
-    record.set("node_id", e.node_id);
-    record.set("node_hostname", e.node_hostname);
-    record.set("node_zone", e.node_zone);
-    record.set("title", e.title);
-    record.set("detail", e.detail);
-    record.set("previous_value", e.previous_value);
-    record.set("new_value", e.new_value);
-    record.set("occurred_at", occurredAt);
-    app.save(record);
-    written++;
+function conditionActive(kind, cur, wasFailed) {
+  // The node's row threw while being written. Its absence says something about
+  // this process, not about the cluster.
+  if (wasFailed) return null;
+
+  if (kind === "node_state") {
+    // Not reported at all. Whether that is an outage or a removal is
+    // node_removed's question, and answering it here would close an outage on
+    // a node that has actually vanished.
+    if (!cur) return null;
+    return !cur.is_up;
   }
-  return written;
+
+  if (kind === "node_removed") {
+    // Still not listed by Garage.
+    if (!cur) return true;
+    // The same gate the diff applies: role_ok means "this row was written by a
+    // scraper that records the role columns", so without it a capacity of 0 is
+    // indistinguishable from an absent field. Closing on that would announce a
+    // node had rejoined the layout because the layout could not be read.
+    if (!cur.role_ok) return null;
+    return !(cur.role_capacity_bytes > 0);
+  }
+
+  return null;
+}
+
+/** `kind` and `node_id` together identify a condition. */
+function conditionKey(kind, nodeId) {
+  return kind + "\u0000" + (nodeId || "");
+}
+
+/**
+ * Turn one scrape's detected events into the three things the writer does:
+ * create rows, re-open rows, and close rows.
+ *
+ * **Pure, and clockless like `diffObservations`** — no Goja globals, no
+ * requires, no `Date`. The flap window is not applied here: `readOpenConditions`
+ * has already bounded its query by it, so every closed row in `openRows` is by
+ * construction recent enough to re-open. That is what lets vitest drive this
+ * across the workspace boundary.
+ *
+ * `openRows` is the mixed set that query returns — rows with `ended_at = ""`
+ * (open now) and rows closed within the window (re-openable).
+ *
+ * The three passes:
+ *
+ *   - **close** every open row whose condition `conditionActive` says is over.
+ *     Driven by current state, not by an edge, so a node that recovered during
+ *     a gap in the cron is still resolved.
+ *   - **drop** an opening event whose condition is already open. This is the
+ *     repeat suppression: a node that stays down re-emits nothing, and neither
+ *     does one whose row was opened by an earlier scrape.
+ *   - **re-open** the most recently closed row for that condition if there is
+ *     one, bumping its occurrence count; otherwise **create**.
+ *
+ * Point-in-time events pass through to `creates` untouched — every one of the
+ * eleven other kinds takes this path and none of the above applies to it.
+ */
+function reconcileOngoing(events, curRows, openRows, failedNodeIds) {
+  const seenNow = byNode(curRows);
+  const failed = {};
+  for (const id of failedNodeIds || []) failed[id] = true;
+
+  const open = {};
+  const recent = {};
+  for (const row of openRows || []) {
+    if (ONGOING_KINDS.indexOf(row.kind) === -1) continue;
+    const key = conditionKey(row.kind, row.node_id);
+    if (!row.ended_at) {
+      open[key] = row;
+      continue;
+    }
+    // Most recently closed wins. Dates are ISO-ish and same-length, so a string
+    // comparison orders them without parsing — and without a clock.
+    const held = recent[key];
+    if (!held || String(row.ended_at) > String(held.ended_at)) recent[key] = row;
+  }
+
+  const creates = [];
+  const reopens = [];
+  const closes = [];
+
+  for (const key in open) {
+    const row = open[key];
+    const active = conditionActive(
+      row.kind,
+      seenNow[row.node_id],
+      !!failed[row.node_id]
+    );
+    if (active === false) closes.push({ id: row.id });
+  }
+
+  for (const e of events || []) {
+    if (!e.ongoing) {
+      creates.push(e);
+      continue;
+    }
+    const key = conditionKey(e.kind, e.node_id);
+    if (open[key]) continue; // already recorded — this is the noise suppression
+
+    const prior = recent[key];
+    if (prior) {
+      reopens.push({
+        id: prior.id,
+        // A row written before the column existed reads back 0; it opened once
+        // to exist at all, so this recurrence makes two.
+        occurrence_count: (prior.occurrence_count || 1) + 1,
+      });
+      // One re-open per condition per scrape. A second opening event for the
+      // same key cannot happen from one set of observations, but leaving the
+      // row in `recent` would make a double-bump possible if one ever did.
+      delete recent[key];
+      continue;
+    }
+    creates.push(e);
+  }
+
+  return { creates: creates, reopens: reopens, closes: closes };
+}
+
+/**
+ * The open and recently-closed conditions, as plain objects for
+ * `reconcileOngoing`.
+ *
+ * `cutoffPbDate` bounds the re-openable half: pass now minus FLAP_WINDOW_SEC
+ * and every closed row that comes back is inside the window, which is what
+ * keeps the flap rule out of the pure function. Open rows are unbounded — an
+ * outage that has been running for six weeks is exactly the one that must still
+ * be found and closed.
+ *
+ * `source = "detector"` first, so `idx_clusterevents_source_ended` serves the
+ * predicate. The kind filter is applied in JS rather than in the filter string:
+ * it is a handful of rows either way, and the list lives in one place above.
+ */
+function readOpenConditions(app, cutoffPbDate) {
+  const records = app.findRecordsByFilter(
+    COLLECTION,
+    'source = "detector" && (ended_at = "" || ended_at >= {:cutoff})',
+    "-occurred_at",
+    0,
+    0,
+    { cutoff: cutoffPbDate }
+  );
+
+  const out = [];
+  for (const r of records) {
+    const kind = r.getString("kind");
+    if (ONGOING_KINDS.indexOf(kind) === -1) continue;
+    out.push({
+      id: r.id,
+      kind: kind,
+      node_id: r.getString("node_id"),
+      ended_at: r.getString("ended_at"),
+      occurrence_count: r.getInt("occurrence_count"),
+    });
+  }
+  return out;
+}
+
+/**
+ * Apply a `reconcileOngoing` plan. `occurredAt` is a PocketBase date string
+ * supplied by the caller so every row touched by one scrape shares an instant —
+ * and so this file needs no clock, which is what keeps the two functions above
+ * testable.
+ *
+ * `app` must be the transactional app from the scrape: a row and the sample it
+ * was derived from commit together or not at all.
+ *
+ * Closes run before re-opens and creates. Nothing depends on the order — the
+ * plan was computed against a snapshot taken before any of these writes — but a
+ * scrape that resolves one node and opens a condition on another reads better
+ * in that order if it ever has to be traced through the log.
+ *
+ * Returns `{ created, reopened, closed }` rather than one number: "wrote 3
+ * rows" and "closed 2 outages and opened 1" are different facts about a
+ * cluster, and the cron line prints both.
+ */
+function recordEvents(app, plan, occurredAt) {
+  const result = { created: 0, reopened: 0, closed: 0 };
+  if (!plan) return result;
+
+  for (const c of plan.closes || []) {
+    const record = app.findRecordById(COLLECTION, c.id);
+    record.set("ended_at", occurredAt);
+    app.save(record);
+    result.closed++;
+  }
+
+  for (const r of plan.reopens || []) {
+    const record = app.findRecordById(COLLECTION, r.id);
+    // Blanked, not moved: the row keeps its original occurred_at, because the
+    // incident started when it started. The counter is what says it came back.
+    record.set("ended_at", "");
+    record.set("occurrence_count", r.occurrence_count);
+    app.save(record);
+    result.reopened++;
+  }
+
+  const creates = plan.creates || [];
+  if (creates.length > 0) {
+    const collection = app.findCollectionByNameOrId(COLLECTION);
+    for (const e of creates) {
+      const record = new Record(collection);
+      record.set("kind", e.kind);
+      record.set("source", e.source);
+      record.set("severity", e.severity);
+      record.set("node_id", e.node_id);
+      record.set("node_hostname", e.node_hostname);
+      record.set("node_zone", e.node_zone);
+      record.set("title", e.title);
+      record.set("detail", e.detail);
+      record.set("previous_value", e.previous_value);
+      record.set("new_value", e.new_value);
+      record.set("occurred_at", occurredAt);
+      // A point-in-time row is BORN CLOSED. That is what makes `ended_at = ""`
+      // mean "unresolved" rather than "the detector had nothing to say", which
+      // is all it meant before — see 1787800000_close_legacy_events.js, which
+      // retrofits the same statement onto every row written until now.
+      record.set("ended_at", e.ongoing ? "" : occurredAt);
+      record.set("occurrence_count", e.ongoing ? 1 : 0);
+      app.save(record);
+      result.created++;
+    }
+  }
+
+  return result;
 }
 
 module.exports = {
@@ -532,6 +819,11 @@ module.exports = {
   DATA_DROP_PCT,
   DATA_DROP_MIN_BYTES,
   CLUSTER_DROP_RATIO,
+  FLAP_WINDOW_SEC,
+  ONGOING_KINDS,
+  conditionActive,
   diffObservations,
+  reconcileOngoing,
+  readOpenConditions,
   recordEvents,
 };

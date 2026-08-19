@@ -29,7 +29,7 @@ import {
   type CoverageReason,
   type NodeCoverage,
 } from '@/lib/metrics/data-coverage';
-import { CATEGORY_LABELS, SEVERITY_LABEL } from '@/lib/cluster-timeline';
+import { SEVERITY_LABEL, eventBadgeLabel } from '@/lib/cluster-timeline';
 import type { ClusterNodeItem, ClusterTimelineEvent } from '@/lib/types';
 import { nodeKey, nodeLabel, parseNodeTags } from '@/lib/node-label';
 import { cn } from '@/lib/utils';
@@ -136,36 +136,42 @@ const COVERAGE_REASON: Record<CoverageReason, string> = {
 };
 
 /**
- * Open manual notes pinned to this node — the "under repair" state, which is
- * one open row and no extra column (see CLAUDE.md, Cluster events).
+ * Everything still open on this node: a hand-written note (the "under repair"
+ * state) and any condition the detector has not seen clear. One open row, no
+ * extra column — see CLAUDE.md, Cluster events.
  *
- * Amber rather than destructive on purpose: a node under repair is a node
- * somebody is already dealing with, which is a different thing from a node
- * that is failing unattended. It sits at the top because it is the one piece
- * of context that changes how everything below it should be read.
+ * **The heading follows the rows, not the other way round.** A node with a note
+ * against it is one somebody is already dealing with; a node with only a
+ * detected condition is one nobody has picked up yet. Calling the second
+ * "under repair" would claim an owner it does not have, which is the more
+ * misleading of the two errors available here.
+ *
+ * Amber rather than destructive either way: both are a node wanting attention,
+ * not a node actively losing data. It sits at the top because it is the one
+ * piece of context that changes how everything below it should be read.
  */
 function RepairBanner({ events }: { events: ClusterTimelineEvent[] }) {
+  const claimed = events.some((e) => e.source === 'manual');
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
       <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
         <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
-        Under repair
+        {claimed ? 'Under repair' : 'Unresolved'}
       </p>
       <ul className="space-y-2">
         {events.map((e) => (
           <li key={e.id}>
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="text-sm font-medium">{e.title}</span>
-              {e.category && (
-                <Badge
-                  variant="outline"
-                  className="border-amber-500/40 text-amber-700 dark:text-amber-400"
-                >
-                  {CATEGORY_LABELS[
-                    e.category as keyof typeof CATEGORY_LABELS
-                  ] ?? e.category}
-                </Badge>
-              )}
+              {/* A detector row has no category — guessing a cause is the
+                  detector's job least of all — so this falls back to its kind,
+                  which is what `eventBadgeLabel` is for. */}
+              <Badge
+                variant="outline"
+                className="border-amber-500/40 text-amber-700 dark:text-amber-400"
+              >
+                {eventBadgeLabel(e)}
+              </Badge>
             </div>
             <p className="text-xs text-muted-foreground">
               {/* Absolute, not "open for 4 days": a relative duration means
@@ -173,6 +179,9 @@ function RepairBanner({ events }: { events: ClusterTimelineEvent[] }) {
                   rejects — correctly, since it makes the render unstable. */}
               Open since {formatPbDateTime(e.occurred_at)} ·{' '}
               {SEVERITY_LABEL[e.severity] ?? e.severity}
+              {e.occurrence_count >= 2
+                ? ` · ${e.occurrence_count} occurrences`
+                : ''}
             </p>
           </li>
         ))}
@@ -282,7 +291,8 @@ function NodeDetailsBody({
   const sample = metric ? describeSample(metric) : null;
   // The name renders as the title, so it must not repeat as a badge.
   const { name, rest } = parseNodeTags(item.tags);
-  const underRepair = openEvents.length > 0;
+  const openRows = openEvents.length > 0;
+  const underRepair = openEvents.some((e) => e.source === 'manual');
 
   return (
     <>
@@ -310,11 +320,15 @@ function NodeDetailsBody({
           ) : (
             <Badge variant="destructive">down</Badge>
           )}
-          {underRepair && (
+          {underRepair ? (
             <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/15 dark:text-amber-400">
               under repair
             </Badge>
-          )}
+          ) : openRows ? (
+            <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/15 dark:text-amber-400">
+              unresolved
+            </Badge>
+          ) : null}
           {item.draining && (
             <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/15 dark:text-amber-400">
               draining
@@ -330,7 +344,7 @@ function NodeDetailsBody({
       </DialogHeader>
 
       <div className="space-y-4 overflow-y-auto p-4">
-        {underRepair && <RepairBanner events={openEvents} />}
+        {openRows && <RepairBanner events={openEvents} />}
 
         <Section title="Status">
           <Stat label="Connection">

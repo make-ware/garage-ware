@@ -236,18 +236,30 @@ export interface ClusterTimelineEvent {
   category: string;
   title: string;
   occurred_at: string;
-  /** '' means still open. Only meaningful on a manual row. */
+  /**
+   * '' means still open. Equal to `occurred_at` means an instant; later than it
+   * means a resolved condition, and the pair bounds its duration. Use
+   * `eventStatus()` in lib/cluster-timeline.ts rather than testing it by hand.
+   */
   ended_at: string;
+  /**
+   * How many times an ongoing condition has opened on this row — a node that
+   * flapped folds into one entry with a count instead of a row per cycle. 0 on
+   * a point-in-time row, and the UI renders it only from 2 up.
+   */
+  occurrence_count: number;
 }
 
 /** `GET /next-api/garage/cluster/events` — any signed-in user. */
 export interface ClusterTimelineResponse {
   items: ClusterTimelineEvent[];
   /**
-   * Every open manual note, **unwindowed** — an open row pinned to a node is
-   * what puts it "under repair", and a repair open longer than the window is
+   * Every unresolved row from every source, **unwindowed** — an open manual
+   * note puts its node "under repair", an open detector row says the node is
+   * offline or out of the layout, and either one open longer than the window is
    * the one most worth showing. Overlaps `items` for recent ones; they serve
-   * different questions ("what changed" vs "what is still wrong").
+   * different questions ("what changed" vs "what is still wrong"). Split on
+   * `source` before choosing wording.
    */
   openEvents: ClusterTimelineEvent[];
   /**

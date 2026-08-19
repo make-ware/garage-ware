@@ -26,6 +26,13 @@ const Query = z.object({
   category: z.enum(CLUSTER_EVENT_CATEGORIES).optional(),
   since: z.string().max(40).optional(),
   until: z.string().max(40).optional(),
+  /**
+   * Unresolved rows or finished ones — `ended_at = ""` against everything
+   * else. `resolved` therefore includes the point-in-time rows, which are born
+   * closed; `ongoing` is what the node strip on /admin/events asks for, so it
+   * gets only what genuinely still needs looking at.
+   */
+  status: z.enum(['ongoing', 'resolved']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   perPage: z.coerce
     .number()
@@ -55,6 +62,7 @@ export async function GET(req: Request) {
       category: url.searchParams.get('category') ?? undefined,
       since: url.searchParams.get('since') ?? undefined,
       until: url.searchParams.get('until') ?? undefined,
+      status: url.searchParams.get('status') ?? undefined,
       page: url.searchParams.get('page') ?? undefined,
       perPage: url.searchParams.get('perPage') ?? undefined,
     });
@@ -68,6 +76,7 @@ export async function GET(req: Request) {
       category: query.category,
       since: query.since,
       until: query.until,
+      status: query.status,
     });
 
     return Response.json({

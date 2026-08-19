@@ -42,24 +42,43 @@ interface GarageNodeCardProps {
   selected: boolean;
   /** An open manual note is pinned to this node — see CLAUDE.md, Cluster events. */
   underRepair?: boolean;
+  /**
+   * The detector has an open condition on this node that has not cleared —
+   * it left the layout, or it is not answering. Distinct from `underRepair`:
+   * that one means a person said they are dealing with it.
+   */
+  unresolved?: boolean;
   onSelect: (nodeId: string) => void;
 }
 
 /**
- * The dot answers "how worried should I be", so it takes the worst of the two
- * signals it has: down beats under repair beats unknown beats up. Liveness
- * alone was misleading — a node with an open repair note showed the same green
- * as a healthy one, which is exactly the thing the note exists to say.
+ * The dot answers "how worried should I be", so it takes the worst of the
+ * signals it has: down beats under repair beats an unresolved condition beats
+ * unknown beats up. Liveness alone was misleading — a node with an open repair
+ * note showed the same green as a healthy one, which is exactly the thing the
+ * note exists to say.
  *
- * Nothing is lost by the precedence: repair also renders as its own badge, so
- * a node that is both down and being worked on shows a red dot *and* the
- * badge, and the dot's title spells out both.
+ * Nothing is lost by the precedence: both amber states also render as their own
+ * badge, so a node that is down *and* being worked on shows a red dot and the
+ * badge, and the dot's title spells out every signal that applies.
+ *
+ * `unresolved` sits below `underRepair` because a person saying "I am on this"
+ * is more informative than a machine saying "something is wrong" — and a node
+ * that is merely down already has the red dot, so the commonest unresolved
+ * condition is never the reason the dot is amber.
  */
-function nodeStatus(isUp: boolean | null, underRepair: boolean) {
+function nodeStatus(
+  isUp: boolean | null,
+  underRepair: boolean,
+  unresolved: boolean
+) {
   const liveness = isUp === null ? 'status unknown' : isUp ? 'up' : 'down';
-  const label = underRepair ? `${liveness} · under repair` : liveness;
+  const label =
+    liveness +
+    (underRepair ? ' · under repair' : '') +
+    (unresolved ? ' · unresolved event' : '');
   if (isUp === false) return { dot: 'bg-destructive', label };
-  if (underRepair) return { dot: 'bg-amber-500', label };
+  if (underRepair || unresolved) return { dot: 'bg-amber-500', label };
   if (isUp === null) return { dot: 'bg-muted-foreground', label };
   return { dot: 'bg-emerald-500', label };
 }
@@ -68,13 +87,14 @@ export function GarageNodeCard({
   item,
   selected,
   underRepair = false,
+  unresolved = false,
   onSelect,
 }: GarageNodeCardProps) {
   const diskUsed =
     item.diskTotalBytes !== null && item.diskFreeBytes !== null
       ? item.diskTotalBytes - item.diskFreeBytes
       : null;
-  const status = nodeStatus(item.isUp, underRepair);
+  const status = nodeStatus(item.isUp, underRepair, unresolved);
   // `rest` drops the tag that supplied the name, so it never shows twice —
   // and, since the badges are capped at three, so a name badge cannot evict a
   // real tag like `ssd`.
@@ -108,6 +128,17 @@ export function GarageNodeCard({
             className="shrink-0 border-amber-500/60 text-[10px] text-amber-500"
           >
             under repair
+          </Badge>
+        )}
+        {/* Only when nobody has claimed the node: a note supersedes the
+            symptom it was written about, and two amber badges on one card
+            would say the same thing twice. */}
+        {unresolved && !underRepair && (
+          <Badge
+            variant="outline"
+            className="shrink-0 border-amber-500/60 text-[10px] text-amber-500"
+          >
+            unresolved
           </Badge>
         )}
         {item.draining && (

@@ -9,8 +9,11 @@ import {
   KIND_LABELS,
   SEVERITY_LABEL,
   SEVERITY_TONE,
+  STATUS_LABEL,
+  STATUS_TONE,
   TIMELINE_DAYS,
   eventBadgeLabel,
+  eventStatus,
   groupEventsByWeek,
   startOfWeek,
 } from './cluster-timeline';
@@ -227,6 +230,76 @@ describe('presentation maps', () => {
     for (const severity of CLUSTER_EVENT_SEVERITIES) {
       expect(SEVERITY_TONE[severity]).toBeTruthy();
       expect(SEVERITY_LABEL[severity]).toBeTruthy();
+    }
+  });
+});
+
+describe('eventStatus', () => {
+  it('reads an empty end date as still running', () => {
+    expect(
+      eventStatus({ occurred_at: '2026-08-19 09:15:00.000Z', ended_at: '' })
+    ).toBe('ongoing');
+  });
+
+  it('reads a missing end date as still running', () => {
+    expect(eventStatus({ occurred_at: '2026-08-19 09:15:00.000Z' })).toBe(
+      'ongoing'
+    );
+  });
+
+  it('reads an end equal to the start as an instant', () => {
+    // Every point-in-time row is born closed this way, which is what makes the
+    // empty case mean "unresolved" rather than "the detector said nothing".
+    expect(
+      eventStatus({
+        occurred_at: '2026-08-19 09:15:00.000Z',
+        ended_at: '2026-08-19 09:15:00.000Z',
+      })
+    ).toBe('instant');
+  });
+
+  it('reads a later end as a resolved condition', () => {
+    expect(
+      eventStatus({
+        occurred_at: '2026-08-19 09:15:00.000Z',
+        ended_at: '2026-08-19 10:30:00.000Z',
+      })
+    ).toBe('resolved');
+  });
+
+  it('compares across PocketBase and ISO date formats', () => {
+    // The detector writes both halves in PocketBase's space-separated form; a
+    // row closed by hand through PATCH carries a real ISO string. Comparing
+    // them as strings would sort every `T` after every space on the same day.
+    expect(
+      eventStatus({
+        occurred_at: '2026-08-19 09:15:00.000Z',
+        ended_at: '2026-08-19T10:30:00.000Z',
+      })
+    ).toBe('resolved');
+    expect(
+      eventStatus({
+        occurred_at: '2026-08-19 09:15:00.000Z',
+        ended_at: '2026-08-19T09:15:00.000Z',
+      })
+    ).toBe('instant');
+  });
+
+  it('treats an unparseable end date as an instant rather than open', () => {
+    // Failing towards "nothing to resolve" — a row that cannot be read must not
+    // pin a node amber on the cluster map for ever.
+    expect(
+      eventStatus({ occurred_at: '2026-08-19 09:15:00.000Z', ended_at: 'soon' })
+    ).toBe('instant');
+  });
+
+  it('has a label and a tone for every state, and none for an instant', () => {
+    // An instant renders no pill at all, so the two blanks are load-bearing.
+    expect(STATUS_LABEL.instant).toBe('');
+    expect(STATUS_TONE.instant).toBe('');
+    for (const state of ['ongoing', 'resolved'] as const) {
+      expect(STATUS_LABEL[state]).toBeTruthy();
+      expect(STATUS_TONE[state]).toBeTruthy();
     }
   });
 });
