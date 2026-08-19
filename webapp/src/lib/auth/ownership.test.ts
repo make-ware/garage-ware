@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TypedPocketBase } from '@/lib/types';
 import { assertNodeOwner } from './ownership';
 
@@ -65,6 +65,13 @@ function pbFor(userId: string): TypedPocketBase {
 beforeEach(() => {
   fake.owners.clear();
   fake.admins.clear();
+  // The cases below describe the feature as enabled; the flag is read at call
+  // time, so a stub per test run is enough. Flag-off has its own describe.
+  vi.stubEnv('FEATURE_NODE_CLAIMS', 'true');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('assertNodeOwner', () => {
@@ -101,6 +108,34 @@ describe('assertNodeOwner', () => {
 
   it('short-circuits when the caller is already known to be an admin', async () => {
     // No lookup at all — the caller has already paid for the Admins query.
+    await expect(
+      assertNodeOwner(pbFor('admin1'), NODE, 'admin1', true)
+    ).resolves.toEqual({ isAdmin: true });
+  });
+});
+
+describe('assertNodeOwner with FEATURE_NODE_CLAIMS off', () => {
+  it('refuses a non-admin even when they genuinely own the node', async () => {
+    // This one check is what makes every NodeOwners row inert while the
+    // feature is dark: the owner-fallback paths in the claims handlers all run
+    // through here, so they turn admin-only at once. The row itself is kept.
+    vi.stubEnv('FEATURE_NODE_CLAIMS', '');
+    fake.owners.set(NODE, 'u1');
+    await expect(assertNodeOwner(pbFor('u1'), NODE, 'u1')).rejects.toThrow(
+      /disabled on this instance/
+    );
+  });
+
+  it('still passes an admin — the capability falls back to admins', async () => {
+    vi.stubEnv('FEATURE_NODE_CLAIMS', '');
+    fake.admins.add('admin1');
+    await expect(
+      assertNodeOwner(pbFor('admin1'), NODE, 'admin1')
+    ).resolves.toEqual({ isAdmin: true });
+  });
+
+  it('honours a pre-resolved isAdmin without a lookup', async () => {
+    vi.stubEnv('FEATURE_NODE_CLAIMS', '');
     await expect(
       assertNodeOwner(pbFor('admin1'), NODE, 'admin1', true)
     ).resolves.toEqual({ isAdmin: true });

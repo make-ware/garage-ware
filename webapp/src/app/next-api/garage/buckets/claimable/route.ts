@@ -1,6 +1,7 @@
 import { AccessKeyMutator } from '@garage-ware/shared/mutators';
 import { GarageClient, buckets, keys } from '@/lib/garage';
 import { liveKeyIdsFor } from '@/lib/storage/live-keys';
+import { featureAssetClaims } from '@/lib/setup/features';
 import {
   errorResponse,
   getPbAsSuperuser,
@@ -63,6 +64,14 @@ export interface ClaimableBucket {
 export async function GET(req: Request) {
   try {
     const { pb, user } = await getServerUser(req);
+
+    // FEATURE_ASSET_CLAIMS off: answer empty rather than 403. This fetch sits
+    // in a Promise.all on /dashboard/buckets, where a rejection would blank the
+    // whole bucket list; an empty list is the conclusive fail-safe answer, and
+    // ClaimableBucketsCard already renders nothing for it.
+    if (!featureAssetClaims()) {
+      return Response.json({ items: [] });
+    }
 
     // Self-scoped: the AccessKeys listRule returns only keys this caller has
     // already claimed by proving the secret.

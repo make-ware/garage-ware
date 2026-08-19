@@ -6,6 +6,7 @@ import {
   getServerUser,
   isUserAdmin,
 } from '@/lib/auth/server';
+import { featureNodeClaims } from '@/lib/setup/features';
 import { writeTimelineActionRow } from '@/lib/cluster/timeline-write';
 
 export const dynamic = 'force-dynamic';
@@ -40,6 +41,16 @@ export async function DELETE(
     if (record.user !== user.id) {
       isAdmin = await isUserAdmin(pb, user.id);
       if (!isAdmin) throw new HttpError(403, 'You do not own this node');
+    } else if (!featureNodeClaims()) {
+      // FEATURE_NODE_CLAIMS off: even self-release is admin work. The rows are
+      // meant to sit inert, not to be shed by their holders while the feature
+      // is dark. Admins revoke as usual.
+      isAdmin = await isUserAdmin(pb, user.id);
+      if (!isAdmin)
+        throw new HttpError(
+          403,
+          'Node claiming is disabled on this instance. Ask an administrator.'
+        );
     }
 
     // Write rules are null; only the superuser client can delete.

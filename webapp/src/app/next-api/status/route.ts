@@ -25,6 +25,8 @@ import {
   requireAdminOrUnclaimed,
 } from '@/lib/auth/server';
 import { effectiveSignupMode } from '@/lib/setup/signup-mode';
+import { featureAssetClaims, featureNodeClaims } from '@/lib/setup/features';
+import { hostsMatch, requestPublicHost } from '@/lib/setup/public-url';
 import { expectedClaimToken } from '@/lib/setup/claim';
 import {
   worstState,
@@ -244,18 +246,15 @@ function checkAppUrl(req: Request): Check {
       hint: 'Storage-invite emails and daily usage alerts are skipped entirely without it — the invite row is still written, but nobody is told.',
     };
   }
-  const requestHost = (() => {
-    try {
-      return new URL(req.url).host;
-    } catch {
-      return null;
-    }
-  })();
+  // NOT `new URL(req.url).host` — Next.js builds that from the server's own
+  // bind address, so behind the container's `--hostname 0.0.0.0 --port 3000`
+  // it reads `0.0.0.0:3000` on every request and this check never passed.
+  const requestHost = requestPublicHost(req.headers);
   const configuredHost = hostOf(configured);
   if (
     requestHost &&
     configuredHost !== 'malformed URL' &&
-    requestHost !== configuredHost
+    !hostsMatch(requestHost, configuredHost)
   ) {
     return {
       id: 'app-public-url',
@@ -400,7 +399,8 @@ async function checkAccess(): Promise<Check> {
       ? 'invite only — an address needs a pending storage invite, or an admin-created account'
       : mode === 'open'
         ? 'open — anyone who can reach the sign-up page may create an account'
-        : 'closed — only administrators can create accounts';
+        : 'closed (the default) — only administrators can create accounts';
+  const featureText = `Node claiming is ${featureNodeClaims() ? 'enabled' : 'off (admin-only)'}; key/bucket claiming is ${featureAssetClaims() ? 'enabled' : 'off (admin-only)'}.`;
   try {
     const pb = await getPbAsSuperuser();
     const admins = await pb.collection('Admins').getList(1, 1);
@@ -418,10 +418,10 @@ async function checkAccess(): Promise<Check> {
       id: 'access',
       label: 'Access control',
       state: mode === 'open' ? 'warn' : 'ok',
-      detail: `${admins.totalItems} administrator(s). Sign-up is ${modeText}.${tokenLive ? ' A setup claim token is still present.' : ''}`,
+      detail: `${admins.totalItems} administrator(s). Sign-up is ${modeText}. ${featureText}${tokenLive ? ' A setup claim token is still present.' : ''}`,
       hint:
         mode === 'open'
-          ? 'If this deployment is reachable from the internet, consider SIGNUP_MODE=invite.'
+          ? 'If this deployment is reachable from the internet, consider SIGNUP_MODE=closed or invite.'
           : undefined,
     };
   } catch {

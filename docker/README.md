@@ -13,14 +13,22 @@ Hooks ([pocketbase/pb_hooks/](../pocketbase/pb_hooks/)) and migrations ([pocketb
 
 ## Pull the published image
 
-[.github/workflows/docker-build.yml](../.github/workflows/docker-build.yml) publishes a multi-arch manifest (`linux/amd64` + `linux/arm64`) to `ghcr.io/make-ware/garage-ware` on every release, tagged `vX.Y.Z` and `latest`. The image name is derived from `${{ github.repository }}`, so it tracks the repo's location automatically.
+[.github/workflows/docker-build.yml](../.github/workflows/docker-build.yml) publishes a multi-arch manifest (`linux/amd64` + `linux/arm64`) on every release, tagged `vX.Y.Z` and `latest`, to **two registries**:
 
-The repo is private, so the package inherits that — `docker login ghcr.io` with a PAT holding `read:packages` before pulling:
+| Registry | Image | For |
+|---|---|---|
+| Docker Hub | `dastron/garage-ware` | the public install path |
+| GHCR | `ghcr.io/make-ware/garage-ware` | development |
+
+Both are public, so pulling needs no login:
 
 ```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+docker pull dastron/garage-ware:latest
+# or, the same digests:
 docker pull ghcr.io/make-ware/garage-ware:latest
 ```
+
+It is one build, not two: each per-arch image is pushed **by digest to both registries at once**, and one manifest list per registry is assembled from the same digests — so the two registries serve byte-identical images. The GHCR name is derived from `${{ github.repository }}` and tracks the repo's location automatically; the Docker Hub name is hardcoded, since a Docker Hub namespace is its own account and does not follow the git repo. Pushing to Docker Hub uses the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` repository secrets; GHCR uses the built-in `GITHUB_TOKEN`.
 
 Published images carry `org.opencontainers.image.source` (on both the per-arch images and the merged manifest), which is what links the GHCR package back to this repo — that link is what lets the package inherit the repo's access list instead of needing its own.
 
@@ -138,16 +146,16 @@ docker compose exec garage-ware node /app/pb/scripts/seed-admin.mjs you@example.
 
 ### Who can sign up
 
-`SIGNUP_MODE` controls it, and defaults to **`invite`**:
+`SIGNUP_MODE` controls it, and defaults to **`closed`**:
 
 | Value | Who may create an account |
 |---|---|
-| `invite` (default) | Addresses holding a pending storage invite, plus accounts an admin creates from `/admin/users` |
+| `closed` (default) | Nobody — administrators create every account |
+| `invite` | Addresses holding a pending storage invite, plus accounts an admin creates from `/admin/users` |
 | `open` | Anyone who can reach the sign-up page |
-| `closed` | Nobody — administrators create every account |
 
-An unrecognised value falls back to `invite`, never `open`, so a typo cannot
-throw the doors open.
+An unset or unrecognised value falls back to `closed`, never `open`, so a typo
+cannot throw the doors open.
 
 **While no administrator exists, sign-up stays open regardless of this setting** —
 otherwise a fresh install would lock out its own owner before they could claim
@@ -203,7 +211,7 @@ docker run -d --name garage-ware \
   -e GARAGE_ADMIN_TOKEN=… \
   -e GARAGE_S3_ENDPOINT=https://s3.your-domain \
   -e GARAGE_S3_REGION=us-east-1 \
-  -e SIGNUP_MODE=invite \
+  -e SIGNUP_MODE=closed \
   -e NODE_ENV=production \
   garage-ware
 ```
@@ -216,7 +224,9 @@ docker run -d --name garage-ware \
 | `GARAGE_S3_REGION` | no | Defaults to `us-east-1`. |
 | `GARAGE_PUBLIC_S3_ENDPOINT` | no | Falls back to `GARAGE_S3_ENDPOINT`. Set it when the URL you advertise to users differs from the CORS-enabled gateway the in-app browser must talk to. |
 | `APP_PUBLIC_URL` | recommended | Storage-invite emails and daily usage alerts are **skipped entirely** — the invite row is still written, but nobody is told. |
-| `SIGNUP_MODE` | no | Defaults to `invite`. See [Who can sign up](#who-can-sign-up). |
+| `SIGNUP_MODE` | no | Defaults to `closed`. See [Who can sign up](#who-can-sign-up). |
+| `FEATURE_NODE_CLAIMS` | no | Defaults to off — users cannot claim node ownership or grant storage from nodes; admins do both. Set `true` to enable. |
+| `FEATURE_ASSET_CLAIMS` | no | Defaults to off — users cannot self-claim pre-existing Garage keys/buckets; admins import them instead. Set `true` to enable. |
 | `SETUP_OWNER_EMAIL` | no | Use the printed claim token instead. |
 | `SETUP_CLAIM_TOKEN` | no | The container mints one and stores it under `/data/setup/`. |
 | `POCKETBASE_ADMIN_EMAIL` / `POCKETBASE_ADMIN_PASSWORD` | no | The container generates them on first boot and stores them at `/data/pb_superuser.env`. **Set both or neither** — setting one is a hard error. |
@@ -303,7 +313,7 @@ column matches what the page reports.
 | `smtp` | Invites 502, resets never arrive | Configure mail at `/_/#/settings/mail` |
 | `metrics-scrape` | Metrics charts empty | Needs `GARAGE_ADMIN_URL`/`TOKEN`; the cron runs every 15 min |
 | `balance-drift` | Non-zero drift | A bug, not routine maintenance — worth reporting |
-| `access` | Unexpected sign-ups, or none possible | Check `SIGNUP_MODE` |
+| `access` | Unexpected sign-ups, or none possible | Check `SIGNUP_MODE` (and the `FEATURE_*` flags it reports) |
 
 `GARAGE_S3_ENDPOINT` / `GARAGE_S3_REGION` are the public S3 gateway URL + region
 the in-app file browser and bucket "connect" page point at. They are served to

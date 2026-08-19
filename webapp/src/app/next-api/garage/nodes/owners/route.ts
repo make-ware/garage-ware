@@ -10,6 +10,7 @@ import {
 } from '@/lib/auth/server';
 import { writeTimelineActionRow } from '@/lib/cluster/timeline-write';
 import { isFullNodeId, isNodeKey, nodeKey } from '@/lib/node-label';
+import { featureNodeClaims } from '@/lib/setup/features';
 import { isUniqueViolation } from '@/lib/storage/unique-violation';
 
 export const dynamic = 'force-dynamic';
@@ -138,6 +139,16 @@ export async function POST(req: Request) {
       cachedIsAdmin ??= await isUserAdmin(pb, user.id);
       return cachedIsAdmin;
     };
+
+    // FEATURE_NODE_CLAIMS off closes the self-claim door entirely; admin
+    // assignment (the key-based path) keeps working, since the capability is
+    // meant to fall back to admins rather than disappear.
+    if (!featureNodeClaims() && !(await callerIsAdmin())) {
+      throw new HttpError(
+        403,
+        'Node claiming is disabled on this instance. Ask an administrator.'
+      );
+    }
 
     // Default to self; only ask whether the caller is an admin when they name
     // somebody else. Same escalation idiom as /next-api/garage/transfers.

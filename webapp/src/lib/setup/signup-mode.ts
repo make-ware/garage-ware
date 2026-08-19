@@ -9,13 +9,14 @@
 export const SIGNUP_MODES = ['invite', 'open', 'closed'] as const;
 export type SignupMode = (typeof SIGNUP_MODES)[number];
 
-export const DEFAULT_SIGNUP_MODE: SignupMode = 'invite';
+export const DEFAULT_SIGNUP_MODE: SignupMode = 'closed';
 
 /**
  * Parse a configured mode, falling back to the default.
  *
- * An unrecognised value falls back to `invite` rather than `open`: a typo in
- * this variable must not silently throw the doors open.
+ * An unset or unrecognised value falls back to `closed`, never `open`: sign-up
+ * is off unless an operator explicitly enables it, and a typo in this variable
+ * must not silently throw the doors open.
  */
 export function parseSignupMode(raw: string | undefined | null): SignupMode {
   const value = (raw ?? '').trim().toLowerCase();

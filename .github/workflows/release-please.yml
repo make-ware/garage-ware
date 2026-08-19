@@ -31,4 +31,8 @@ jobs:
     uses: ./.github/workflows/docker-build.yml
     with:
       tag_name: ${{ needs.release-please.outputs.tag_name }}
+    # The Docker Hub mirror needs DOCKERHUB_USERNAME / DOCKERHUB_TOKEN, and a
+    # called workflow sees no secrets unless they are passed. GITHUB_TOKEN is
+    # always available regardless, so this only widens the Docker Hub path.
+    secrets: inherit
 

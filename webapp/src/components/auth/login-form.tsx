@@ -8,6 +8,7 @@ import { LoginSchema } from '@garage-ware/shared/schema';
 import type { LoginData } from '@garage-ware/shared/schema';
 import { safeRedirect } from '@/lib/safe-redirect';
 import { useAuth } from '@/hooks/use-auth';
+import { useSetupStatus } from '@/lib/setup/use-setup-status';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -31,6 +32,9 @@ export function LoginForm({ onSuccess, redirectTo }: LoginFormProps) {
   const { login } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Only promote sign-up when it is genuinely open; invited users arrive via
+  // their emailed /signup link. Seeds closed, so the link never flashes.
+  const { status: setupStatus } = useSetupStatus();
 
   const {
     register,
@@ -159,17 +163,19 @@ export function LoginForm({ onSuccess, redirectTo }: LoginFormProps) {
         </Button>
       </form>
 
-      <div className="text-center">
-        <p className="text-sm text-gray-600">
-          Don&apos;t have an account?{' '}
-          <Link
-            href="/signup"
-            className="font-medium text-blue-600 hover:text-blue-500"
-          >
-            Sign up
-          </Link>
-        </p>
-      </div>
+      {setupStatus.signupMode === 'open' && (
+        <div className="text-center">
+          <p className="text-sm text-gray-600">
+            Don&apos;t have an account?{' '}
+            <Link
+              href="/signup"
+              className="font-medium text-blue-600 hover:text-blue-500"
+            >
+              Sign up
+            </Link>
+          </p>
+        </div>
+      )}
     </div>
   );
 }

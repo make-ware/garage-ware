@@ -15,6 +15,7 @@ import {
 import { toast } from 'sonner';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { useAdminStatus } from '@/hooks/use-admin-status';
+import { useFeatures } from '@/lib/setup/use-features';
 import { useAuth } from '@/hooks/use-auth';
 import { api } from '@/lib/api-client';
 import { formatStorage } from '@/lib/format';
@@ -131,6 +132,9 @@ async function claimPendingInvites(): Promise<ClaimResponse | null> {
 
 function StorageDashboard() {
   const { isAdmin } = useAdminStatus();
+  // Seeds all-off, so node-claiming surfaces stay hidden until the server
+  // confirms the feature is enabled.
+  const { features } = useFeatures();
   // Already in context — the account card needs no fetch of its own.
   const { user } = useAuth();
   // Deliberately its own fetch, not a sixth call in `loadData`: a failure there
@@ -398,12 +402,17 @@ function StorageDashboard() {
             ) : claimsByNode.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 No node quotas yet. An administrator grants storage per cluster
-                node, and{' '}
-                <Link href="/dashboard/nodes" className="underline">
-                  claiming a node you contributed
-                </Link>{' '}
-                lets you grant it yourself. Storage gifted by other users is not
-                tied to a node.
+                node
+                {features.nodeClaims ? (
+                  <>
+                    , and{' '}
+                    <Link href="/dashboard/nodes" className="underline">
+                      claiming a node you contributed
+                    </Link>{' '}
+                    lets you grant it yourself
+                  </>
+                ) : null}
+                . Storage gifted by other users is not tied to a node.
               </p>
             ) : (
               <table className="w-full text-sm">
@@ -464,59 +473,67 @@ function StorageDashboard() {
           three of them inline and hides the rest behind the avatar dropdown, so
           a user who never opens that menu would otherwise have no way to find
           "My nodes" or their own account settings. */}
-      <div className="mb-6 grid gap-6 lg:grid-cols-2 lg:items-start">
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ServerCog className="h-5 w-5" />
-              Nodes you own
-            </CardTitle>
-            <CardDescription>
-              Claim a machine you contributed to the cluster and grant storage
-              sourced from it — to yourself or to anyone else by email.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex-1">
-            {!data ? (
-              <div
-                className="h-12 animate-pulse rounded bg-muted"
-                aria-label="Loading owned nodes"
-              />
-            ) : data.ownedNodes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                You don&apos;t own any cluster nodes yet. If you run one, claim
-                it with the full node id that <code>garage node id</code> prints
-                on the machine.
-              </p>
-            ) : (
-              <>
-                <p className="text-3xl font-bold tabular-nums">
-                  {data.ownedNodes.length}
-                </p>
+      <div
+        className={
+          features.nodeClaims
+            ? 'mb-6 grid gap-6 lg:grid-cols-2 lg:items-start'
+            : 'mb-6 grid gap-6 lg:items-start'
+        }
+      >
+        {features.nodeClaims && (
+          <Card className="flex flex-col">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ServerCog className="h-5 w-5" />
+                Nodes you own
+              </CardTitle>
+              <CardDescription>
+                Claim a machine you contributed to the cluster and grant storage
+                sourced from it — to yourself or to anyone else by email.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1">
+              {!data ? (
+                <div
+                  className="h-12 animate-pulse rounded bg-muted"
+                  aria-label="Loading owned nodes"
+                />
+              ) : data.ownedNodes.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  {data.ownedNodes.length === 1 ? 'node' : 'nodes'} owned —{' '}
-                  <strong>{formatStorage(ownedUsableGb)}</strong> of usable
-                  capacity you can grant from.
+                  You don&apos;t own any cluster nodes yet. If you run one,
+                  claim it with the full node id that{' '}
+                  <code>garage node id</code> prints on the machine.
                 </p>
-              </>
-            )}
-          </CardContent>
-          <CardFooter className="border-t pt-4">
-            <Link href="/dashboard/nodes" className="w-full">
-              <Button
-                className="w-full"
-                variant={
-                  data && data.ownedNodes.length > 0 ? 'outline' : 'default'
-                }
-              >
-                {data && data.ownedNodes.length > 0
-                  ? 'Manage my nodes'
-                  : 'Claim a node'}
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Button>
-            </Link>
-          </CardFooter>
-        </Card>
+              ) : (
+                <>
+                  <p className="text-3xl font-bold tabular-nums">
+                    {data.ownedNodes.length}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {data.ownedNodes.length === 1 ? 'node' : 'nodes'} owned —{' '}
+                    <strong>{formatStorage(ownedUsableGb)}</strong> of usable
+                    capacity you can grant from.
+                  </p>
+                </>
+              )}
+            </CardContent>
+            <CardFooter className="border-t pt-4">
+              <Link href="/dashboard/nodes" className="w-full">
+                <Button
+                  className="w-full"
+                  variant={
+                    data && data.ownedNodes.length > 0 ? 'outline' : 'default'
+                  }
+                >
+                  {data && data.ownedNodes.length > 0
+                    ? 'Manage my nodes'
+                    : 'Claim a node'}
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
+              </Link>
+            </CardFooter>
+          </Card>
+        )}
 
         <Card className="flex flex-col">
           <CardHeader>

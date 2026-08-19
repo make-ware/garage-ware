@@ -13,7 +13,9 @@
 
 services:
   garage-ware:
-    image: ghcr.io/make-ware/garage-ware:latest
+    image: dastron/garage-ware:latest
+    # The identical image is also at ghcr.io/make-ware/garage-ware:latest —
+    # same build, same digests, both public.
     # To build from a checkout instead of pulling, comment out `image:` above
     # and uncomment this:
     # build:

@@ -7,6 +7,7 @@ import {
   getServerUser,
 } from '@/lib/auth/server';
 import { createBackoff } from '@/lib/auth/backoff';
+import { featureAssetClaims } from '@/lib/setup/features';
 import { isUniqueViolation } from '@/lib/storage/unique-violation';
 
 export const dynamic = 'force-dynamic';
@@ -68,6 +69,15 @@ const backoff = createBackoff();
 export async function POST(req: Request) {
   try {
     const { user } = await getServerUser(req);
+    // FEATURE_ASSET_CLAIMS off: refuse before touching the body, the backoff or
+    // Garage — no work, no oracle. There is no admin bypass here on purpose:
+    // an admin cannot know the secret, and their door is POST /keys/import.
+    if (!featureAssetClaims()) {
+      throw new HttpError(
+        403,
+        'Claiming existing keys is disabled on this instance. Ask an administrator to import the key for you.'
+      );
+    }
     const body = ClaimBody.parse(await req.json());
 
     const garage = GarageClient.fromEnv();

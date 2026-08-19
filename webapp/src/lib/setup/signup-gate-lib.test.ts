@@ -5,11 +5,15 @@ import { describe, expect, it } from 'vitest';
 // decides who can get into the instance, and it runs somewhere with no test
 // runner. Its top level touches no Goja globals and makes no requires.
 import {
+  DEFAULT_SIGNUP_MODE as HOOK_DEFAULT_SIGNUP_MODE,
   decideSignup,
   parseSignupMode,
   refusalMessage,
 } from '../../../../pocketbase/pb_hooks/lib/signup-gate.js';
-import { parseSignupMode as parseInWebapp } from './signup-mode';
+import {
+  DEFAULT_SIGNUP_MODE,
+  parseSignupMode as parseInWebapp,
+} from './signup-mode';
 
 interface SignupInput {
   mode: string;
@@ -38,14 +42,16 @@ describe('parseSignupMode', () => {
     expect(parseSignupMode('INVITE')).toBe('invite');
   });
 
-  it('falls back to invite — never open — for junk or absence', () => {
-    // A typo in SIGNUP_MODE must not throw the doors open.
-    expect(parseSignupMode('opne')).toBe('invite');
-    expect(parseSignupMode(undefined)).toBe('invite');
-    expect(parseSignupMode('')).toBe('invite');
+  it('falls back to closed — never open — for junk or absence', () => {
+    // Sign-up is off unless an operator explicitly enables it, and a typo in
+    // SIGNUP_MODE must not throw the doors open.
+    expect(parseSignupMode('opne')).toBe('closed');
+    expect(parseSignupMode(undefined)).toBe('closed');
+    expect(parseSignupMode('')).toBe('closed');
   });
 
   it('agrees with the webapp-side parser it must stay in step with', () => {
+    expect(HOOK_DEFAULT_SIGNUP_MODE).toBe(DEFAULT_SIGNUP_MODE);
     for (const v of ['open', 'closed', 'invite', 'junk', '', undefined]) {
       expect(parseSignupMode(v)).toBe(parseInWebapp(v));
     }

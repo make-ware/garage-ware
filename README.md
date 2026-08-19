@@ -7,18 +7,16 @@ Self-hosted management console for a [Garage HQ](https://garagehq.deuxfleurs.fr/
 - **Shared**: Zod schemas + typed mutators in a workspace package
 - **Monorepo**: Yarn v4 workspaces (`webapp`, `shared`, `pocketbase`)
 
-Repo: [make-ware/garage-ware](https://github.com/make-ware/garage-ware) · Images: `ghcr.io/make-ware/garage-ware`
+Repo: [make-ware/garage-ware](https://github.com/make-ware/garage-ware) · Images: `dastron/garage-ware` (Docker Hub) and `ghcr.io/make-ware/garage-ware` (GHCR)
 
 ## Self-host with Docker
 
 You need a running Garage cluster with a layout applied, and an admin token for
 it (`garage admin-token create --name garage-ware`).
 
-Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to GHCR. The repo is private, so the package is too — authenticate to `ghcr.io` first with a personal access token that has `read:packages`:
+Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to Docker Hub as [`dastron/garage-ware`](https://hub.docker.com/r/dastron/garage-ware). It is public, so no registry login is needed:
 
 ```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-
 git clone https://github.com/make-ware/garage-ware.git
 cd garage-ware
 
@@ -37,14 +35,22 @@ paste the token — you are now the administrator. `/admin/status` then reports
 anything still misconfigured, with the fix for each.
 
 Pin a release instead of tracking `latest` by setting the image tag to
-`ghcr.io/make-ware/garage-ware:v1.8.3`. To build from your checkout instead of
+`dastron/garage-ware:v1.8.3`. To build from your checkout instead of
 pulling, uncomment the `build:` block in [docker-compose.yml](docker-compose.yml).
+
+The identical image is also published to `ghcr.io/make-ware/garage-ware`, which
+is where development work pulls from. Both registries are public and serve the
+same digests, so either tag works — Docker Hub is simply the one this README
+points at.
 
 Three things worth knowing before you invite anyone:
 
-- **Sign-up is invite-only by default** (`SIGNUP_MODE`). While no administrator
-  exists it stays open so you can create the account you will claim with, which
-  is why claiming promptly matters.
+- **Sign-up is closed by default** (`SIGNUP_MODE=closed`; set `invite` or
+  `open` to loosen it). While no administrator exists it stays open so you can
+  create the account you will claim with, which is why claiming promptly
+  matters. Node claiming and key/bucket claiming are likewise off until you set
+  `FEATURE_NODE_CLAIMS=true` / `FEATURE_ASSET_CLAIMS=true` — until then those
+  flows are admin-only.
 - **Email needs configuring** at `/_/#/settings/mail`, or invites and password
   resets silently never arrive.
 - **A new user has no storage** until you grant them a claim from
@@ -112,6 +118,21 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `install --immuta
 Conventional commits on `main` drive [release-please](.github/workflows/release-please.yml), which maintains a release PR bumping [package.json](package.json), [.release-please-manifest.json](.release-please-manifest.json), and [CHANGELOG.md](CHANGELOG.md). Merging it tags `vX.Y.Z`, cuts a GitHub release, and calls [docker-build.yml](.github/workflows/docker-build.yml) to publish `ghcr.io/make-ware/garage-ware:vX.Y.Z` and `:latest`.
 
 Both workflows are repo-location agnostic — the image name comes from `${{ github.repository }}` and auth from the built-in `GITHUB_TOKEN`, so nothing needs editing if the repo moves again. To publish outside a release, push a `v*.*.*` tag or run **Docker Build and Publish** from the Actions tab.
+
+### Two registries, one build
+
+Every release publishes to both:
+
+| Registry | Image | For |
+|---|---|---|
+| Docker Hub | `dastron/garage-ware` | the public install path |
+| GHCR | `ghcr.io/make-ware/garage-ware` | development |
+
+Both are public, so neither needs a login to pull. Docker Hub needs two repository secrets to *push* — `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (an access token with Read & Write), under *Settings → Secrets and variables → Actions*. GHCR uses the built-in `GITHUB_TOKEN`.
+
+Each per-arch image is pushed **by digest to both registries in the same build**, then one manifest list per registry is assembled from those digests — so the two serve byte-identical images with identical digests, not two independent builds. Tags match on both sides (`vX.Y.Z` and `latest`).
+
+Unlike the GHCR name, the Docker Hub repo is hardcoded in [docker-build.yml](.github/workflows/docker-build.yml): a Docker Hub namespace is its own account and does not follow the git repo if it moves. A fork needs to edit that one `DOCKERHUB_IMAGE` line, or the Docker Hub push will fail on credentials it does not have.
 
 ## License
 

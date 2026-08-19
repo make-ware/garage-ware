@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * `GET /next-api/garage/buckets/claimable` — the ordering, which is the whole
@@ -67,6 +67,9 @@ const KEYED_BUCKET = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // These tests describe the feature as enabled; the flag-off answer has its
+  // own case below. The env is read at request time, so stubs land per call.
+  vi.stubEnv('FEATURE_ASSET_CLAIMS', 'true');
   ownedKeys.items = [{ garage_key_id: 'GK1' }];
   pbRows.claimed = [];
   garage.listBuckets.mockResolvedValue([{ id: 'b-free', globalAliases: [] }]);
@@ -83,7 +86,25 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('GET /next-api/garage/buckets/claimable', () => {
+  it('answers empty with zero Garage calls when FEATURE_ASSET_CLAIMS is off', async () => {
+    // Empty, not 403: this fetch sits in a Promise.all on /dashboard/buckets,
+    // and an empty list is the conclusive fail-safe answer.
+    vi.stubEnv('FEATURE_ASSET_CLAIMS', '');
+    const { GET } = await import('./route');
+
+    const res = await GET(req());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ items: [] });
+    expect(garage.listBuckets).not.toHaveBeenCalled();
+    expect(garage.getKeyInfo).not.toHaveBeenCalled();
+  });
+
   it('does no per-key work when every bucket is already claimed', async () => {
     pbRows.claimed = [{ garage_bucket_id: 'b-free' }];
     const { GET } = await import('./route');

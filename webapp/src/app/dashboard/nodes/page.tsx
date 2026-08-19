@@ -28,6 +28,7 @@ import { ConfirmDeleteDialog } from '@/components/ui/confirm-delete-dialog';
 import { SetClaimDialog } from '@/components/admin/set-claim-dialog';
 import { NodeIdentity } from '@/components/cluster/node-identity';
 import { api } from '@/lib/api-client';
+import { useFeatures } from '@/lib/setup/use-features';
 import { formatStorage } from '@/lib/format';
 import { isFullNodeId, nodeLabel, parseNodeTags } from '@/lib/node-label';
 import { nodeUsableGbFrom } from '@/lib/storage/ledger-math';
@@ -59,6 +60,10 @@ interface OwnedNode {
 }
 
 function NodesView() {
+  // Seeds all-off; `loaded` keeps an enabled deployment from flashing the
+  // disabled card while the flags are still on the wire.
+  const { features, loaded: featuresLoaded } = useFeatures();
+  const nodeClaimsEnabled = features.nodeClaims;
   const [owned, setOwned] = useState<OwnedNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState(false);
@@ -111,6 +116,8 @@ function NodesView() {
   }
 
   useEffect(() => {
+    // Nothing to fetch while the feature is off — the routes would 403 anyway.
+    if (!nodeClaimsEnabled) return;
     let cancelled = false;
     const load = async () => {
       try {
@@ -128,7 +135,7 @@ function NodesView() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [nodeClaimsEnabled]);
 
   async function claimNode(e: React.FormEvent) {
     e.preventDefault();
@@ -170,6 +177,39 @@ function NodesView() {
     });
     toast.success('Node released');
     await refresh();
+  }
+
+  if (!nodeClaimsEnabled) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-6xl">
+        <div className="mb-6">
+          <Link
+            href="/dashboard"
+            className="text-sm text-muted-foreground hover:underline inline-flex items-center"
+          >
+            <ArrowLeft className="mr-1 h-4 w-4" /> Back to dashboard
+          </Link>
+          <h1 className="mt-2 text-2xl font-semibold">My nodes</h1>
+        </div>
+        {featuresLoaded ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Node claiming is disabled on this instance</CardTitle>
+              <CardDescription>
+                Node ownership and storage grants are handled by the
+                administrators here. If you contributed a machine, ask an
+                administrator to assign it to you and grant its storage.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : (
+          <div
+            className="h-24 animate-pulse rounded-lg bg-muted"
+            aria-label="Loading"
+          />
+        )}
+      </div>
+    );
   }
 
   return (

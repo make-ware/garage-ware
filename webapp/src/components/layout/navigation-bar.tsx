@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useFeatures } from '@/lib/setup/use-features';
+import { useSetupStatus } from '@/lib/setup/use-setup-status';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
@@ -42,6 +44,11 @@ export function NavigationBar({ className }: NavigationBarProps) {
   const { user, isAuthenticated, logout, isLoading } = useAuth();
   const isMobile = useIsMobile();
   const pathname = usePathname();
+  // Both hooks seed at the safe default (features off, signups closed), so the
+  // gated entries stay hidden until the server says otherwise.
+  const { features } = useFeatures();
+  const { status: setupStatus } = useSetupStatus();
+  const showSignup = setupStatus.signupMode === 'open';
 
   // Helper function to get user initials for avatar fallback
   const getUserInitials = (name?: string, email?: string) => {
@@ -70,21 +77,25 @@ export function NavigationBar({ className }: NavigationBarProps) {
     { href: '/dashboard/cluster', label: 'Cluster' },
   ];
 
-  // Navigation links for authenticated users
+  // Navigation links for authenticated users. "My Nodes" only exists when
+  // node claiming is enabled on this deployment.
   const authenticatedLinks = [
     { href: '/dashboard', label: 'Dashboard', icon: HardDrive },
     { href: '/dashboard/buckets', label: 'Buckets', icon: HardDrive },
     { href: '/dashboard/keys', label: 'Access Keys', icon: KeyRound },
     { href: '/dashboard/metrics', label: 'Metrics', icon: ChartLine },
     { href: '/dashboard/cluster', label: 'Cluster', icon: Server },
-    { href: '/dashboard/nodes', label: 'My Nodes', icon: ServerCog },
+    ...(features.nodeClaims
+      ? [{ href: '/dashboard/nodes', label: 'My Nodes', icon: ServerCog }]
+      : []),
     { href: '/profile', label: 'Profile', icon: Settings },
   ];
 
-  // Navigation links for unauthenticated users
+  // Navigation links for unauthenticated users. Sign-up is promoted only when
+  // it is genuinely open — invited users arrive via their emailed /signup link.
   const unauthenticatedLinks = [
     { href: '/login', label: 'Login' },
-    { href: '/signup', label: 'Sign Up' },
+    ...(showSignup ? [{ href: '/signup', label: 'Sign Up' }] : []),
   ];
 
   return (
@@ -192,9 +203,11 @@ export function NavigationBar({ className }: NavigationBarProps) {
                   <Button variant="ghost" asChild>
                     <Link href="/login">Login</Link>
                   </Button>
-                  <Button asChild>
-                    <Link href="/signup">Sign Up</Link>
-                  </Button>
+                  {showSignup && (
+                    <Button asChild>
+                      <Link href="/signup">Sign Up</Link>
+                    </Button>
+                  )}
                 </div>
               )}
             </nav>

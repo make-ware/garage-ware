@@ -13,15 +13,16 @@
  * and throws; this says what should happen.
  */
 
-/** Fallback when SIGNUP_MODE is unset or unrecognised. */
-const DEFAULT_SIGNUP_MODE = "invite";
+/** Fallback when SIGNUP_MODE is unset or unrecognised: sign-up is off by default. */
+const DEFAULT_SIGNUP_MODE = "closed";
 
 const SIGNUP_MODES = ["invite", "open", "closed"];
 
 /**
- * An unrecognised value falls back to `invite`, never to `open` — a typo in
- * this variable must not silently throw the doors open. Keep in step with
- * webapp/src/lib/setup/signup-mode.ts, which parses the same values for display.
+ * An unset or unrecognised value falls back to `closed`, never to `open` — a
+ * typo in this variable must not silently throw the doors open. Keep in step
+ * with webapp/src/lib/setup/signup-mode.ts, which parses the same values for
+ * display.
  */
 function parseSignupMode(raw) {
   const value = String(raw || "").trim().toLowerCase();

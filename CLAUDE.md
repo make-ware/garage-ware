@@ -84,7 +84,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs: `yarn install --
 
 ## Repo location and release pipeline
 
-The canonical remote is **`github.com/make-ware/garage-ware`** (private; moved from `dastron/garage-ware`). Container images publish to **`ghcr.io/make-ware/garage-ware`**.
+The canonical remote is **`github.com/make-ware/garage-ware`** (private; moved from `dastron/garage-ware`). Container images publish to **two public registries from one build**: **`dastron/garage-ware`** on Docker Hub — the public install path, what [docker-compose.yml](docker-compose.yml) and the READMEs point at — and **`ghcr.io/make-ware/garage-ware`** on GHCR, for development. Both carry the same digests.
 
 Three workflows, none of which hardcode the owner — the image name comes from `${{ github.repository }}` and auth from the built-in `GITHUB_TOKEN`, so another move needs no workflow edits:
 
@@ -92,14 +92,17 @@ Three workflows, none of which hardcode the owner — the image name comes from 
 |---|---|---|
 | [ci.yml](.github/workflows/ci.yml) | push/PR on `main` | the quality gate above |
 | [release-please.yml](.github/workflows/release-please.yml) | push on `main` | maintains a release PR (bumps [package.json](package.json) + [.release-please-manifest.json](.release-please-manifest.json), writes [CHANGELOG.md](CHANGELOG.md)); on merge tags `vX.Y.Z`, cuts a release, then calls docker-build |
-| [docker-build.yml](.github/workflows/docker-build.yml) | `workflow_call` from release-please, a `v*.*.*` tag push, a published release, or manual dispatch | builds `linux/amd64` + `linux/arm64` in parallel, pushes by digest, then merges one multi-arch manifest tagged `vX.Y.Z` + `latest` |
+| [docker-build.yml](.github/workflows/docker-build.yml) | `workflow_call` from release-please, a `v*.*.*` tag push, a published release, or manual dispatch | builds `linux/amd64` + `linux/arm64` in parallel, pushes by digest, then merges one multi-arch manifest tagged `vX.Y.Z` + `latest` — to GHCR always, and to Docker Hub when configured |
 
 Notes when touching these:
 
 - **Conventional commits are load-bearing.** release-please derives the version bump and changelog from `feat:` / `fix:` / `feat!:` prefixes. A non-conventional commit message produces no release entry.
 - **Version lives in three places** — [package.json](package.json), [.release-please-manifest.json](.release-please-manifest.json), and the `v*` git tag. release-please owns all three; never bump by hand.
 - **`org.opencontainers.image.source`** is set on both the per-arch images and the merged manifest. That label is what links the GHCR package to this repo (and so makes the package inherit repo access) — keep it if you rewrite the labels block.
-- The repo is private, so the GHCR package is too: pulling needs `docker login ghcr.io` with a PAT carrying `read:packages`.
+- **The repo is private; both packages are public.** Package visibility is set on the package, not inherited from the repo, so neither registry needs a login to pull — do not reintroduce the `read:packages` PAT instructions that used to be in the READMEs.
+- **The Docker Hub name is the one hardcoded identifier in these workflows, and it has to be.** `DOCKERHUB_IMAGE: docker.io/dastron/garage-ware` cannot be derived from `${{ github.repository }}` the way the GHCR name is — a Docker Hub namespace is a separate account that does not follow the git repo if it moves. Credentials come from the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets. The consequence to know: a fork inherits a push to a namespace it has no token for, so moving or forking needs that one line edited, unlike everything else here.
+- **One build, two registries — never two builds.** The build job pushes each per-arch image **by digest to both names at once** (`outputs: type=image,"name=ghcr…,docker.io/…",push-by-digest=true`; the inner quotes are load-bearing, since buildx parses that string as CSV and the comma between the two names would otherwise split the field). The merge job then runs `imagetools create` once per registry over the *same* digests. So the two registries serve identical digests rather than two independently-built images that happen to share a tag, and Docker Hub costs no extra build minutes. Do not "simplify" this into a second matrix build.
+- **`release-please.yml` passes `secrets: inherit`.** A called workflow sees no secrets at all unless the caller passes them, so without it the Docker Hub login would fail on exactly the trigger that matters — the release — while working fine on a manual dispatch. `GITHUB_TOKEN` is available either way, which is why the omission was invisible until now.
 - Tags and releases that release-please itself creates do **not** re-trigger workflows (`GITHUB_TOKEN`-authored events never do) — that's why release-please invokes docker-build via `workflow_call` rather than relying on the tag-push trigger. The `push: tags` / `release: published` triggers are for human-created tags and releases.
 
 ## Required env vars
@@ -115,6 +118,7 @@ See [.env.example](.env.example) — [webapp/.env.example](webapp/.env.example) 
 - `APP_PUBLIC_URL` — server-only, read via `$os.getenv` by the PocketBase `bucket-usage-alerts` cron **and** the `StorageInvites` create hook, to build absolute CTA links in emails. Must reach the PB process (in Docker, pass via `docker run -e`). Unset and each logs a warning and skips — for invites that means the row is still written and visible to the sender, but nobody is told.
 - `GARAGE_COST_USD_PER_TB` / `GARAGE_HARDWARE_LIFESPAN_YEARS` — **optional, server-only** (defaults `22` and `5`), read at request time by [webapp/src/lib/pricing/config.ts](webapp/src/lib/pricing/config.ts) and served to the browser by [`/next-api/config/pricing`](webapp/src/app/next-api/config/pricing/route.ts). They drive the dashboard's cost-comparison card. **`GARAGE_COST_USD_PER_TB` is the one-time cost of one TB of *raw disk*** — what the drive cost, a number an operator reads off an invoice. The cluster's **replication factor is applied on top, in code, from the live layout**, so at RF 3 a usable terabyte costs three times this. That split is deliberate: the operator configures what they paid, the cluster's own topology supplies the rest, and changing the replication factor moves the figure automatically. Non-numeric or non-positive values fall back to the defaults — notably `0`, which would otherwise render the cluster as free and the saving as infinite. The route deliberately does **not** return an effective $/GB/month, since that needs the replication factor the browser already holds from `/cluster/nodes`. See [Storage cost card](#storage-cost-card).
 - `NODE_METRICS_RETENTION_DAYS` — **optional, server-only**, read via `$os.getenv` by the `node-metrics-scrape` cron: days of `NodeMetrics` history to keep (older rows are pruned each run). Default 90; `0` keeps everything. It does **not** touch `ClusterEvents`, which is never pruned — the timeline is meant to outlast the samples it explains.
+- `FEATURE_NODE_CLAIMS` / `FEATURE_ASSET_CLAIMS` — **optional, Next.js-process-only, default OFF**; only `true`/`1` (parsed by [webapp/src/lib/setup/features.ts](webapp/src/lib/setup/features.ts), fails closed) enables. `FEATURE_NODE_CLAIMS` gates user node-ownership claiming and node-owner storage grants ([Node ownership](#node-ownership)); off = admin-only, and existing `NodeOwners` rows go **inert** via the gate in `assertNodeOwner` (kept, not deleted). `FEATURE_ASSET_CLAIMS` gates user self-claiming of existing keys/buckets ([Claiming existing keys and buckets](#claiming-existing-keys-and-buckets)); off = the admin import routes are the only onboarding path. Served to the browser by [`/next-api/config/features`](webapp/src/app/next-api/config/features/route.ts) (a sibling of `/next-api/config`, so it inherits none of that route's 500-on-missing-endpoint behaviour) and read client-side via `useFeatures()` in [use-features.ts](webapp/src/lib/setup/use-features.ts), which seeds all-off so a failed fetch hides gated UI rather than flashing it. The routes enforce the flags regardless of what the UI shows.
 
 ## Architecture
 
@@ -227,6 +231,8 @@ Tests: [invites.test.ts](webapp/src/lib/storage/invites.test.ts) drives the clai
 
 `NodeOwners` lets a user who contributed hardware claim a cluster node by supplying its **full Garage node id**, and thereafter append `StorageClaims` entries sourced from it — to themselves or to any other user by email. Until this existed, every grant needed an admin, so anyone donating a machine had to ask permission to give away the capacity they had just provided.
 
+**The whole feature is behind `FEATURE_NODE_CLAIMS` (default off).** When off it is fully admin-only: `POST /nodes/owners` refuses non-admin claims, self-release is blocked, and the gate in `assertNodeOwner` makes every existing `NodeOwners` row **inert** — the owner-fallback paths in the claims handlers all turn admin-only at once, with the rows kept so re-enabling restores them untouched. The UI hides `/dashboard/nodes`, the nav entry and the dashboard card via `useFeatures()`.
+
 **Ownership decides *who may append a row*, never *how much*.** An owner's write runs through character-for-character the same `assertClaimDeltaAllowed` an admin's does, so all four storage invariants are untouched and the node's ceiling stays `capacity / replicationFactor`. There is no new arithmetic anywhere in this feature, and that is the property to preserve when extending it.
 
 **The full node id is the credential, and this route is the reason nothing else may emit one.** A **claim** body — anyone naming themselves, and any non-admin — must be a **full 64-character id**, never a node key: `isFullNodeId`, not a prefix match. Accepting a prefix there would hand ownership of any node to anyone who can read a page, since the key is on screen, in every payload and in every URL. **An admin *assignment* carries the key instead**, because that is the only node identifier the admin console has or is allowed to have — no route emits a full id and no page renders one, so requiring the credential at `/admin/nodes` made admin assignment a permanent 400. An admin needs no proof because there is nothing for it to add: they can already assign any node to any user and revoke it again. **The test is conditional on the *caller*, never on the value submitted** — a non-admin can produce no argument that turns a key into proof — and the zod refine deliberately checks only the *shape* (either form), leaving the admission decision in the handler where the caller's admin status is known. Either way the identifier is matched against the live layout and then **discarded**: what `NodeOwners.node_id` stores is `nodeKey(id)`, because a credential kept in a database is a credential that can leak from one. See [Node identity](#node-identity) for the split, which is what closed the ACCEPTED GAP that stood here — under which every full node id was readable from `/cluster/nodes` and from `NodeMetrics`, making a claim first-come-first-served among *all* signed-in users.
@@ -269,6 +275,8 @@ Three rules hold the rest together:
 #### Claiming existing keys and buckets
 
 The secondary onboarding path, alongside [Node ownership](#node-ownership): assets that already exist in Garage — made with the CLI, or before this control plane did — have no PocketBase owner, and the only way to attach one used to be an admin picking a user off a list in `/admin/keys` or `/admin/buckets` with no proof of anything. `POST /next-api/garage/keys/claim` and `/buckets/claim` let the cluster do the checking instead. **Creating keys and buckets in the app stays the primary path**; these two routes exist so somebody arriving with assets already in the cluster can onboard themselves.
+
+**Both routes are behind `FEATURE_ASSET_CLAIMS` (default off).** When off, `POST /keys/claim` and `POST /buckets/claim` answer a flat 403 before doing any work (no body parse, no backoff, no Garage call), and `GET /buckets/claimable` answers `{ items: [] }` rather than 403 — it sits in a `Promise.all` on `/dashboard/buckets`, and an empty list is the conclusive fail-safe answer the card already renders as nothing. There is deliberately **no admin bypass** on the claim routes: an admin cannot know the secret, and their door stays `keys/import` / `buckets/import`, which the flag never touches. The keys page hides its "Claim existing" control via `useFeatures()`.
 
 **One credential bootstraps everything.** The secret access key is the only thing a user holds that the cluster can verify, and Garage already records which keys own which buckets, so bucket ownership is *derived* rather than separately asserted:
 
@@ -666,13 +674,21 @@ drives `diffObservations`; `main.pb.js` does the I/O and throws
 already done its own check); an **empty `Admins` always passes**, because a
 closed fresh install would lock out its own owner before they could claim it;
 then `open`/`closed`; then invite mode, which admits `SETUP_OWNER_EMAIL` or a
-pending `StorageInvites` row. An unrecognised `SIGNUP_MODE` falls back to
-`invite`, **never `open`** — a typo must not throw the doors open.
+pending `StorageInvites` row. An unset or unrecognised `SIGNUP_MODE` falls back
+to `closed` (the default), **never `open`** — sign-up is off unless an operator
+explicitly enables it, and a typo must not throw the doors open.
 [signup-mode.ts](webapp/src/lib/setup/signup-mode.ts) parses the same values for
 display, and a test asserts the two parsers agree.
 
-> **Invite-only is a breaking change** for a deployment upgrading into it. Ship
-> as `feat!:` with `SIGNUP_MODE=open` as the one-line opt-out.
+> **Closed-by-default shipped as a breaking change** (`feat!:`): the default
+> was `invite` before, so a deployment upgrading into this needs
+> `SIGNUP_MODE=invite` or `open` as the one-line opt-out. The UI hides signup
+> surfaces to match: promotional links (home, nav, login form) render only when
+> the mode is `open` — read via `useSetupStatus()` in
+> [use-setup-status.ts](webapp/src/lib/setup/use-setup-status.ts), seeded
+> fail-safe at `closed` — and `/signup` shows a closed-state card on a claimed
+> `closed` instance while still rendering the form in `invite` mode, since
+> invite emails deep-link there.
 >
 > **Accepted gap:** while `Admins` is empty, sign-up is open regardless of mode.
 > Signing up in that window grants nothing — claiming still needs the token.
@@ -711,6 +727,18 @@ Two rules for anything added here:
   cannot leak through it. The copy-diagnostics block is a pure formatting pass over the
   same payload — if a value is unsafe to paste into a support thread it must not
   be in the payload either.
+- **Never take the request's host from `req.url`.** Next.js builds a Route
+  Handler's absolute URL from the server's own bind address, so under the
+  container's `next start --hostname 0.0.0.0 --port 3000` every request reads
+  back as `0.0.0.0:3000` whatever the browser typed — which made
+  `app-public-url` warn on every Docker deployment, correctly configured or not.
+  A signal that is always red teaches an operator to ignore the page it lives
+  on, so this is a worse failure than not checking at all.
+  [public-url.ts](webapp/src/lib/setup/public-url.ts) reads `X-Forwarded-Host`
+  then `Host` instead, and compares with a default port for the scheme stripped,
+  since a browser omits `:443` and `APP_PUBLIC_URL` is written with one. Both
+  headers are client-supplied and neither is authorization — this decides a line
+  of advisory copy.
 
 `GET /next-api/health` is separate and unauthenticated: `{status, pocketbase}`,
 no Garage, no config detail, 503 when PocketBase is unreachable. It is what the

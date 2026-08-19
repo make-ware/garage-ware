@@ -7,6 +7,7 @@ import { ArrowLeft, Plus, Copy, KeyRound } from 'lucide-react';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { OtpGatedDialog } from '@/components/auth/otp-gated-dialog';
 import { api } from '@/lib/api-client';
+import { useFeatures } from '@/lib/setup/use-features';
 import { toast } from 'sonner';
 import {
   Card,
@@ -47,6 +48,8 @@ interface CreatedSecret {
 }
 
 function KeysView() {
+  // Seeds all-off, so the claim button never flashes on a gated deployment.
+  const { features } = useFeatures();
   const router = useRouter();
   // `expired` is joined on by GET /keys from a single Garage ListKeys call;
   // null means Garage could not be reached, not "fine".
@@ -168,9 +171,11 @@ function KeysView() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setClaimOpen(true)}>
-              <KeyRound className="mr-2 h-4 w-4" /> Claim existing
-            </Button>
+            {features.assetClaims && (
+              <Button variant="outline" onClick={() => setClaimOpen(true)}>
+                <KeyRound className="mr-2 h-4 w-4" /> Claim existing
+              </Button>
+            )}
             <Button onClick={() => setCreateOpen(true)}>
               <Plus className="mr-2 h-4 w-4" /> New key
             </Button>
@@ -208,60 +213,64 @@ function KeysView() {
             </form>
           </OtpGatedDialog>
 
-          <Dialog open={claimOpen} onOpenChange={setClaimOpen}>
-            <DialogContent>
-              <form onSubmit={claimKey}>
-                <DialogHeader>
-                  <DialogTitle>Claim an existing key</DialogTitle>
-                  <DialogDescription>
-                    For a key made outside this app — with the Garage CLI, or
-                    before you had an account here. Holding the secret is what
-                    proves the key is yours. It is checked against the cluster
-                    and discarded; it is never stored here, and nothing on this
-                    site can show it to you again.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4 py-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="claim-key-id">Access key ID</Label>
-                    <Input
-                      id="claim-key-id"
-                      value={claimId}
-                      onChange={(e) => setClaimId(e.target.value)}
-                      placeholder="GK31c5b1f2a9d4e7c0"
-                      className="font-mono"
-                      autoComplete="off"
-                      maxLength={128}
-                      required
-                    />
+          {features.assetClaims && (
+            <Dialog open={claimOpen} onOpenChange={setClaimOpen}>
+              <DialogContent>
+                <form onSubmit={claimKey}>
+                  <DialogHeader>
+                    <DialogTitle>Claim an existing key</DialogTitle>
+                    <DialogDescription>
+                      For a key made outside this app — with the Garage CLI, or
+                      before you had an account here. Holding the secret is what
+                      proves the key is yours. It is checked against the cluster
+                      and discarded; it is never stored here, and nothing on
+                      this site can show it to you again.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="claim-key-id">Access key ID</Label>
+                      <Input
+                        id="claim-key-id"
+                        value={claimId}
+                        onChange={(e) => setClaimId(e.target.value)}
+                        placeholder="GK31c5b1f2a9d4e7c0"
+                        className="font-mono"
+                        autoComplete="off"
+                        maxLength={128}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="claim-key-secret">
+                        Secret access key
+                      </Label>
+                      <Input
+                        id="claim-key-secret"
+                        type="password"
+                        value={claimSecret}
+                        onChange={(e) => setClaimSecret(e.target.value)}
+                        className="font-mono"
+                        autoComplete="off"
+                        maxLength={512}
+                        required
+                      />
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="claim-key-secret">Secret access key</Label>
-                    <Input
-                      id="claim-key-secret"
-                      type="password"
-                      value={claimSecret}
-                      onChange={(e) => setClaimSecret(e.target.value)}
-                      className="font-mono"
-                      autoComplete="off"
-                      maxLength={512}
-                      required
-                    />
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button
-                    type="submit"
-                    disabled={
-                      claiming || !claimId.trim() || !claimSecret.trim()
-                    }
-                  >
-                    {claiming ? 'Checking...' : 'Claim key'}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
+                  <DialogFooter>
+                    <Button
+                      type="submit"
+                      disabled={
+                        claiming || !claimId.trim() || !claimSecret.trim()
+                      }
+                    >
+                      {claiming ? 'Checking...' : 'Claim key'}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
+          )}
         </div>
       </div>
 

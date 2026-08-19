@@ -6,6 +6,7 @@ import {
 } from '@garage-ware/shared/mutators';
 import type { AccessKey, Bucket, User } from '@garage-ware/shared';
 import type { TypedPocketBase } from '@/lib/types';
+import { featureNodeClaims } from '@/lib/setup/features';
 import { HttpError, getServerUser, isUserAdmin } from './server';
 
 /**
@@ -104,6 +105,21 @@ export async function assertNodeOwner(
   isAdmin?: boolean
 ): Promise<{ isAdmin: boolean }> {
   if (isAdmin) return { isAdmin: true };
+
+  // FEATURE_NODE_CLAIMS off makes every NodeOwners row inert: this guard is the
+  // single choke point for the owner fallback in the claims handlers (GET
+  // ?nodeId=, POST, PATCH/DELETE via authorizeEntry), so skipping the lookup
+  // here is what turns all of them admin-only at once. Rows are kept, not
+  // deleted — re-enabling the flag restores them untouched.
+  if (!featureNodeClaims()) {
+    const flagAdmin = await isUserAdmin(pb, userId);
+    if (!flagAdmin)
+      throw new HttpError(
+        403,
+        'Node ownership is disabled on this instance. Ask an administrator.'
+      );
+    return { isAdmin: true };
+  }
 
   const owners = new NodeOwnerMutator(pb);
   const record = await owners.findByNode(nodeId);

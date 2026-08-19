@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * `POST /next-api/garage/nodes/owners` — the admission test, which is the one
@@ -59,6 +59,10 @@ const post = (body: unknown) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The behaviour tests below describe the feature as enabled; the env is read
+  // at request time, so a stub before the call is enough. The flag-off gate has
+  // its own describe block.
+  vi.stubEnv('FEATURE_NODE_CLAIMS', 'true');
   layout.getLayout.mockResolvedValue({
     version: 1,
     roles: [{ id: FULL, zone: 'dc1', capacity: 1_000_000 }],
@@ -67,6 +71,37 @@ beforeEach(() => {
     id: 'own1',
     ...(data as object),
   }));
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('POST /next-api/garage/nodes/owners with FEATURE_NODE_CLAIMS off', () => {
+  it('refuses a non-admin claim even with the full id — the feature is dark', async () => {
+    vi.stubEnv('FEATURE_NODE_CLAIMS', '');
+    auth.isUserAdmin.mockResolvedValue(false);
+    const { POST } = await import('./route');
+
+    const res = await POST(post({ node_id: FULL }));
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('disabled');
+    expect(auth.create).not.toHaveBeenCalled();
+  });
+
+  it('still lets an admin assign by key — the capability falls back to admins', async () => {
+    vi.stubEnv('FEATURE_NODE_CLAIMS', '');
+    auth.isUserAdmin.mockResolvedValue(true);
+    const { POST } = await import('./route');
+
+    const res = await POST(post({ node_id: KEY, user_id: 'u2' }));
+
+    expect(res.status).toBe(200);
+    expect(auth.create).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'u2', node_id: KEY })
+    );
+  });
 });
 
 describe('POST /next-api/garage/nodes/owners', () => {

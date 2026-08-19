@@ -45,9 +45,22 @@ vi.mock('@/lib/pocketbase', () => ({
   getUserCollection: () => mockCollection,
 }));
 
+// The sign-up link renders only when the instance reports open sign-ups; the
+// hook seeds fail-safe at `closed`, so tests set the mode per case.
+const mockSetupStatus = vi.hoisted(() => ({
+  status: { claimed: true, signupMode: 'open' as string },
+  loaded: true,
+  error: null as string | null,
+}));
+
+vi.mock('@/lib/setup/use-setup-status', () => ({
+  useSetupStatus: () => mockSetupStatus,
+}));
+
 describe('LoginForm Component', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSetupStatus.status = { claimed: true, signupMode: 'open' };
   });
 
   const renderLoginForm = () => {
@@ -76,11 +89,20 @@ describe('LoginForm Component', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders sign up link with correct href', () => {
+  it('renders sign up link with correct href when sign-ups are open', () => {
     renderLoginForm();
 
     const signUpLink = screen.getByRole('link', { name: /sign up/i });
     expect(signUpLink).toHaveAttribute('href', '/signup');
+  });
+
+  it('hides the sign up link when sign-ups are not open', () => {
+    mockSetupStatus.status = { claimed: true, signupMode: 'closed' };
+    renderLoginForm();
+
+    expect(
+      screen.queryByRole('link', { name: /sign up/i })
+    ).not.toBeInTheDocument();
   });
 
   it('has email input with correct type attribute', () => {

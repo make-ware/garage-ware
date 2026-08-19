@@ -12,6 +12,7 @@ import { getUserPosition } from '@/lib/storage/summary';
 import { isUniqueViolation } from '@/lib/storage/unique-violation';
 import { bytesToGib } from '@/lib/storage/units';
 import { ownedBucketKeyFor } from '@/lib/storage/bucket-claim';
+import { featureAssetClaims } from '@/lib/setup/features';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,6 +71,14 @@ export interface ClaimBucketResponse {
 export async function POST(req: Request) {
   try {
     const { pb, user } = await getServerUser(req);
+    // FEATURE_ASSET_CLAIMS off: refuse before any Garage call. No admin bypass
+    // — the admin door is POST /buckets/import, which needs no proof.
+    if (!featureAssetClaims()) {
+      throw new HttpError(
+        403,
+        'Claiming existing buckets is disabled on this instance. Ask an administrator to import the bucket for you.'
+      );
+    }
     const body = ClaimBody.parse(await req.json());
 
     const garage = GarageClient.fromEnv();
