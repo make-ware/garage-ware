@@ -21,6 +21,8 @@ import {
   parseAuthError,
   getFieldError,
   getToastMessage,
+  DEFAULT_NOTIFICATION_THRESHOLD_PCT,
+  resolveNotificationThresholdPct,
 } from '@garage-ware/shared';
 
 // Schema for profile updates. Email is intentionally excluded — the account
@@ -77,7 +79,9 @@ export function ProfileForm() {
   const notifForm = useForm<z.infer<typeof NotificationSchema>>({
     resolver: zodResolver(NotificationSchema),
     defaultValues: {
-      notification_threshold_pct: user?.notification_threshold_pct ?? 90,
+      notification_threshold_pct: resolveNotificationThresholdPct(
+        user?.notification_threshold_pct
+      ),
     },
   });
 
@@ -368,7 +372,8 @@ export function ProfileForm() {
                 </p>
               )}
               <p className="text-sm text-muted-foreground">
-                Default is 90%. You will receive at most one email per day.
+                Default is {DEFAULT_NOTIFICATION_THRESHOLD_PCT}%. You will
+                receive at most one email per day.
               </p>
             </div>
 

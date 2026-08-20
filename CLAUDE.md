@@ -138,7 +138,7 @@ Two back ends, two auth boundaries:
 
 | Collection | Role |
 |---|---|
-| `Users` (auth) | Identity + `notification_threshold_pct` (10–90, default 90). No storage field — claims are derived from the ledgers |
+| `Users` (auth) | Identity + `notification_threshold_pct` (10–99, default 95). No storage field — claims are derived from the ledgers |
 | `Admins` | `user` relation; membership grants the admin scope. Self-scoped listRule is what makes `isUserAdmin` work without a superuser |
 | `AccessKeys` | `user`, `garage_key_id` (UNIQUE), `name`. Secret shown once, **never persisted or readable back**. All write rules `null`. No `expired` column — expiry is Garage state, joined at read time |
 | `Buckets` | `user`, `garage_bucket_id` (UNIQUE), `name` (UNIQUE), `quota_gb`, `object_quota`, plus the usage cache (`bytes`, `objects`, `max_size`, `max_objects`, `usage_updated_at`). All write rules `null` |

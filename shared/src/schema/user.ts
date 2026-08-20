@@ -8,6 +8,28 @@ import {
 } from 'pocketbase-zod-schema';
 import { z } from 'zod';
 
+/**
+ * Fill-alert threshold applied to an account that has never set one.
+ *
+ * Mirrored as a literal in the `bucket-usage-alerts` cron in
+ * `pocketbase/pb_hooks/main.pb.js` — Goja cannot import this package, so the
+ * two have to be changed together.
+ */
+export const DEFAULT_NOTIFICATION_THRESHOLD_PCT = 95;
+
+/**
+ * PocketBase returns `0` for an unset NumberField, never `undefined`, so a bare
+ * `?? DEFAULT_NOTIFICATION_THRESHOLD_PCT` renders 0% for every user who has not
+ * touched the setting. Read the field through here instead.
+ */
+export function resolveNotificationThresholdPct(
+  value: number | null | undefined
+): number {
+  return typeof value === 'number' && value > 0
+    ? value
+    : DEFAULT_NOTIFICATION_THRESHOLD_PCT;
+}
+
 export const UserSchema = z
   .object({
     name: TextField({ max: 255 }).optional(),
@@ -56,7 +78,7 @@ export const UserInputSchema = z
     password: TextField({ min: 8 }),
     passwordConfirm: z.string(),
     avatar: z.instanceof(File).optional(),
-    notification_threshold_pct: z.number().int().min(10).max(90).optional(),
+    notification_threshold_pct: z.number().int().min(10).max(99).optional(),
   })
   .refine((data) => data.password === data.passwordConfirm, {
     message: "Passwords don't match",

@@ -535,9 +535,11 @@ cronAdd("bucket-usage-alerts", "0 9 * * *", () => {
       continue;
     }
 
-    // Profile UI caps at 90; treat unset / 0 as 90 so users get the default.
+    // Treat unset / 0 as the default so users get alerts before they opt in.
+    // Mirrors DEFAULT_NOTIFICATION_THRESHOLD_PCT in shared/src/schema/user.ts,
+    // which Goja cannot import — change both together.
     const rawThreshold = user.getInt("notification_threshold_pct");
-    const threshold = rawThreshold > 0 ? rawThreshold : 90;
+    const threshold = rawThreshold > 0 ? rawThreshold : 95;
 
     const offenders = [];
     for (const b of byUser[uid]) {
