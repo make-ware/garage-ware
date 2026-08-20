@@ -45,6 +45,30 @@ function rolesOf(layout: ClusterLayout): readonly LayoutRole[] {
 }
 
 /**
+ * The one matcher all three resolvers share: every candidate whose key is
+ * `wanted`, and the 404/409 verdict on that list.
+ *
+ * Ambiguity is a 409 rather than a first match in all three, and factoring it
+ * here is what keeps that true — it needs a 64-bit collision to happen at all,
+ * so the one place it could be quietly softened is a copy that drifted.
+ */
+function theOneMatching(
+  candidates: readonly LayoutRole[],
+  wanted: string,
+  missing: string
+): string {
+  const matches = candidates.filter((c) => nodeKey(c.id) === wanted);
+  if (matches.length === 0) throw new HttpError(404, missing);
+  if (matches.length > 1) {
+    throw new HttpError(
+      409,
+      `Node key ${wanted} is ambiguous — ${matches.length} nodes share it`
+    );
+  }
+  return matches[0].id;
+}
+
+/**
  * The full node id whose key is `key`.
  *
  * Two nodes sharing a 16-character prefix is a 409, never a silent first match.
@@ -56,19 +80,39 @@ function rolesOf(layout: ClusterLayout): readonly LayoutRole[] {
  * does not have to know which it has.
  */
 export function resolveNodeKey(layout: ClusterLayout, key: string): string {
-  const wanted = nodeKey(key);
-  const matches = rolesOf(layout).filter((r) => nodeKey(r.id) === wanted);
+  return theOneMatching(
+    rolesOf(layout),
+    nodeKey(key),
+    'No such node in the cluster layout'
+  );
+}
 
-  if (matches.length === 0) {
-    throw new HttpError(404, 'No such node in the cluster layout');
-  }
-  if (matches.length > 1) {
-    throw new HttpError(
-      409,
-      `Node key ${wanted} is ambiguous — ${matches.length} nodes share it`
-    );
-  }
-  return matches[0].id;
+/**
+ * The full node id for a node the operator wants to **stage a role for** —
+ * resolved against a caller-supplied candidate list rather than the layout
+ * alone.
+ *
+ * The difference matters for the case the staging page exists to serve: a node
+ * that has joined the cluster and has *no role yet* is absent from
+ * `layout.roles` and present in `GetClusterStatus`. Resolving against the
+ * layout only would make "give this new node a role" unreachable except by
+ * typing a 64-character id into the browser — and this app has exactly one
+ * full-id input path (node ownership, where the id *is* the credential), which
+ * is a boundary worth keeping at one.
+ *
+ * Candidates are assembled by the caller so this function never decides what
+ * counts as addressable. Same verdicts as its siblings: 404 on a miss, 409 on
+ * an ambiguous key, never a first match.
+ */
+export function resolveStagingTarget(
+  candidates: readonly LayoutRole[],
+  key: string
+): string {
+  return theOneMatching(
+    candidates,
+    nodeKey(key),
+    'Garage does not know that node — connect it to the cluster first'
+  );
 }
 
 /**

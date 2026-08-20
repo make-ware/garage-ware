@@ -75,6 +75,38 @@ const ZoneRedundancySchema = z.union([
   z.object({ atLeast: z.number().int() }),
 ]);
 
+/**
+ * One entry of `stagedRoleChanges` — a change waiting for `garage layout apply`.
+ *
+ * An untagged union in the spec: `{id, remove: true}`, or `{id, zone, capacity,
+ * tags}`. The third member is the load-bearing one. A staged change this app
+ * cannot parse is *exactly* the thing an operator has to be told about, because
+ * `garage layout apply` will commit it along with theirs — so an unfamiliar
+ * shape degrades to "something is staged on this node, go read `garage layout
+ * show`" rather than failing the layout read (which would take the whole admin
+ * console down over a field nothing consumes) and rather than
+ * `.catch(undefined)`-ing the array (which would report "nothing staged" while
+ * something *is* staged — the silent all-clear that `role_ok` and
+ * `data-coverage.ts` both exist to prevent). Same `recognised: false` shape as
+ * `lib/repair/scrub-status.ts`.
+ *
+ * The fallback member is a plain `z.object`, so unknown keys are **stripped**:
+ * whatever else a future Garage puts on a staged change cannot reach a payload,
+ * and in particular cannot smuggle a second full node id past the projection in
+ * `/next-api/garage/cluster/staging`.
+ */
+export const StagedRoleChangeSchema = z.union([
+  z.object({ id: z.string(), remove: z.literal(true) }),
+  z.object({
+    id: z.string(),
+    zone: z.string(),
+    capacity: z.number().nullable().optional(),
+    tags: z.array(z.string()).default([]),
+  }),
+  z.object({ id: z.string() }),
+]);
+export type StagedRoleChange = z.infer<typeof StagedRoleChangeSchema>;
+
 export const ClusterLayoutSchema = z.object({
   version: z.number().int(),
   roles: z.array(LayoutNodeSchema),
@@ -85,10 +117,43 @@ export const ClusterLayoutSchema = z.object({
     .partial()
     .optional(),
   partitionSize: z.number().optional(),
-  stagedRoleChanges: z.array(z.unknown()).optional(),
+  /**
+   * Narrowed from `z.array(z.unknown())`. It was unknown while the only reader
+   * was `stagedRoleChanges.length > 0`; the staging page reads the entries
+   * themselves, and — more to the point — the admin layout route used to spread
+   * this array through untouched, emitting full 64-character node ids the
+   * moment anything was staged.
+   */
+  stagedRoleChanges: z.array(StagedRoleChangeSchema).optional(),
   stagedParameters: z.unknown().nullable().optional(),
 });
 export type ClusterLayout = z.infer<typeof ClusterLayoutSchema>;
+
+/**
+ * `GetClusterLayoutHistory` — per-version node counts, read-only.
+ *
+ * **`updateTrackers` is deliberately absent.** It is a map *keyed by full node
+ * id*, so parsing it would put 64-character ids one spread away from a
+ * response body. Nothing in this app needs per-node ack detail; `minAck`
+ * answers the only question the page asks.
+ *
+ * Note also what Garage does not return here: any timestamp at all. A version
+ * row says how many storage and gateway nodes it had and nothing about when it
+ * happened — which is the whole reason `ClusterEvents` exists.
+ */
+export const ClusterLayoutHistorySchema = z.object({
+  currentVersion: z.number().int().nonnegative(),
+  minAck: z.number().int().nonnegative(),
+  versions: z.array(
+    z.object({
+      version: z.number().int().nonnegative(),
+      status: z.enum(['Current', 'Draining', 'Historical']),
+      storageNodes: z.number().int().nonnegative(),
+      gatewayNodes: z.number().int().nonnegative(),
+    })
+  ),
+});
+export type ClusterLayoutHistory = z.infer<typeof ClusterLayoutHistorySchema>;
 
 // ── Keys ───────────────────────────────────────────────────────────────────
 

@@ -62,6 +62,23 @@ export const CLUSTER_EVENT_KINDS = [
    * that pair, so this needs no per-verb kinds any more than `repair` does.
    */
   'node_owner_changed',
+  /**
+   * An admin staged a cluster layout change through /admin/cluster/staging — a
+   * role assigned or changed, or a node marked for removal.
+   *
+   * **Staged, not applied.** garage-ware never calls `ApplyClusterLayout`; the
+   * row records that a change is now waiting in Garage's pending area for a
+   * human to commit with `garage layout apply`. The applied version bump then
+   * shows up separately, on the next scrape, as `layout_version`.
+   *
+   * One kind, not one per verb, exactly as `repair` and `node_owner_changed`
+   * are: which of assign/remove it was reads off previous_value / new_value,
+   * which carry the raw role (`zone=dc1;capacity=32000000000000;tags=ssd`) or
+   * the literal `remove`.
+   *
+   * Not in ONGOING_KINDS — staging is an instant, born closed.
+   */
+  'layout_staged',
 ] as const;
 
 /**
