@@ -11,8 +11,10 @@ Repo: [make-ware/garage-ware](https://github.com/make-ware/garage-ware) · Image
 
 ## Self-host with Docker
 
-You need a running Garage cluster with a layout applied, and an admin token for
-it (`garage admin-token create --name garage-ware`).
+You need a [running Garage cluster](https://garagehq.deuxfleurs.fr/documentation/quick-start/)
+with a layout applied, and an admin token for it
+(`garage admin-token create --name garage-ware`). garage-ware manages a cluster;
+it does not install one.
 
 Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to Docker Hub as [`dastron/garage-ware`](https://hub.docker.com/r/dastron/garage-ware). It is public, so no registry login is needed:
 
@@ -32,7 +34,8 @@ docker compose logs garage-ware | grep '\[setup\]'
 
 It prints a URL and a one-time claim token. Open the URL, create your account,
 paste the token — you are now the administrator. `/admin/status` then reports
-anything still misconfigured, with the fix for each.
+anything still misconfigured, with the fix for each — and, when it cannot reach
+a cluster at all, links to Garage's own installation docs.
 
 Pin a release instead of tracking `latest` by setting the image tag to
 `dastron/garage-ware:v1.8.3`. To build from your checkout instead of

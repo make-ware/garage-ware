@@ -47,6 +47,29 @@ export function worstState(checks: Check[]): CheckState {
 }
 
 /**
+ * Does this deployment look like it has no Garage cluster at all?
+ *
+ * Keyed on `garage-admin-api === 'fail'` and nothing else. That state is
+ * emitted by exactly the two branches this is about: the env vars are unset, or
+ * a live health call threw. Two neighbouring states are deliberately excluded:
+ *
+ * - `'warn'` on the same check means the cluster **answered** and is merely not
+ *   healthy. Garage is installed and talking; "install Garage first" would be a
+ *   lie.
+ * - `garage-layout: 'warn'` means reachable but no layout applied. That check
+ *   already carries the exact fix (`garage layout assign` / `apply`), and
+ *   showing an installation quickstart to someone with a running cluster is how
+ *   an operator learns to ignore the page — the same failure mode documented
+ *   for `app-public-url`.
+ *
+ * An absent check is `false`: never assert "you have no cluster" from missing
+ * evidence.
+ */
+export function needsClusterSetup(checks: Check[]): boolean {
+  return checks.some((c) => c.id === 'garage-admin-api' && c.state === 'fail');
+}
+
+/**
  * Render diagnostics as plain text for the "Copy diagnostics" button.
  *
  * Everything here is already redacted at collection time — no check ever puts a

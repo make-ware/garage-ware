@@ -12,7 +12,12 @@ import { cn } from '@/lib/utils';
 import type { Check, CheckState, Diagnostics } from '@/lib/setup/diagnostics';
 
 export type { Check, CheckState, Diagnostics };
-export { formatDiagnostics } from '@/lib/setup/diagnostics';
+export { formatDiagnostics, needsClusterSetup } from '@/lib/setup/diagnostics';
+// Re-exported so a page renders the checks and their "no cluster yet" companion
+// from one import. The card is NOT rendered inside `StatusChecks` — that
+// component returns a bare <ul>, and the two call sites place the card
+// differently (/admin/status wants it outside the checks Card entirely).
+export { NoClusterCard } from './no-cluster-card';
 
 const PRESENTATION: Record<
   CheckState,

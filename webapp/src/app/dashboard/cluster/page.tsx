@@ -7,10 +7,11 @@ import type { NodeMetric } from '@garage-ware/shared';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { ClusterEventTimeline } from '@/components/cluster/cluster-event-timeline';
 import { ClusterMap } from '@/components/cluster/cluster-map';
+import { ClusterUnavailableNotice } from '@/components/cluster/cluster-unavailable';
 import { CLUSTER_PANEL_CLASS } from '@/components/cluster/panel';
 import { StorageCostCard } from '@/components/storage/storage-cost-card';
 import { Button } from '@/components/ui/button';
-import { api } from '@/lib/api-client';
+import { api, ApiError } from '@/lib/api-client';
 import pb from '@/lib/pocketbase';
 import { fetchLatestNodeMetrics } from '@/lib/metrics/latest-node-metrics';
 import { parseNodeTags } from '@/lib/node-label';
@@ -42,6 +43,9 @@ function ClusterLayoutPage() {
   const [timelineLoading, setTimelineLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Mutually exclusive with `error` by construction — the catch below sets one
+  // or the other, never both.
+  const [clusterUnavailable, setClusterUnavailable] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -61,6 +65,9 @@ function ClusterLayoutPage() {
         if (cancelled) return;
         setData(result);
         setError(null);
+        // The effect re-runs on `refreshKey`; a recovered cluster has to clear
+        // the notice as well as the error.
+        setClusterUnavailable(false);
         // Best-effort: the map is useful without samples, so a metrics
         // failure must not take the page down with it.
         try {
@@ -74,8 +81,28 @@ function ClusterLayoutPage() {
         }
       } catch (err) {
         if (!cancelled) {
+          // This page is redacted for every signed-in user, but the two bodies
+          // `garageErrorResponse` writes for an unreachable/unauthenticated
+          // cluster (lib/auth/server.ts:200 and :218) are addressed to an
+          // administrator and name GARAGE_ADMIN_URL / GARAGE_ADMIN_TOKEN.
+          // Suppress them behind the gentle notice.
+          //
+          // Discriminating on HTTP status rather than the error `code`:
+          // ApiError parses `code` off the body and drops it, and status fails
+          // *safe* — an unrecognised cluster failure lands in the redacted
+          // branch, where code-based matching would fall through to the raw
+          // message. 502 is included because that is where the token message
+          // lives.
+          const unavailable =
+            err instanceof ApiError &&
+            (err.status === 503 || err.status === 502);
+          setClusterUnavailable(unavailable);
           setError(
-            err instanceof Error ? err.message : 'Failed to load cluster layout'
+            unavailable
+              ? null
+              : err instanceof Error
+                ? err.message
+                : 'Failed to load cluster layout'
           );
         }
       } finally {
@@ -186,6 +213,8 @@ function ClusterLayoutPage() {
         pricing={pricing}
         loading={loading}
       />
+
+      {clusterUnavailable && <ClusterUnavailableNotice />}
 
       {error && (
         <p className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">

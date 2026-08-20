@@ -18,6 +18,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+  needsClusterSetup,
+  NoClusterCard,
   StatusChecks,
   type Diagnostics,
 } from '@/components/setup/status-checks';
@@ -326,7 +328,10 @@ function SetupContent() {
                 Sign in to see what this deployment can and cannot reach.
               </p>
             ) : diagnostics ? (
-              <StatusChecks checks={diagnostics.checks} />
+              <>
+                <StatusChecks checks={diagnostics.checks} />
+                {needsClusterSetup(diagnostics.checks) && <NoClusterCard />}
+              </>
             ) : (
               <p className="text-sm text-muted-foreground">Running checks…</p>
             )}
