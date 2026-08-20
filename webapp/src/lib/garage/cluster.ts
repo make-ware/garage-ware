@@ -31,7 +31,10 @@ export async function getLayout(client: GarageClient): Promise<ClusterLayout> {
 }
 
 /**
- * Replication factor is set in the Garage daemon config (replication_mode).
+ * Replication factor is set in the Garage daemon config as the top-level
+ * integer `replication_factor`. (`replication_mode` was the v0.x spelling; this
+ * app speaks admin API v2, and `lib/garage-config/garage-toml.ts` emits the
+ * current key.)
  * The /health endpoint exposes it via partition counts; we surface it explicitly
  * via /GetClusterStatistics if available, falling back to a sane default.
  *

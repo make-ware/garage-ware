@@ -92,6 +92,22 @@ describe('AdminStatusPage', () => {
     ).toBeTruthy();
   });
 
+  it('offers the config generator beside the docs, for a truly empty start', async () => {
+    // Admin-only, so the link lives on this page rather than inside
+    // `NoClusterCard` — that card is also rendered by `/setup` step 3, which
+    // is reachable before anyone is an admin.
+    mockApi.mockResolvedValue(diagnostics(NO_CLUSTER, 'fail'));
+
+    const { container } = render(<AdminStatusPage />);
+    await waitFor(() =>
+      expect(screen.getByText('No cluster yet?')).toBeInTheDocument()
+    );
+    const hrefs = Array.from(container.querySelectorAll('a')).map((a) =>
+      a.getAttribute('href')
+    );
+    expect(hrefs).toContain('/admin/setup/config-generator');
+  });
+
   it('says nothing about installing Garage when the cluster is fine', async () => {
     mockApi.mockResolvedValue(diagnostics(HEALTHY, 'ok'));
 
@@ -101,6 +117,12 @@ describe('AdminStatusPage', () => {
     );
     expect(screen.queryByText('No cluster yet?')).not.toBeInTheDocument();
     expect(container.textContent).not.toMatch(/does not install/i);
+    // The generator is for operators with no cluster; a healthy deployment
+    // has no business being pointed at it from here.
+    const hrefs = Array.from(container.querySelectorAll('a')).map((a) =>
+      a.getAttribute('href')
+    );
+    expect(hrefs).not.toContain('/admin/setup/config-generator');
   });
 
   it('does not guess at a missing cluster when the status call itself failed', async () => {

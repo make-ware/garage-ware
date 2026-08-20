@@ -255,6 +255,13 @@ Full field lists and the reasoning for every `null` rule, `TextField`-not-relati
   size, capacities) reproduces Garage; `estimated` (the per-node split) cannot and says so.
   `lib/cluster/layout-sim.ts` is bytes-only, display-only, and an import-boundary test keeps it out
   of the accounting path.
+- [GarageHQ config generator](docs/ARCHITECTURE.md#garagehq-config-generator) — admin-only
+  `/admin/setup/config-generator` turns a form into a `garage.toml`, **client-side only**, no
+  endpoint and nothing persisted. It **never accepts or generates a secret**: `rpc_secret` and
+  `admin_token` leave as `@PLACEHOLDER@` with the command that produces each beside them, and
+  `garage-toml-secrets.test.ts` enforces that structurally. Emits Garage **v2** spelling
+  (`replication_factor`, not `replication_mode`); zone and capacity are a comment block, because
+  they are layout settings, not config keys.
 - [First run and setup](docs/ARCHITECTURE.md#first-run-and-setup) — the claim token bootstraps the
   first admin, guarded on **`Admins` being empty**, checked before the token. Two hooks refuse the
   removal of the last admin so that window never recurs.
