@@ -19,10 +19,12 @@ export function parseFeatureFlag(raw: string | undefined | null): boolean {
 }
 
 /**
- * FEATURE_NODE_CLAIMS — may non-admin users claim node ownership and grant
- * storage sourced from nodes they own? Off = fully admin-only: no new
- * self-claims, and existing NodeOwners rows go inert (kept, not deleted) via
- * the gate in `assertNodeOwner`.
+ * FEATURE_NODE_CLAIMS — may a user claim a cluster node for themselves, by
+ * proving its full node id, and release it again? That is the whole of it. Off
+ * = only an administrator creates or removes an ownership row, on
+ * `/admin/nodes`. An assigned owner still grants storage sourced from their
+ * node and still manages it on `/dashboard/nodes` either way, because
+ * `assertNodeOwner` reads no flag.
  */
 export function featureNodeClaims(): boolean {
   return parseFeatureFlag(process.env.FEATURE_NODE_CLAIMS);

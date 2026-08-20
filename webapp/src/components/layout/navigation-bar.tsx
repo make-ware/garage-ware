@@ -15,7 +15,6 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { useFeatures } from '@/lib/setup/use-features';
 import { useSetupStatus } from '@/lib/setup/use-setup-status';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -44,9 +43,8 @@ export function NavigationBar({ className }: NavigationBarProps) {
   const { user, isAuthenticated, logout, isLoading } = useAuth();
   const isMobile = useIsMobile();
   const pathname = usePathname();
-  // Both hooks seed at the safe default (features off, signups closed), so the
-  // gated entries stay hidden until the server says otherwise.
-  const { features } = useFeatures();
+  // Seeds at the fail-safe state (signups closed), so the sign-up link stays
+  // hidden until the server says otherwise.
   const { status: setupStatus } = useSetupStatus();
   const showSignup = setupStatus.signupMode === 'open';
 
@@ -77,17 +75,16 @@ export function NavigationBar({ className }: NavigationBarProps) {
     { href: '/dashboard/cluster', label: 'Cluster' },
   ];
 
-  // Navigation links for authenticated users. "My Nodes" only exists when
-  // node claiming is enabled on this deployment.
+  // Navigation links for authenticated users. "My Nodes" is unconditional: any
+  // user can be *assigned* a node by an admin, and FEATURE_NODE_CLAIMS only
+  // decides whether they may claim one themselves once they are on the page.
   const authenticatedLinks = [
     { href: '/dashboard', label: 'Dashboard', icon: HardDrive },
     { href: '/dashboard/buckets', label: 'Buckets', icon: HardDrive },
     { href: '/dashboard/keys', label: 'Access Keys', icon: KeyRound },
     { href: '/dashboard/metrics', label: 'Metrics', icon: ChartLine },
     { href: '/dashboard/cluster', label: 'Cluster', icon: Server },
-    ...(features.nodeClaims
-      ? [{ href: '/dashboard/nodes', label: 'My Nodes', icon: ServerCog }]
-      : []),
+    { href: '/dashboard/nodes', label: 'My Nodes', icon: ServerCog },
     { href: '/profile', label: 'Profile', icon: Settings },
   ];
 
@@ -109,7 +106,7 @@ export function NavigationBar({ className }: NavigationBarProps) {
         {/* Logo/Brand */}
         <div className="mr-4 flex">
           <Link href="/" className="mr-6 flex items-center space-x-2">
-            <span className="font-bold text-xl">GarageHQ Console</span>
+            <span className="font-bold text-xl">GarageWare</span>
             {process.env.NEXT_PUBLIC_APP_VERSION && (
               <span className="text-xs text-muted-foreground">
                 v{process.env.NEXT_PUBLIC_APP_VERSION}

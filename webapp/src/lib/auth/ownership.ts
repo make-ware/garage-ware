@@ -6,7 +6,6 @@ import {
 } from '@garage-ware/shared/mutators';
 import type { AccessKey, Bucket, User } from '@garage-ware/shared';
 import type { TypedPocketBase } from '@/lib/types';
-import { featureNodeClaims } from '@/lib/setup/features';
 import { HttpError, getServerUser, isUserAdmin } from './server';
 
 /**
@@ -97,6 +96,14 @@ export async function assertKeyOwner(
  *
  * Returns whether the caller passed as an admin, so a handler that already
  * needs to know can avoid a second Admins query.
+ *
+ * **`FEATURE_NODE_CLAIMS` is deliberately not read here.** That flag gates one
+ * door — a user claiming a node for themselves by its full id, and the release
+ * that undoes it — and both live in `/next-api/garage/nodes/owners`. Gating the
+ * lookup here instead made every existing row inert the moment the flag went
+ * off, so an owner an admin had just assigned on `/admin/nodes` could not grant
+ * a single GB from their own machine. Who may append a row is a property of the
+ * row, not of the deployment's appetite for self-service.
  */
 export async function assertNodeOwner(
   pb: TypedPocketBase,
@@ -105,21 +112,6 @@ export async function assertNodeOwner(
   isAdmin?: boolean
 ): Promise<{ isAdmin: boolean }> {
   if (isAdmin) return { isAdmin: true };
-
-  // FEATURE_NODE_CLAIMS off makes every NodeOwners row inert: this guard is the
-  // single choke point for the owner fallback in the claims handlers (GET
-  // ?nodeId=, POST, PATCH/DELETE via authorizeEntry), so skipping the lookup
-  // here is what turns all of them admin-only at once. Rows are kept, not
-  // deleted — re-enabling the flag restores them untouched.
-  if (!featureNodeClaims()) {
-    const flagAdmin = await isUserAdmin(pb, userId);
-    if (!flagAdmin)
-      throw new HttpError(
-        403,
-        'Node ownership is disabled on this instance. Ask an administrator.'
-      );
-    return { isAdmin: true };
-  }
 
   const owners = new NodeOwnerMutator(pb);
   const record = await owners.findByNode(nodeId);

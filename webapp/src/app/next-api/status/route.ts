@@ -400,7 +400,10 @@ async function checkAccess(): Promise<Check> {
       : mode === 'open'
         ? 'open — anyone who can reach the sign-up page may create an account'
         : 'closed (the default) — only administrators can create accounts';
-  const featureText = `Node claiming is ${featureNodeClaims() ? 'enabled' : 'off (admin-only)'}; key/bucket claiming is ${featureAssetClaims() ? 'enabled' : 'off (admin-only)'}.`;
+  const nodeFeatureText = featureNodeClaims()
+    ? 'enabled — a user can claim a node by proving its full id'
+    : 'off — administrators assign node owners on /admin/nodes, and an assigned owner can still grant storage sourced from their node';
+  const featureText = `Node self-claiming is ${nodeFeatureText}; key/bucket claiming is ${featureAssetClaims() ? 'enabled' : 'off (admin-only)'}.`;
   try {
     const pb = await getPbAsSuperuser();
     const admins = await pb.collection('Admins').getList(1, 1);

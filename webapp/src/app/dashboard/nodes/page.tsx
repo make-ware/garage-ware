@@ -49,6 +49,11 @@ import type { ClusterNodeItem, ClusterNodesResponse } from '@/lib/types';
  * are meant to have it because you run the machine, and possession of it is
  * what the claim proves. Everything else here — including the rows below —
  * shows the 16-character node key. See webapp/src/lib/node-label.ts.
+ *
+ * `FEATURE_NODE_CLAIMS` gates the claim form and the Release button, and
+ * nothing else here. The page itself is always reachable: with the flag off an
+ * administrator assigns nodes on /admin/nodes and the owner manages them from
+ * here exactly as a self-claimer would, because the grant path reads no flag.
  */
 
 interface OwnedNode {
@@ -61,7 +66,7 @@ interface OwnedNode {
 
 function NodesView() {
   // Seeds all-off; `loaded` keeps an enabled deployment from flashing the
-  // disabled card while the flags are still on the wire.
+  // "administrators assign these" note while the flags are still on the wire.
   const { features, loaded: featuresLoaded } = useFeatures();
   const nodeClaimsEnabled = features.nodeClaims;
   const [owned, setOwned] = useState<OwnedNode[]>([]);
@@ -116,8 +121,6 @@ function NodesView() {
   }
 
   useEffect(() => {
-    // Nothing to fetch while the feature is off — the routes would 403 anyway.
-    if (!nodeClaimsEnabled) return;
     let cancelled = false;
     const load = async () => {
       try {
@@ -135,7 +138,7 @@ function NodesView() {
     return () => {
       cancelled = true;
     };
-  }, [nodeClaimsEnabled]);
+  }, []);
 
   async function claimNode(e: React.FormEvent) {
     e.preventDefault();
@@ -179,39 +182,6 @@ function NodesView() {
     await refresh();
   }
 
-  if (!nodeClaimsEnabled) {
-    return (
-      <div className="container mx-auto px-4 py-8 max-w-6xl">
-        <div className="mb-6">
-          <Link
-            href="/dashboard"
-            className="text-sm text-muted-foreground hover:underline inline-flex items-center"
-          >
-            <ArrowLeft className="mr-1 h-4 w-4" /> Back to dashboard
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold">My nodes</h1>
-        </div>
-        {featuresLoaded ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>Node claiming is disabled on this instance</CardTitle>
-              <CardDescription>
-                Node ownership and storage grants are handled by the
-                administrators here. If you contributed a machine, ask an
-                administrator to assign it to you and grant its storage.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        ) : (
-          <div
-            className="h-24 animate-pulse rounded-lg bg-muted"
-            aria-label="Loading"
-          />
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl">
       <div className="mb-6">
@@ -223,54 +193,78 @@ function NodesView() {
         </Link>
         <h1 className="mt-2 text-2xl font-semibold">My nodes</h1>
         <p className="text-sm text-muted-foreground">
-          Claim a node you contributed and share out the storage it backs.
+          The cluster nodes assigned to you, and the storage granted from each.
+          {featuresLoaded && nodeClaimsEnabled
+            ? ' Claim a node you contributed to add one.'
+            : null}
         </p>
       </div>
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Claim a node</CardTitle>
-          <CardDescription>
-            Run <code className="font-mono">garage node id</code> on the machine
-            and paste what it prints. Knowing that id is what proves the node is
-            yours, so it is the one thing the short key shown elsewhere in the
-            app cannot stand in for. Claiming lets you grant the node&apos;s
-            storage; it does not change the cluster layout.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={claimNode} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="claim-node-id">Full node id</Label>
-              <Input
-                id="claim-node-id"
-                value={nodeIdInput}
-                onChange={(e) => setNodeIdInput(e.target.value)}
-                placeholder="64 hex characters, or id@address"
-                className="font-mono"
-                // 64 for the id, 1 for the `@`, and room for the address half
-                // that `garage node id` prints and this form discards.
-                maxLength={200}
-                autoComplete="off"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="claim-node-note">Note (optional)</Label>
-              <Input
-                id="claim-node-note"
-                value={noteInput}
-                onChange={(e) => setNoteInput(e.target.value)}
-                placeholder="e.g. the box in the garage"
-                maxLength={500}
-              />
-            </div>
-            <Button type="submit" disabled={claiming || !nodeIdInput.trim()}>
-              <Plus className="mr-1 h-4 w-4" />
-              {claiming ? 'Claiming...' : 'Claim node'}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+      {nodeClaimsEnabled ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Claim a node</CardTitle>
+            <CardDescription>
+              Run <code className="font-mono">garage node id</code> on the
+              machine and paste what it prints. Knowing that id is what proves
+              the node is yours, so it is the one thing the short key shown
+              elsewhere in the app cannot stand in for. Claiming lets you grant
+              the node&apos;s storage; it does not change the cluster layout.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={claimNode} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="claim-node-id">Full node id</Label>
+                <Input
+                  id="claim-node-id"
+                  value={nodeIdInput}
+                  onChange={(e) => setNodeIdInput(e.target.value)}
+                  placeholder="64 hex characters, or id@address"
+                  className="font-mono"
+                  // 64 for the id, 1 for the `@`, and room for the address half
+                  // that `garage node id` prints and this form discards.
+                  maxLength={200}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="claim-node-note">Note (optional)</Label>
+                <Input
+                  id="claim-node-note"
+                  value={noteInput}
+                  onChange={(e) => setNoteInput(e.target.value)}
+                  placeholder="e.g. the box in the garage"
+                  maxLength={500}
+                />
+              </div>
+              <Button type="submit" disabled={claiming || !nodeIdInput.trim()}>
+                <Plus className="mr-1 h-4 w-4" />
+                {claiming ? 'Claiming...' : 'Claim node'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      ) : featuresLoaded ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Administrators assign nodes here</CardTitle>
+            <CardDescription>
+              Self-claiming is off on this instance, so a node appears below
+              once an administrator assigns it to you. That is the only part it
+              changes — a node you have been assigned is yours to manage from
+              here, including granting the storage it backs to yourself or to
+              anyone else by email.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : (
+        // The flags are still on the wire and either branch would be a guess.
+        <div
+          className="mb-6 h-24 animate-pulse rounded-lg bg-muted"
+          aria-label="Loading"
+        />
+      )}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading...</p>
@@ -313,27 +307,35 @@ function NodesView() {
                     >
                       Grant storage
                     </Button>
-                    <ConfirmDeleteDialog
-                      trigger={
-                        <Button size="sm" variant="outline">
-                          Release
-                        </Button>
-                      }
-                      title="Release this node"
-                      description={
-                        <>
-                          Releasing makes{' '}
-                          <strong>{nodeLabel(name, row.record.node_id)}</strong>{' '}
-                          claimable by someone else. Storage you have already
-                          granted from it is unaffected — the ledger is
-                          append-only.
-                        </>
-                      }
-                      confirmText={nodeLabel(name, row.record.node_id)}
-                      confirmLabel="Release"
-                      pendingLabel="Releasing..."
-                      onConfirm={() => release(row)}
-                    />
+                    {/* Release is the inverse of the claim form, so the
+                        same flag closes it: where administrators decide who
+                        owns what, they also revoke, on /admin/nodes. The route
+                        agrees — a self-release 403s while the flag is off. */}
+                    {nodeClaimsEnabled && (
+                      <ConfirmDeleteDialog
+                        trigger={
+                          <Button size="sm" variant="outline">
+                            Release
+                          </Button>
+                        }
+                        title="Release this node"
+                        description={
+                          <>
+                            Releasing makes{' '}
+                            <strong>
+                              {nodeLabel(name, row.record.node_id)}
+                            </strong>{' '}
+                            claimable by someone else. Storage you have already
+                            granted from it is unaffected — the ledger is
+                            append-only.
+                          </>
+                        }
+                        confirmText={nodeLabel(name, row.record.node_id)}
+                        confirmLabel="Release"
+                        pendingLabel="Releasing..."
+                        onConfirm={() => release(row)}
+                      />
+                    )}
                   </div>
                 </div>
               </CardHeader>

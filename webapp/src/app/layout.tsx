@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Garage Ware',
+  title: 'GarageWare',
   description: 'Management console for a self-hosted Garage S3 storage cluster',
 };
 

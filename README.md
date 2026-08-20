@@ -48,9 +48,10 @@ Three things worth knowing before you invite anyone:
 - **Sign-up is closed by default** (`SIGNUP_MODE=closed`; set `invite` or
   `open` to loosen it). While no administrator exists it stays open so you can
   create the account you will claim with, which is why claiming promptly
-  matters. Node claiming and key/bucket claiming are likewise off until you set
-  `FEATURE_NODE_CLAIMS=true` / `FEATURE_ASSET_CLAIMS=true` — until then those
-  flows are admin-only.
+  matters. Self-service claiming is likewise off until you set
+  `FEATURE_NODE_CLAIMS=true` / `FEATURE_ASSET_CLAIMS=true`. Until then an
+  administrator assigns node owners on **Admin → Nodes** (an assigned owner can
+  still grant storage from their node) and imports existing keys and buckets.
 - **Email needs configuring** at `/_/#/settings/mail`, or invites and password
   resets silently never arrive.
 - **A new user has no storage** until you grant them a claim from

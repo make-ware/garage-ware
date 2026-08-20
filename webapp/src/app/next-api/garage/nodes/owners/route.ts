@@ -140,9 +140,11 @@ export async function POST(req: Request) {
       return cachedIsAdmin;
     };
 
-    // FEATURE_NODE_CLAIMS off closes the self-claim door entirely; admin
-    // assignment (the key-based path) keeps working, since the capability is
-    // meant to fall back to admins rather than disappear.
+    // The one door this flag closes: a user claiming a node for themselves.
+    // Admin assignment (the key-based path) keeps working, and so does
+    // everything an existing owner may already do — `assertNodeOwner` reads no
+    // flag. Off means "admins decide who owns what", not "node ownership is
+    // dark".
     if (!featureNodeClaims() && !(await callerIsAdmin())) {
       throw new HttpError(
         403,

@@ -48,7 +48,7 @@ export default function Home() {
       <div className="container mx-auto px-4 py-16 max-w-4xl">
         <div className="text-center mb-12">
           <h1 className="text-5xl md:text-6xl font-bold mb-6">
-            Garage Ware
+            GarageWare
             <span className="block text-primary text-3xl md:text-4xl mt-2">
               S3 cluster control plane
             </span>

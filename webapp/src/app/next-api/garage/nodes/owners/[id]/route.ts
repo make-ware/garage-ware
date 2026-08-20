@@ -42,9 +42,11 @@ export async function DELETE(
       isAdmin = await isUserAdmin(pb, user.id);
       if (!isAdmin) throw new HttpError(403, 'You do not own this node');
     } else if (!featureNodeClaims()) {
-      // FEATURE_NODE_CLAIMS off: even self-release is admin work. The rows are
-      // meant to sit inert, not to be shed by their holders while the feature
-      // is dark. Admins revoke as usual.
+      // Self-release is the inverse of self-claiming, so the same flag closes
+      // it: where administrators decide who owns what, they also decide when
+      // that stops. The row is not inert meanwhile — the owner can still grant
+      // storage sourced from the node — they simply cannot hand it back
+      // themselves. Admins revoke as usual.
       isAdmin = await isUserAdmin(pb, user.id);
       if (!isAdmin)
         throw new HttpError(

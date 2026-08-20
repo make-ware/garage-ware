@@ -110,7 +110,7 @@ copy, so edit both or neither. Full rationale: → [docs/ARCHITECTURE.md](docs/A
 | `NODE_METRICS_RETENTION_DAYS` | server, optional | default 90, `0` keeps everything. Never prunes `ClusterEvents` |
 | `SIGNUP_MODE` | server (PB) | `open` / `closed` / `invite`; **defaults to `closed`**, and an unrecognised value falls back to `closed`, never `open` |
 | `SETUP_OWNER_EMAIL`, `SETUP_STATE_DIR` | server | unattended first-admin path; see [First run](docs/ARCHITECTURE.md#first-run-and-setup) |
-| `FEATURE_NODE_CLAIMS` / `FEATURE_ASSET_CLAIMS` | Next.js only, default OFF | only `true`/`1` enables ([features.ts](webapp/src/lib/setup/features.ts), fails closed). Routes enforce the flags regardless of UI |
+| `FEATURE_NODE_CLAIMS` / `FEATURE_ASSET_CLAIMS` | Next.js only, default OFF | only `true`/`1` enables ([features.ts](webapp/src/lib/setup/features.ts), fails closed). `FEATURE_NODE_CLAIMS` gates **self-claim/self-release only** — admins assign owners and assigned owners still grant, flag or no flag. Routes enforce the flags regardless of UI |
 
 ## Architecture
 
@@ -201,7 +201,8 @@ Full field lists and the reasoning for every `null` rule, `TextField`-not-relati
   is Garage-first for deletes. → [#deleting-and-retiring](docs/ARCHITECTURE.md#deleting-and-retiring)
 - Node ownership decides *who may append a row*, never *how much* — an owner's write runs through the
   same `assertClaimDeltaAllowed`. A non-admin claim needs a **full node id**; an admin assignment
-  carries the key. → [#node-ownership](docs/ARCHITECTURE.md#node-ownership)
+  carries the key. `FEATURE_NODE_CLAIMS` gates only self-claiming; an owner's grant path never reads
+  it. → [#node-ownership](docs/ARCHITECTURE.md#node-ownership)
 - Asset claims prove ownership with the secret access key; bucket ownership is *derived* from
   Garage's `owner` permission. "No such key" and "wrong secret" are the same 403.
   → [#claiming-existing-keys-and-buckets](docs/ARCHITECTURE.md#claiming-existing-keys-and-buckets)

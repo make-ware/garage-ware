@@ -225,7 +225,7 @@ docker run -d --name garage-ware \
 | `GARAGE_PUBLIC_S3_ENDPOINT` | no | Falls back to `GARAGE_S3_ENDPOINT`. Set it when the URL you advertise to users differs from the CORS-enabled gateway the in-app browser must talk to. |
 | `APP_PUBLIC_URL` | recommended | Storage-invite emails and daily usage alerts are **skipped entirely** — the invite row is still written, but nobody is told. |
 | `SIGNUP_MODE` | no | Defaults to `closed`. See [Who can sign up](#who-can-sign-up). |
-| `FEATURE_NODE_CLAIMS` | no | Defaults to off — users cannot claim node ownership or grant storage from nodes; admins do both. Set `true` to enable. |
+| `FEATURE_NODE_CLAIMS` | no | Defaults to off — users cannot claim a node for themselves or release one; admins assign owners on `/admin/nodes`, and an assigned owner can still grant storage from their node. Set `true` to enable self-claiming. |
 | `FEATURE_ASSET_CLAIMS` | no | Defaults to off — users cannot self-claim pre-existing Garage keys/buckets; admins import them instead. Set `true` to enable. |
 | `SETUP_OWNER_EMAIL` | no | Use the printed claim token instead. |
 | `SETUP_CLAIM_TOKEN` | no | The container mints one and stores it under `/data/setup/`. |
