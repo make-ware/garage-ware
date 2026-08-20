@@ -255,6 +255,15 @@ Full field lists and the reasoning for every `null` rule, `TextField`-not-relati
   size, capacities) reproduces Garage; `estimated` (the per-node split) cannot and says so.
   `lib/cluster/layout-sim.ts` is bytes-only, display-only, and an import-boundary test keeps it out
   of the accounting path.
+- [Cluster layout staging](docs/ARCHITECTURE.md#cluster-layout-staging) —
+  `/admin/cluster/staging` stages role changes through **`UpdateClusterLayout`
+  and nothing else**; `Apply`/`Revert`/`SkipDeadNodes`/`Preview` are never
+  wired, and `staging-boundary.test.ts` is structural. Garage has no CAS on that
+  endpoint, so the version + `stagedFingerprint` check is ours — a mismatch is a
+  409 and is **never retried**. An assign always sends zone, capacity *and*
+  tags (the API blanks what you omit), so prefill is load-bearing. Reads are
+  live, never `cached.ts`; an unparseable staged change renders as
+  `unrecognised` rather than vanishing.
 - [First run and setup](docs/ARCHITECTURE.md#first-run-and-setup) — the claim token bootstraps the
   first admin, guarded on **`Admins` being empty**, checked before the token. Two hooks refuse the
   removal of the last admin so that window never recurs.

@@ -31,6 +31,14 @@ const layout = {
     { id: FULL_A, zone: 'pdx1', capacity: 56_000_000_000_000, tags: ['ssd'] },
     { id: FULL_B, zone: 'sea1', capacity: 120_000_000_000_000, tags: [] },
   ],
+  // Staged changes carry ids too, and this fixture used to have none — which
+  // is exactly why `/cluster/layout` emitted full ids through its spread for as
+  // long as it did, without failing anything here.
+  stagedRoleChanges: [
+    { id: FULL_A, zone: 'pdx1', capacity: 64_000_000_000_000, tags: ['ssd'] },
+    { id: FULL_B, remove: true },
+  ],
+  stagedParameters: null,
 };
 
 const status = {
@@ -128,5 +136,45 @@ describe('GET /next-api/garage/cluster/layout', () => {
 
     expect(body.roles.map((r: { id: string }) => r.id)).toEqual([KEY_A, KEY_B]);
     expect(JSON.stringify(body)).not.toMatch(FULL_ID_PATTERN);
+  });
+
+  it('keys the staged changes too', async () => {
+    const { GET } = await import('./layout/route');
+    const body = await (await GET(req())).json();
+
+    expect(body.stagedRoleChanges.map((c: { id: string }) => c.id)).toEqual([
+      KEY_A,
+      KEY_B,
+    ]);
+  });
+});
+
+describe('GET /next-api/garage/cluster/staging', () => {
+  it('keys the roles, the staged changes and the candidate list', async () => {
+    // The action surface reads live rather than through the cache, so it gets
+    // its own mocks — and it is the route most likely to grow a field that
+    // carries an id.
+    vi.doMock('@/lib/garage', () => ({
+      GarageClient: { fromEnv: () => ({}) },
+      cluster: {
+        getLayout: async () => layout,
+        getStatus: async () => status,
+        getReplicationFactor: async () => 3,
+      },
+    }));
+    const { GET } = await import('./staging/route');
+    const body = await (await GET(req())).json();
+
+    expect(body.roles.map((r: { id: string }) => r.id)).toEqual([KEY_A, KEY_B]);
+    expect(body.staged.map((c: { id: string }) => c.id)).toEqual([
+      KEY_A,
+      KEY_B,
+    ]);
+    expect(body.candidates.map((c: { id: string }) => c.id)).toEqual([
+      KEY_A,
+      KEY_B,
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(FULL_ID_PATTERN);
+    vi.doUnmock('@/lib/garage');
   });
 });

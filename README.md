@@ -13,8 +13,40 @@ Repo: [make-ware/garage-ware](https://github.com/make-ware/garage-ware) · Image
 
 You need a [running Garage cluster](https://garagehq.deuxfleurs.fr/documentation/quick-start/)
 with a layout applied, and an admin token for it
-(`garage admin-token create --name garage-ware`). garage-ware manages a cluster;
-it does not install one.
+(`garage admin-token create --name garage-ware`, scoped as
+[below](#admin-token-scope)). garage-ware manages a cluster; it does not install
+one.
+
+### Admin token scope
+
+garage-ware calls exactly these admin-API operations, and nothing else:
+
+```bash
+garage admin-token create --name garage-ware --scope \
+  GetClusterHealth,GetClusterStatus,GetClusterStatistics,\
+  GetClusterLayout,GetClusterLayoutHistory,UpdateClusterLayout,\
+  GetNodeStatistics,\
+  ListBuckets,GetBucketInfo,CreateBucket,UpdateBucket,DeleteBucket,\
+  ListKeys,GetKeyInfo,CreateKey,UpdateKey,DeleteKey,\
+  AllowBucketKey,DenyBucketKey,\
+  LaunchRepairOperation,ListWorkers
+```
+
+**Deliberately NOT granted: `ApplyClusterLayout`, `RevertClusterLayout`,
+`ClusterLayoutSkipDeadNodes`.**
+
+garage-ware's **Admin → Cluster → Layout staging** page *stages* role changes
+through `UpdateClusterLayout` and hands you the
+`garage layout apply --version <N+1>` command to run yourself. Staging alone
+cannot move a byte: a staged change sits in a pending area until a human applies
+it, so the worst a compromised or buggy garage-ware can do is leave junk in that
+area, which you clear with one `garage layout revert` at the cost of a single
+version bump. Granting apply would let the same fault rebalance the cluster —
+hours of real data movement, and no undo. The three operations are not wired
+anywhere in the app, not even behind a feature flag, and a test fails the build
+if they ever are. Garage's own
+[layout operations guide](https://garagehq.deuxfleurs.fr/documentation/operations/layout/)
+documents the commands you run.
 
 Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to Docker Hub as [`dastron/garage-ware`](https://hub.docker.com/r/dastron/garage-ware). It is public, so no registry login is needed:
 

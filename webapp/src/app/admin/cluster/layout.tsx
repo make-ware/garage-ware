@@ -23,6 +23,11 @@ import { Button } from '@/components/ui/button';
 const tabs = [
   { href: '/admin/cluster', label: 'Overview' },
   { href: '/admin/cluster/planner', label: 'Layout planner' },
+  // Staging lives at `/staging` for the same reason the planner is not at
+  // `/layout`: this file is `layout.tsx`, and a sibling `layout/` directory
+  // would make every `grep cluster/layout` ambiguous. "Layout staging" is what
+  // it is called everywhere it is named.
+  { href: '/admin/cluster/staging', label: 'Layout staging' },
 ];
 
 export default function ClusterLayout({

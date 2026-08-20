@@ -219,7 +219,7 @@ docker run -d --name garage-ware \
 | Variable | Required | Effect if unset |
 |---|---|---|
 | `GARAGE_ADMIN_URL` | yes | No cluster status, buckets, keys or metrics. This is the **admin** port (3903 by default), not the S3 port (3900). |
-| `GARAGE_ADMIN_TOKEN` | yes | Same. Mint one on a cluster node: `garage admin-token create --name garage-ware` |
+| `GARAGE_ADMIN_TOKEN` | yes | Same. Mint one on a cluster node: `garage admin-token create --name garage-ware`. The scope it needs — and the three layout operations it must **not** be granted — is in [the README](../README.md#admin-token-scope). |
 | `GARAGE_S3_ENDPOINT` | yes | The in-app file browser and bucket "connect" page return an error. No default, on purpose — a fallback would silently point every deployment at someone else's cluster. |
 | `GARAGE_S3_REGION` | no | Defaults to `us-east-1`. |
 | `GARAGE_PUBLIC_S3_ENDPOINT` | no | Falls back to `GARAGE_S3_ENDPOINT`. Set it when the URL you advertise to users differs from the CORS-enabled gateway the in-app browser must talk to. |

@@ -620,7 +620,10 @@ route, the Next convention and the page at once.
 *staged*, and there is no safe undo: `RevertClusterLayout` clears the staging
 area by **incrementing the layout version**. A preview built on it would leave a
 permanent mark on the operator's cluster, so the planner adds **no endpoint,
-makes no admin-API call of its own, and stages nothing**. It reads the layout
+makes no admin-API call of its own, and stages nothing**. (Staging *is*
+available, next door and deliberately separate — see
+[Cluster layout staging](#cluster-layout-staging). The planner still stages
+nothing.) It reads the layout
 through the existing display route and takes its movement baseline out of
 `NodeMetrics`. A component test asserts structurally that `api` is called with
 exactly one path and never one containing `staged`, `apply` or `revert`.
@@ -727,6 +730,108 @@ so an unfamiliar shape from an older Garage does not fail the whole layout read.
 The capacity field is a plain SI input, **not** `<StorageQuotaInput>`: that
 control speaks binary GiB because the ledger does, and Garage's layout
 capacities are decimal — mixing them would misstate every node by 7%.
+
+#### Cluster layout staging
+
+`/admin/cluster/staging` is the other half of the planner: once an operator has
+decided on a change, it **stages** that change on the real cluster and hands
+back the exact command to commit it. **garage-ware stages; a human applies.**
+
+**One mutation endpoint, and the guard is structural.** The app calls
+`UpdateClusterLayout` and nothing else from the layout family.
+`ApplyClusterLayout`, `RevertClusterLayout` and `ClusterLayoutSkipDeadNodes` are
+not wrapped, not routed and not behind a flag, and
+[staging-boundary.test.ts](../webapp/src/app/next-api/garage/cluster/staging-boundary.test.ts)
+fails the build if their names appear in code anywhere under `lib/garage/` or
+`app/next-api/` (comments are stripped first, so the docblocks explaining the
+rule may name them). The asymmetry is the whole argument: staging writes into a
+pending area and moves no data, so the worst case is junk an admin clears with
+one `garage layout revert` at the cost of a version bump — while applying moves
+every affected partition, for hours, with no undo. `PreviewClusterLayoutChanges`
+is on the forbidden list too, for a different reason: it is read-only but only
+previews changes that are *already staged*, so using it would mean staging
+something to find out what it would do. The token scope in the README says the
+same thing to the cluster.
+
+**Optimistic concurrency is this app's, because Garage offers none.**
+`UpdateClusterLayout` takes no version and no CAS parameter; it merges whatever
+it is sent into whatever is already staged and answers 200. Two admins each
+staging a different capacity for one node therefore produce a single merged
+staging area that one `apply` commits, with no warning to either. So the GET
+serves the layout version *and* `stagedFingerprint` — a canonical, order- and
+tag-order-independent serialization from
+[staged-changes.ts](../webapp/src/lib/cluster/staged-changes.ts) — the POST
+echoes both back, and the route recomputes them from a **live** read before
+forwarding anything. A mismatch is a **409 that is never retried**: the page
+renders the message and a Refresh button, because the only safe next step is a
+human looking at what is staged now. One function computes the fingerprint on
+both sides, so the two cannot drift.
+
+**Nothing on this surface reads `cached.ts`.** It is an action surface, and the
+version it renders is the one the conflict check is measured against; serving a
+stale layout would make the guard meaningless while looking like it worked.
+
+**An assign always sends all three fields, and prefill is what makes that
+safe.** The API is explicit — "contrary to the CLI … when calling this API all
+of these values must be specified" — so it writes `zone`, `capacity` and `tags`
+together and blanks anything omitted. A form allowing a zone-only edit would
+silently drop the node's tags, including the `name:` tag the whole app labels it
+by. The form therefore prefills from **what is already staged for that node,
+else its live role, else blank**, in that order: a second edit before applying
+has to build on the first. `capacity: null` is Garage's own encoding for a
+gateway, so a typed `0` is refused separately from "not a number" and points at
+the gateway switch — the same wording `draftNodeError` already uses.
+
+**Keys on the wire in both directions.** The POST body names a 16-character node
+key and the route resolves it against the live layout **∪ live status**, via
+`resolveStagingTarget` in
+[node-resolve.ts](../webapp/src/lib/garage/node-resolve.ts) — so a node that has
+joined the cluster but has no role yet is addressable without adding a second
+full-id input path to the app. Same verdicts as its two siblings, with which it
+now shares one matcher: 404 on a miss, 409 on an ambiguous key, never a first
+match.
+
+**A pre-existing leak fixed here.** `ClusterLayoutSchema.stagedRoleChanges` was
+`z.array(z.unknown())` and `/next-api/garage/cluster/layout` spread it through
+untouched while key-reducing `roles` — so that admin route emitted full
+64-character node ids the moment anything was staged, and
+`node-id-boundary.test.ts` missed it only because its fixture had no staged
+changes. The schema is narrowed, the route keys the array, and the fixture now
+carries two staged changes. `GetClusterLayoutHistory` sets the same trap with
+`updateTrackers`, a map *keyed by full node id*: it is absent from the schema
+and absent from the projection, so it never becomes an object in this process.
+
+**A staged change this version cannot parse is rendered, not dropped.** The
+staged-change schema's third union member is a total fallback, and
+`describeStagedChanges` reports it as `unrecognised` — the `recognised: false`
+precedent from `scrub-status.ts`. `apply` commits every staged change, including
+ones written by a newer Garage or by a CLI feature this app has no UI for, so
+reporting an empty staging area to an operator about to apply one is the exact
+failure `role_ok` and `data-coverage.ts` also exist to prevent. Staged
+*parameters* are surfaced as a boolean for the same reason and never rendered in
+detail: this app does not stage zone-redundancy changes and will not grow a
+control for them by accident.
+
+**A staged change cannot be un-staged from the app**, and the page says so
+rather than burying it. Only `garage layout revert` clears the staging area, and
+it discards *everything* pending while incrementing the layout version — so it
+stays a host command, named in prose and deliberately kept out of the copyable
+block.
+
+**Timeline rows are written Garage-first**, the same inversion `POST /repairs`
+makes and for the same reason: a staged change is not mirrored state, the row's
+content depends on the outcome, and there is nothing to roll back to. A refused
+staging writes a row too, at `warning`, with Garage's message in `detail`; a
+PocketBase failure returns `logged: false` rather than an error, because
+re-submitting would stage a duplicate. The kind is `layout_staged` — one kind,
+not one per verb, with `previous_value` / `new_value` carrying the raw role
+(`zone=dc1;capacity=32000000000000;tags=ssd,name:vault-01`) or the literal
+`remove`. It is **not** in `ONGOING_KINDS`: staging is an instant, born closed.
+
+Garage's own [layout operations
+guide](https://garagehq.deuxfleurs.fr/documentation/operations/layout/)
+documents the commands the page hands over; the page links to it, and to the
+planner, from a banner that is always visible.
 
 ### Admin gate
 

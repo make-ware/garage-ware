@@ -47,3 +47,16 @@ export const GARAGE_ADMIN_DOC_LINKS: readonly GarageDocLink[] = [
     blurb: 'Running a multi-node cluster for real, with a layout applied.',
   },
 ];
+
+/**
+ * Garage's own layout-operations guide — what `garage layout assign`,
+ * `show`, `apply` and `revert` do, and the version-number argument `apply`
+ * takes.
+ *
+ * Safe on an admin page and linked from `/admin/cluster/staging`, which stages
+ * changes but never applies them: the commands that commit a staged layout are
+ * run by a human on a cluster host, and this is the document that describes
+ * them.
+ */
+export const GARAGE_LAYOUT_DOC_URL =
+  'https://garagehq.deuxfleurs.fr/documentation/operations/layout/';
