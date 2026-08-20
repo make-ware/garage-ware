@@ -14,6 +14,7 @@ import {
   History,
   Key,
   ServerCog,
+  Settings2,
   Users,
   Wrench,
 } from 'lucide-react';
@@ -34,6 +35,13 @@ const links = [
   { href: '/admin/quota', label: 'Quota', icon: Gauge },
   { href: '/admin/keys', label: 'Keys', icon: Key },
   { href: '/admin/status', label: 'Status', icon: HeartPulse },
+  // Straight at the child: `/admin/setup` has no page of its own, so an entry
+  // pointing there would 404. `startsWith` still lights this on the child.
+  {
+    href: '/admin/setup/config-generator',
+    label: 'Setup',
+    icon: Settings2,
+  },
 ];
 
 export default function AdminLayout({

@@ -731,6 +731,91 @@ The capacity field is a plain SI input, **not** `<StorageQuotaInput>`: that
 control speaks binary GiB because the ledger does, and Garage's layout
 capacities are decimal — mixing them would misstate every node by 7%.
 
+#### GarageHQ config generator
+
+**The onboarding arc had a missing rung.** `/admin/status` detects that this
+deployment cannot reach a cluster (`needsClusterSetup()`), renders
+[`NoClusterCard`](../webapp/src/components/setup/no-cluster-card.tsx), and links
+out to GarageHQ's own docs — and there the trail ended, with the operator
+hand-writing a `garage.toml` from a reference page. `/admin/setup/config-generator`
+closes it: a form, a live preview of the file it produces, and a six-step panel
+that ends on the same `GARAGE_ADMIN_URL` / `GARAGE_ADMIN_TOKEN` pair the card
+names, handing the operator back to where they started.
+
+**It generates text and nothing else.** No endpoint, no persistence, no cluster
+read — the output is a pure function of the form, so the preview is a `useMemo`
+and the page has no `useEffect` and no fetch at all. This is the same shape as
+the layout planner one section up, and for a compatible reason: there is nothing
+to ask a server. garage-ware **manages** a Garage cluster and never installs
+one, so the page's own copy says so ([`NO_INSTALL_NOTICE`](../webapp/src/lib/garage-config/garage-toml-copy.ts))
+and must not drift from `NoClusterCard`'s "manages an existing GarageHQ cluster
+— it does not install one", which is the same claim from the other end.
+
+**No secret is ever accepted, generated or echoed.** `rpc_secret` and
+`admin_token` leave as `@RPC_SECRET@` / `@ADMIN_TOKEN@` with the command that
+produces each one on the line above (`openssl rand -hex 32`, `garage admin-token
+create --name garage-ware`). This is a product decision, not a bug class: a form
+field that accepts an RPC secret has invented a way to get one into a browser
+history, a screenshot, a support ticket and a React devtools tree, in exchange
+for saving an operator one `openssl` invocation. Intent is not enforcement, so
+[garage-toml-secrets.test.ts](../webapp/src/lib/garage-config/garage-toml-secrets.test.ts)
+is structural, sibling to `layout-sim-boundary.test.ts` and
+`node-id-boundary.test.ts`: no field of `GarageConfigInput` may be named like a
+credential, the module may not reach for a random source or `process.env`, it
+may import nothing from `lib/garage/`, and **no permutation of the inputs** may
+emit a hex or base64 run of 32+ characters. The page-level twin in
+[config-generator-page.test.tsx](../webapp/src/app/admin/setup/config-generator/config-generator-page.test.tsx)
+asserts the DOM half, because a `type="password"` could be added to the form
+component without `GarageConfigInput` changing at all. `ConfigAction` and
+`configReducer` therefore live in `garage-toml.ts` rather than beside the JSX —
+the only way to add a form field is to add it to the file the guard reads.
+
+**The emitted keys are Garage v2 spelling, and that is the point of the page.**
+The replication setting is a top-level integer `replication_factor`;
+`replication_mode` is v0.x and a current Garage will not accept it. This app
+speaks admin API v2 ([GarageHQ_OPENAPI.json](GarageHQ_OPENAPI.json) reports
+`v2.3.0`), so emitting the old key would hand operators a file their binary
+rejects — the exact failure the generator exists to prevent. The same
+correction was applied to the stale comment in
+[cluster.ts](../webapp/src/lib/garage/cluster.ts). Every emitted key carries a
+comment ending in its anchor in the upstream configuration reference; three of
+those anchors are **not** the key name (`#s3_api_bind_addr`, `#s3_root_domain`,
+`#admin_api_bind_addr`), so they are written out rather than derived — a derived
+anchor lands silently at the top of the page. The base URLs are single consts in
+[garage-docs.ts](../webapp/src/lib/garage-docs.ts), shared with `NoClusterCard`,
+so the two cannot drift.
+
+**Zone and capacity are a comment block, not fields, because they are not
+settings in this file.** They belong to the cluster layout and are assigned with
+`garage layout assign` once the nodes are up. Emitting them as keys would
+produce a file Garage silently ignores, which is worse than omitting them, so
+the form's zone/capacity/node-count inputs shape only the example commands in
+the trailing block — and the block says outright that they are not config keys.
+`root_domain` gets the opposite treatment for the same reason: blank means the
+key is **omitted entirely**, not emitted commented-out, because a key an
+operator has to reason about is worse than no key.
+
+**The approved artifact is a file, not an inline snapshot.**
+[`__snapshots__/garage.default.toml`](../webapp/src/lib/garage-config/__snapshots__/garage.default.toml)
+is reviewed as part of the PR and is byte-for-byte what the untouched form
+downloads; `.toml` is outside prettier's glob, so it cannot be reformatted out
+from under the test. Because the emitter is hand-rolled, the snapshot alone
+would only re-test its own assumptions — so every case also round-trips through
+`smol-toml` (a devDependency added for exactly this), which is the only
+assertion that proves the output is TOML rather than plausible-looking.
+
+**Admin-only, and the cross-link respects that.** `NoClusterCard` is rendered
+from *two* call sites — `/admin/status` and `/setup` step 3, the latter
+reachable before anyone is an admin — so the link to the generator sits beside
+the card on `/admin/status` and **not inside it**. One shared component with a
+`variant` prop is how an admin-only link eventually renders to a regular user;
+`garage-docs.ts` carries the same warning in caps. The section layout
+[admin/setup/layout.tsx](../webapp/src/app/admin/setup/layout.tsx) supplies the
+heading and padding but deliberately has **no tab strip and no `page.tsx`**:
+with one child a one-tab strip is noise, and the sidebar entry points straight
+at `/admin/setup/config-generator`, which `admin/layout.tsx`'s
+`pathname.startsWith(href)` lights with no change to the matcher.
+
 #### Cluster layout staging
 
 `/admin/cluster/staging` is the other half of the planner: once an operator has

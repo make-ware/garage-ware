@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ClipboardCopy, RefreshCw } from 'lucide-react';
+import Link from 'next/link';
+import { ClipboardCopy, FileCog, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -140,7 +141,38 @@ export default function AdminStatusPage() {
         </CardContent>
       </Card>
 
-      {data && needsClusterSetup(data.checks) && <NoClusterCard />}
+      {data && needsClusterSetup(data.checks) && (
+        <>
+          <NoClusterCard />
+          {/*
+            Deliberately beside the card and not inside it: `NoClusterCard` is
+            also rendered by `/setup` step 3, which is reachable before anyone
+            is an admin, and `/admin/setup/config-generator` is admin-only.
+            One component with a `variant` prop is how an admin-only link
+            eventually renders to a regular user.
+          */}
+          <Card className="mt-4 border-dashed">
+            <CardContent className="flex flex-wrap items-center justify-between gap-4 pt-6">
+              <div>
+                <p className="text-sm font-medium">
+                  Starting from nothing at all?
+                </p>
+                <p className="text-muted-foreground text-sm">
+                  Generate a <code className="font-mono">garage.toml</code> to
+                  place on each node, then come back and set the two variables
+                  above.
+                </p>
+              </div>
+              <Button asChild variant="outline" size="sm">
+                <Link href="/admin/setup/config-generator">
+                  <FileCog className="mr-2 h-4 w-4" />
+                  Config generator
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       {data && (
         <p className="mt-4 text-xs text-muted-foreground">

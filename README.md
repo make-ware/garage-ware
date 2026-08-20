@@ -15,7 +15,12 @@ You need a [running Garage cluster](https://garagehq.deuxfleurs.fr/documentation
 with a layout applied, and an admin token for it
 (`garage admin-token create --name garage-ware`, scoped as
 [below](#admin-token-scope)). garage-ware manages a cluster; it does not install
-one.
+one. Starting from nothing, the admin-only
+[config generator](docs/ARCHITECTURE.md#garagehq-config-generator) at
+`/admin/setup/config-generator` builds a `garage.toml` you place on each node
+yourself — it writes the file and tells you which commands to run; you run them.
+It never asks for a secret: the RPC secret and the admin token are emitted as
+placeholders with the command that produces each one beside them.
 
 ### Admin token scope
 
@@ -67,7 +72,8 @@ docker compose logs garage-ware | grep '\[setup\]'
 It prints a URL and a one-time claim token. Open the URL, create your account,
 paste the token — you are now the administrator. `/admin/status` then reports
 anything still misconfigured, with the fix for each — and, when it cannot reach
-a cluster at all, links to Garage's own installation docs.
+a cluster at all, links to Garage's own installation docs and to the config
+generator above.
 
 Pin a release instead of tracking `latest` by setting the image tag to
 `dastron/garage-ware:v1.8.3`. To build from your checkout instead of

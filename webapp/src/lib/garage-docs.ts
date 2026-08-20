@@ -17,6 +17,34 @@
 /** Safe on any page: the project's front door, no operational detail. */
 export const GARAGE_HOME_URL = 'https://garagehq.deuxfleurs.fr/';
 
+/**
+ * The upstream pages the config generator cites, one const each.
+ *
+ * `lib/garage-config/garage-toml.ts` builds a per-key `#anchor` link onto
+ * `GARAGE_CONFIG_REFERENCE_URL` for every line it emits, and the card below
+ * links the same page. Two string literals of the same URL in two files is how
+ * one of them silently rots, so there is only ever one.
+ */
+export const GARAGE_QUICK_START_URL =
+  'https://garagehq.deuxfleurs.fr/documentation/quick-start/';
+export const GARAGE_CONFIG_REFERENCE_URL =
+  'https://garagehq.deuxfleurs.fr/documentation/reference-manual/configuration/';
+export const GARAGE_REAL_WORLD_URL =
+  'https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/';
+/**
+ * Garage's own layout-operations guide — what `garage layout assign`,
+ * `show`, `apply` and `revert` do, and the version-number argument `apply`
+ * takes. Note the path: `operations/layout`, not `reference-manual/layout` —
+ * the latter is a 404 upstream.
+ *
+ * Safe on an admin page and linked from `/admin/cluster/staging`, which
+ * stages changes but never applies them: the commands that commit a staged
+ * layout are run by a human on a cluster host, and this is the document that
+ * describes them.
+ */
+export const GARAGE_LAYOUT_DOC_URL =
+  'https://garagehq.deuxfleurs.fr/documentation/operations/layout/';
+
 export interface GarageDocLink {
   href: string;
   title: string;
@@ -31,32 +59,19 @@ export interface GarageDocLink {
  */
 export const GARAGE_ADMIN_DOC_LINKS: readonly GarageDocLink[] = [
   {
-    href: 'https://garagehq.deuxfleurs.fr/documentation/quick-start/',
+    href: GARAGE_QUICK_START_URL,
     title: 'Installation quickstart',
     blurb: 'Get a single Garage node running and talking S3.',
   },
   {
-    href: 'https://garagehq.deuxfleurs.fr/documentation/reference-manual/configuration/',
+    href: GARAGE_CONFIG_REFERENCE_URL,
     title: 'Configuration file reference',
     blurb:
       'Every option in garage.toml, including the admin block that exposes the API this app calls.',
   },
   {
-    href: 'https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/',
+    href: GARAGE_REAL_WORLD_URL,
     title: 'Production deployment cookbook',
     blurb: 'Running a multi-node cluster for real, with a layout applied.',
   },
 ];
-
-/**
- * Garage's own layout-operations guide — what `garage layout assign`,
- * `show`, `apply` and `revert` do, and the version-number argument `apply`
- * takes.
- *
- * Safe on an admin page and linked from `/admin/cluster/staging`, which stages
- * changes but never applies them: the commands that commit a staged layout are
- * run by a human on a cluster host, and this is the document that describes
- * them.
- */
-export const GARAGE_LAYOUT_DOC_URL =
-  'https://garagehq.deuxfleurs.fr/documentation/operations/layout/';
