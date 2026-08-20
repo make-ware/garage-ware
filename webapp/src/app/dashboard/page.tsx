@@ -39,6 +39,7 @@ import {
 import { BucketTable } from '@/components/storage/bucket-table';
 import { Button } from '@/components/ui/button';
 import type { AccessKey, NodeOwner, StorageInvite } from '@garage-ware/shared';
+import { resolveNotificationThresholdPct } from '@garage-ware/shared';
 import type {
   BucketWithUsage,
   ClusterNodeItem,
@@ -560,8 +561,13 @@ function StorageDashboard() {
             <p className="text-sm text-muted-foreground">{user?.email}</p>
             <p className="text-sm text-muted-foreground">
               Fill alerts at{' '}
-              <strong>{user?.notification_threshold_pct ?? 90}%</strong> of a
-              bucket&apos;s quota.
+              <strong>
+                {resolveNotificationThresholdPct(
+                  user?.notification_threshold_pct
+                )}
+                %
+              </strong>{' '}
+              of a bucket&apos;s quota.
             </p>
           </CardContent>
           <CardFooter className="border-t pt-4">
