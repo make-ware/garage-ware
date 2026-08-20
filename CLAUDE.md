@@ -249,6 +249,12 @@ Full field lists and the reasoning for every `null` rule, `TextField`-not-relati
   failure. `*` and `self` are refused. There is no last-scrub timestamp in the API, so
   [scrub-status.ts](webapp/src/lib/repair/scrub-status.ts) parses prose and `recognised: false` is its
   own UI state.
+- [Cluster layout planner](docs/ARCHITECTURE.md#cluster-layout-planner) — `/admin/cluster/planner`
+  simulates a layout **entirely client-side**; it adds no endpoint and stages nothing, because
+  Garage only previews *staged* changes and `revert` bumps the layout version. `exact` (partition
+  size, capacities) reproduces Garage; `estimated` (the per-node split) cannot and says so.
+  `lib/cluster/layout-sim.ts` is bytes-only, display-only, and an import-boundary test keeps it out
+  of the accounting path.
 - [First run and setup](docs/ARCHITECTURE.md#first-run-and-setup) — the claim token bootstraps the
   first admin, guarded on **`Admins` being empty**, checked before the token. Two hooks refuse the
   removal of the last admin so that window never recurs.

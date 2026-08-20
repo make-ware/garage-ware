@@ -57,12 +57,30 @@ const LayoutNodeSchema = z.object({
   capacity: z.number().nullable().optional(),
   tags: z.array(z.string()).optional(),
 });
+/**
+ * `zoneRedundancy` in the two shapes the admin API documents: the literal
+ * `"maximum"`, or `{ atLeast: n }`.
+ *
+ * Narrowed from `z.unknown()` because the layout planner needs to *reason* with
+ * it — the effective redundancy `k` is `min(zones, rf)` under `maximum` and the
+ * given number otherwise, and that choice decides how many replicas of a
+ * partition one zone may hold. It stays **optional**, and a value matching
+ * neither shape still parses as `undefined` rather than failing the whole
+ * layout read: older Garage releases have carried other shapes, and nothing
+ * else in the app looks at this field. A cluster read must not start failing
+ * over a parameter only one page consumes.
+ */
+const ZoneRedundancySchema = z.union([
+  z.literal('maximum'),
+  z.object({ atLeast: z.number().int() }),
+]);
+
 export const ClusterLayoutSchema = z.object({
   version: z.number().int(),
   roles: z.array(LayoutNodeSchema),
   parameters: z
     .object({
-      zoneRedundancy: z.unknown().optional(),
+      zoneRedundancy: ZoneRedundancySchema.optional().catch(undefined),
     })
     .partial()
     .optional(),
