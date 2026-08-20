@@ -27,6 +27,7 @@ webapp/src/
 │   ├── garage/             # Garage admin API client (server-only)
 │   ├── auth/               # Auth helpers (client + server)
 │   ├── storage/            # Quota / claims helpers
+│   ├── cluster/            # Cluster timeline + the layout planner's simulation
 │   ├── api-client.ts       # Browser → /next-api fetch wrapper (attaches PB token)
 │   ├── pocketbase.ts       # PocketBase singleton (client-side)
 │   └── types.ts            # TypedPocketBase interface

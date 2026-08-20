@@ -603,6 +603,131 @@ row recording that a named admin launched a cluster-wide repair, which is
 precisely the row that admin must not be able to delete. `PATCH` likewise
 refuses `endedAt` on a non-manual row; annotation stays open to every source.
 
+#### Cluster layout planner
+
+`/admin/cluster/planner` is a what-if tool: describe a hypothetical set of nodes
+— label, zone, capacity, gateway — and see the partition assignment Garage would
+produce, styled after `garage layout show`. It is the second route in the app's
+newest nested admin nav (`app/admin/cluster/layout.tsx`, copied from
+`admin/repairs/layout.tsx`; `admin/layout.tsx`'s `pathname.startsWith` keeps the
+sidebar entry lit unchanged). The page is at `/planner` and **not**
+`/cluster/layout` deliberately — a `layout/` directory beside Next's reserved
+`layout.tsx` is legal, but every `grep cluster/layout` would then return the API
+route, the Next convention and the page at once.
+
+**It is a client-side reimplementation, and it has to be.** Garage's
+`PreviewClusterLayoutChanges` only operates on changes that have already been
+*staged*, and there is no safe undo: `RevertClusterLayout` clears the staging
+area by **incrementing the layout version**. A preview built on it would leave a
+permanent mark on the operator's cluster, so the planner adds **no endpoint,
+makes no admin-API call of its own, and stages nothing**. It reads the layout
+through the existing display route and takes its movement baseline out of
+`NodeMetrics`. A component test asserts structurally that `api` is called with
+exactly one path and never one containing `staged`, `apply` or `revert`.
+
+**Exact versus estimated is in the shape of the result, not only in the copy.**
+`SimResult.exact` — partition size, effective capacity, total usable, effective
+zone redundancy — reproduces Garage's own arithmetic. `SimResult.estimated` —
+the per-node and per-zone split — does not, and *provably* cannot in general:
+Garage chooses among optimal assignments with `optimize_flow_with_cost`, a
+negative-cycle-cancelling heuristic whose cost charges +1 only for a
+(partition, node) pair that was not previously assigned. In the documented
+Example 2 every dc3 split with `node3 ∈ [128, 256]` costs exactly 0, so Garage's
+193/63, a 128/128 split and this module's 171/85 are all optima. The tests
+assert the *direction* and say why they do not assert 193. Field names carry the
+distinction to every call site: `estimatedPartitions`, `exactPartitionSizeBytes`.
+
+**The partition size has a closed form, and that is the whole engine.** Garage
+binary-searches the largest `P` whose per-partition max-flow equals `256·rf`.
+All 256 partitions are structurally identical, so the graph collapses to
+
+```
+c_n = min(⌊cap_n / P⌋, 256)                    # gateway / 0 capacity → 0
+m_z = min(#{ n ∈ z : c_n ≥ 1 }, rf − k + 1)
+feasible(P) ⇔ Σ_z min(Σ_{n∈z} c_n, 256·m_z) ≥ 256·rf
+```
+
+with `k = atLeast`, or `min(storageZones, rf)` under `maximum`. Three terms are
+easy to omit and each produces confident garbage: the per-node `min(·, 256)` (a
+node holds at most one replica of a partition — without it rf=3 across two large
+nodes is feasible at *every* `P`); the node-count term in `m_z` (a one-node zone
+can never supply more than 256); and `rf − k + 1` used **unconditionally**
+rather than `ceil(rf/zones)` — they agree at rf=3 and diverge at rf=5 over 2
+zones. [layout-sim.test.ts](../webapp/src/lib/cluster/layout-sim.test.ts)
+verifies the closed form against a literal Ford–Fulkerson over Garage's actual
+graph, at a scaled partition count, because that equality is the only reason no
+flow solver ships to the browser. It also asserts `feasible(P) ∧ ¬feasible(P+1)`
+over 500 generated topologies, permutation invariance, and idempotence.
+
+**Placement seeds from the previous layout at both levels** — zones first, then
+nodes within each zone, through one `distribute()` used twice. Seeding only the
+node level lets the zone step invent movement the node step must absorb, and
+`partitionsMoved` then reports traffic that would never happen. That seeding is
+what reproduces Example 1 exactly: a fourth equal node added to dc1 in a 3-zone
+cluster gets **0 partitions**, because dc1's 256 replicas are already covered
+and moving them buys no capacity. `partitionsMoved` is `Σ max(0, delta)` and is
+a **lower bound** — a node whose count is unchanged can still swap *which*
+partitions it holds — and the UI says so.
+
+**Two warnings, both derived from the result rather than pattern-matched.** A
+storage node with declared capacity and zero partitions (the Example-1 trap; the
+copy carries the documentation's own fix, halving the declared capacity on each
+node in that zone), and a zone whose usable capacity falls below
+`ZONE_OVER_DECLARED_RATIO` of what it declares. Separately, the page compares a
+simulation of the *unmodified* layout with the plan and flags a capacity
+**regression** — the `maximum` trap, where introducing a zone raises `k` and
+tightens every zone's `rf − k + 1` at once. A `dc1`/`DC1` typo does exactly that
+silently, which is why the zone field suggests existing zones and badges a new
+one.
+
+**Degenerate input returns a reason and no numbers at all** — `not-enough-nodes`,
+`not-enough-zones`, `invalid-redundancy` (`atLeast` outside `[1, rf]`, which
+makes `Source→Pdown`'s capacity negative rather than merely unsatisfiable),
+`capacity-too-small`, `capacity-out-of-range` (past 2⁵³, where `⌊cap/P⌋` stops
+distinguishing adjacent integers). A partition size beside "this cannot work" is
+exactly what an operator would copy down.
+
+**The baseline is `NodeMetrics`, with three guards.** `stored_partitions` is
+already sampled every 15 minutes, keyed by node key, readable by any signed-in
+user — so Garage's own counts are available with no new endpoint. They are
+discarded when `layout_ok`/`role_ok` are false (under that gate `0` is a real
+reading — a gateway), when any sample's `layout_version` differs from the layout
+on screen, or when the counts do not sum to `256·rf` (a node missing from the
+samples, which no per-row gate can see). On discard the planner falls back to
+simulating the unmodified layout and *labels the delta as estimated*; with no
+fallback it suppresses movement figures and says why. A wrong baseline produces
+a wrong `partitionsMoved`, and that is the number an operator would act on.
+
+**Conformance is checked on every page load.** The planner simulates the layout
+exactly as it stands and compares its partition size to the `partitionSize`
+Garage reports through the existing route; a match is a live validation against
+real hardware and is badged as such. `stagedRoleChanges.length > 0` suppresses
+the comparison — with staged changes pending, Garage's figure describes the
+applied layout.
+
+**`lib/cluster/layout-sim.ts` is display-only, and the guard is structural.**
+Its per-node usable figure (`storedPartitions × partitionSize`) is strictly more
+accurate than the `capacity / replicationFactor` the claim ledger is built on,
+and routinely lower — the same hazard `lib/metrics/data-coverage.ts` records,
+relocated. The per-node claim invariant is *defined* on the latter; substituting
+the better number would revalue every node's ceiling downward and could
+retroactively invalidate existing claims. So the module stays in **bytes**, with
+no `gb` in any identifier and nothing from `lib/storage/` imported, and
+[layout-sim-boundary.test.ts](../webapp/src/lib/cluster/layout-sim-boundary.test.ts)
+asserts that nothing under `lib/storage/`, `claims/`, `transfers/`, `invites/`
+or the balance routes imports it. Branding would not have worked:
+`number & {__brand}` is still assignable to `number`. `ClusterLayoutSchema`'s
+node shape is likewise **left alone** — adding Garage's `storedPartitions` /
+`usableCapacity` there would hand every ledger call site a strictly lower usable
+figure by autocomplete, and `node-id-boundary.test.ts` would not catch it, since
+numeric fields do not trip `/[0-9a-f]{64}/`. The one schema change is narrowing
+`parameters.zoneRedundancy` from `z.unknown()`, kept optional and `.catch()`-ed
+so an unfamiliar shape from an older Garage does not fail the whole layout read.
+
+The capacity field is a plain SI input, **not** `<StorageQuotaInput>`: that
+control speaks binary GiB because the ledger does, and Garage's layout
+capacities are decimal — mixing them would misstate every node by 7%.
+
 ### Admin gate
 
 Admin checks use the `Admins` collection rules: the listRule/viewRule (`@collection.Admins.user ?= @request.auth.id`) means a non-admin querying their own row gets a 404 and an admin gets the record. So [webapp/src/lib/auth/server.ts](../webapp/src/lib/auth/server.ts) `isUserAdmin()` and the client-side [webapp/src/hooks/use-admin-status.ts](../webapp/src/hooks/use-admin-status.ts) both work via the same self-scoped lookup, no superuser auth needed.
