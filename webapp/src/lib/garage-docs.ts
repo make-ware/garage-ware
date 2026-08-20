@@ -32,8 +32,15 @@ export const GARAGE_CONFIG_REFERENCE_URL =
 export const GARAGE_REAL_WORLD_URL =
   'https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/';
 /**
- * Note the path: `operations/layout`, not `reference-manual/layout` — the
- * latter is a 404 upstream.
+ * Garage's own layout-operations guide — what `garage layout assign`,
+ * `show`, `apply` and `revert` do, and the version-number argument `apply`
+ * takes. Note the path: `operations/layout`, not `reference-manual/layout` —
+ * the latter is a 404 upstream.
+ *
+ * Safe on an admin page and linked from `/admin/cluster/staging`, which
+ * stages changes but never applies them: the commands that commit a staged
+ * layout are run by a human on a cluster host, and this is the document that
+ * describes them.
  */
 export const GARAGE_LAYOUT_DOC_URL =
   'https://garagehq.deuxfleurs.fr/documentation/operations/layout/';

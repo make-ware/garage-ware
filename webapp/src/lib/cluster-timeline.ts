@@ -42,6 +42,7 @@ export const KIND_LABELS: Record<ClusterEventKind, string> = {
   note: 'Note',
   repair: 'Repair',
   node_owner_changed: 'Node ownership',
+  layout_staged: 'Layout staged',
 };
 
 /**
