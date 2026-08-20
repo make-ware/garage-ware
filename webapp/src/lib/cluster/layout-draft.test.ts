@@ -191,9 +191,11 @@ describe('draftNodeError', () => {
     expect(draftNodeError({ ...base, capacityValue: 'ten' })).toMatch(/number/);
   });
 
-  it('requires a zone for a storage node but not for a gateway', () => {
+  it('requires a zone for a storage node and for a gateway alike', () => {
     expect(draftNodeError({ ...base, zone: '  ' })).toMatch(/Zone/);
-    expect(draftNodeError({ ...base, zone: '  ', gateway: true })).toBeNull();
+    expect(draftNodeError({ ...base, zone: '  ', gateway: true })).toMatch(
+      /Zone/
+    );
   });
 
   it('reports a duplicate node identity through draftErrors', () => {

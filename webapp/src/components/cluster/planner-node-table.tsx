@@ -83,6 +83,13 @@ export function PlannerNodeTable({
     .filter(Boolean)
     .sort();
   const maxRedundancy = draft.replicationFactor;
+  // At least 1-3, but extended to cover a live cluster whose replication
+  // factor is already higher — otherwise loading such a cluster leaves no
+  // button selected and no way back to its actual value.
+  const replicationFactorOptions = Array.from(
+    { length: Math.max(3, draft.replicationFactor) },
+    (_, i) => i + 1
+  );
 
   return (
     <Card>
@@ -99,7 +106,7 @@ export function PlannerNodeTable({
           <div className="space-y-1.5">
             <Label className="text-xs">Replication factor</Label>
             <div className="flex gap-1">
-              {[1, 2, 3].map((rf) => (
+              {replicationFactorOptions.map((rf) => (
                 <Button
                   key={rf}
                   size="sm"

@@ -327,7 +327,7 @@ export default function ClusterPlannerPage() {
                 </p>
               )}
 
-              {impact?.regression && impact.newZones.length > 0 && (
+              {impact?.regression && (
                 <Alert variant="destructive">
                   <TriangleAlert />
                   <AlertTitle>
@@ -340,12 +340,16 @@ export default function ClusterPlannerPage() {
                       ? 'nothing — the plan has no valid layout'
                       : formatCapacity(impact.afterBytes)}
                     .{' '}
-                    {impact.zoneRedundancyRaised
-                      ? `Adding the zone ${impact.newZones.join(', ')} raised the
+                    {impact.newZones.length === 0
+                      ? `Check the removed or resized nodes and the replication
+                         factor — capacity dropped without a new zone being
+                         added.`
+                      : impact.zoneRedundancyRaised
+                        ? `Adding the zone ${impact.newZones.join(', ')} raised the
                          number of distinct zones every partition must reach, so
                          each zone is now capped at fewer replicas and the
                          smallest zone bounds the whole cluster.`
-                      : `Check the new zone${impact.newZones.length === 1 ? '' : 's'} ${impact.newZones.join(', ')} — a zone name that
+                        : `Check the new zone${impact.newZones.length === 1 ? '' : 's'} ${impact.newZones.join(', ')} — a zone name that
                          differs only in case or spelling from an existing one
                          creates a new zone rather than joining it.`}
                   </AlertDescription>

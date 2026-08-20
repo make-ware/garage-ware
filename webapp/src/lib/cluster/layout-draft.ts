@@ -204,7 +204,9 @@ export function draftReducer(
  * wanted the gateway switch.
  */
 export function draftNodeError(node: DraftNode): string | null {
-  if (!node.zone.trim() && !node.gateway) return 'Zone is required';
+  // Every layout node needs a zone, gateway or not — Garage's `-z` flag is
+  // mandatory regardless of whether `-g` is also set.
+  if (!node.zone.trim()) return 'Zone is required';
   if (node.gateway) return null;
   const raw = node.capacityValue.trim();
   if (!raw) return 'Capacity is required';
