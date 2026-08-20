@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import {
   formatDiagnostics,
+  needsClusterSetup,
+  NoClusterCard,
   StatusChecks,
   type Check,
   type Diagnostics,
@@ -35,6 +37,27 @@ const checks: Check[] = [
   },
 ];
 
+const healthyChecks: Check[] = [
+  {
+    id: 'pocketbase-superuser',
+    label: 'PocketBase superuser',
+    state: 'ok',
+    detail: 'Credentials are set and authenticate successfully.',
+  },
+  {
+    id: 'garage-admin-api',
+    label: 'Garage admin API',
+    state: 'ok',
+    detail: 'Reachable at 10.0.0.5:3903.',
+  },
+  {
+    id: 'garage-layout',
+    label: 'Garage layout',
+    state: 'ok',
+    detail: 'Layout version 4, replication factor 3, 3 storage node(s).',
+  },
+];
+
 describe('StatusChecks', () => {
   it('renders every check with its label, detail and hint', () => {
     render(<StatusChecks checks={checks} />);
@@ -59,6 +82,31 @@ describe('StatusChecks', () => {
   it('renders nothing but an empty list when there are no checks', () => {
     const { container } = render(<StatusChecks checks={[]} />);
     expect(container.querySelectorAll('li')).toHaveLength(0);
+  });
+
+  it('never renders the "no cluster yet" links itself, failing or healthy', () => {
+    // The card is a call-site choice — /admin/status places it outside the
+    // checks Card entirely — so this component stays a bare <ul> with no links
+    // in it whatever the checks say.
+    const failing = render(<StatusChecks checks={checks} />);
+    expect(failing.container.querySelectorAll('a')).toHaveLength(0);
+    expect(failing.queryByText('No cluster yet?')).not.toBeInTheDocument();
+    failing.unmount();
+
+    const healthy = render(<StatusChecks checks={healthyChecks} />);
+    expect(healthy.container.querySelectorAll('a')).toHaveLength(0);
+    expect(healthy.queryByText('No cluster yet?')).not.toBeInTheDocument();
+  });
+});
+
+describe('status-checks re-exports', () => {
+  it('gives a page the predicate and the card from one import', () => {
+    // /admin/status and /setup both import all four from here; a broken
+    // re-export would only show up as a runtime undefined-component crash.
+    expect(needsClusterSetup(checks)).toBe(true);
+    expect(needsClusterSetup(healthyChecks)).toBe(false);
+    render(<NoClusterCard />);
+    expect(screen.getByText('No cluster yet?')).toBeInTheDocument();
   });
 });
 

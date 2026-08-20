@@ -13,6 +13,8 @@ import {
 } from '@/components/ui/card';
 import {
   formatDiagnostics,
+  needsClusterSetup,
+  NoClusterCard,
   StatusChecks,
   type Diagnostics,
 } from '@/components/setup/status-checks';
@@ -137,6 +139,8 @@ export default function AdminStatusPage() {
           )}
         </CardContent>
       </Card>
+
+      {data && needsClusterSetup(data.checks) && <NoClusterCard />}
 
       {data && (
         <p className="mt-4 text-xs text-muted-foreground">

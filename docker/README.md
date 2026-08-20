@@ -299,6 +299,11 @@ Two things this app cannot do for you, and which make it look broken:
 `/admin/status` runs these checks live and tells you which is failing. The `id`
 column matches what the page reports.
 
+When `garage-admin-api` fails outright — the vars are unset, or nothing answered
+— the page adds a "No cluster yet?" card below the checks, linking to Garage's
+own quickstart, configuration reference and production cookbook. garage-ware
+manages a cluster; it never installs one or stores its credentials.
+
 | Check | Symptom | Fix |
 |---|---|---|
 | `pocketbase-superuser` | Invites, transfers, cluster events and the cluster cache 500 | Set both `POCKETBASE_ADMIN_EMAIL`/`PASSWORD`, or let the container generate them and don't override just one |

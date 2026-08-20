@@ -254,6 +254,10 @@ Full field lists and the reasoning for every `null` rule, `TextField`-not-relati
   removal of the last admin so that window never recurs.
 - [Status and troubleshooting](docs/ARCHITECTURE.md#status-and-troubleshooting) — `/admin/status`
   never reads the cache, never renders a secret, and never takes the request host from `req.url`.
+  The "No cluster yet?" card fires on `needsClusterSetup()` (`garage-admin-api === 'fail'` only) and
+  is rendered by the call sites, not by `StatusChecks`. `/dashboard/cluster` gets its own redacted
+  notice — root URL only, no env vars — keyed on HTTP 503/502, not on the error `code`. garage-ware
+  links to GarageHQ's docs; it never installs a cluster or stores its secrets.
 
 ## Key invariants
 

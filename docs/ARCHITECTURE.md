@@ -488,7 +488,7 @@ ended_at > occurred_at   a resolved condition; the pair bounds its duration
 
 **"Under repair" is an open manual note**, not a column: any `source: 'manual'` row with a `node_id` and an empty `ended_at` puts that node in that state on the events page and the cluster map, and closing the row clears it. One rule, no extra field, and the dialog's "still ongoing" toggle is the explicit control. An open *detector* row marks its node too, as **unresolved** rather than under repair — see the ongoing-conditions notes above.
 
-**The dashboard timeline.** `/dashboard/cluster` renders the same log below the node map for every signed-in user — the events already existed, they just never reached the people looking at the cluster. `GET /next-api/garage/cluster/events` is that door: `getServerUser`, one memoized superuser read, and each row rebuilt field by field into `ClusterTimelineEvent`. **The projection is the privacy boundary, not the collection rule** — the rules stay admin-only, and `actor_id` / `actor_email` / `annotated_by` never leave the server, along with `detail`, `previous_value`, `new_value` and `annotation`, none of which that page renders. `category` **is** carried, because it is the badge: every manual row has `kind: 'note'`, so labelling one "Note" spends a badge to say nothing — `eventBadgeLabel()` renders a manual row's category and falls back to the kind for a detector row, which has none. It is a closed enum and identifies nobody. Spreading the record would work today and leak the next column somebody adds; every field a user sees is named in the handler. It lives under `cluster/` because that is where the user-facing display family already is (`cluster/nodes` is the other `getServerUser` route there), and because a sibling of `events/[id]` would be a static segment quietly winning over the dynamic one. It is **enrichment**: the page fires it alongside the layout fetch and swallows a failure into one muted line, since a cluster map that refuses to render because its timeline 500'd is the worse trade.
+**The dashboard timeline.** `/dashboard/cluster` renders the same log below the node map for every signed-in user — the events already existed, they just never reached the people looking at the cluster. `GET /next-api/garage/cluster/events` is that door: `getServerUser`, one memoized superuser read, and each row rebuilt field by field into `ClusterTimelineEvent`. **The projection is the privacy boundary, not the collection rule** — the rules stay admin-only, and `actor_id` / `actor_email` / `annotated_by` never leave the server, along with `detail`, `previous_value`, `new_value` and `annotation`, none of which that page renders. `category` **is** carried, because it is the badge: every manual row has `kind: 'note'`, so labelling one "Note" spends a badge to say nothing — `eventBadgeLabel()` renders a manual row's category and falls back to the kind for a detector row, which has none. It is a closed enum and identifies nobody. Spreading the record would work today and leak the next column somebody adds; every field a user sees is named in the handler. It lives under `cluster/` because that is where the user-facing display family already is (`cluster/nodes` is the other `getServerUser` route there), and because a sibling of `events/[id]` would be a static segment quietly winning over the dynamic one. It is **enrichment**: the page fires it alongside the layout fetch and swallows a failure into one muted line, since a cluster map that refuses to render because its timeline 500'd is the worse trade. When the *layout* fetch itself comes back 503 or 502 the page shows `ClusterUnavailableNotice` in place of the red error bar — see [Status and troubleshooting](#status-and-troubleshooting) for why that branch exists and why it keys on the status rather than the error code.
 
 `TIMELINE_DAYS`, the week bucketing, `eventBadgeLabel()` and the `KIND_LABELS` / `CATEGORY_LABELS` / `SEVERITY_TONE` maps all live in [webapp/src/lib/cluster-timeline.ts](../webapp/src/lib/cluster-timeline.ts) — deliberately not `server-only`. `/admin/events` and the log dialog import them rather than keeping the copies they used to own (`CATEGORY_LABELS` existed twice, commented "the same words either side"), for exactly the reason `node-label.ts` exists. Weeks are **local** calendar weeks stepped with `setDate`, so one spanning a DST change is still seven days rather than 167 hours, and **only weeks with something in them get a marker**. An earlier cut drew every week in the window so quiet stretches were explicit; on a real cluster most weeks are quiet, and the result was a column of "No events" with the occasional event in it — the scaffold drowning the thing it framed. The window is stated once in the card's description instead. A note dated in the future — planned maintenance next Tuesday, which the log dialog permits — is shown rather than dropped, but only within one further window: the route bounds its query on **both** ends and the grouping filters to the same bounds, so a note whose year was mistyped can neither be fetched and then quietly discarded nor park itself permanently at the top.
 
@@ -767,6 +767,49 @@ Two rules for anything added here:
   since a browser omits `:443` and `APP_PUBLIC_URL` is written with one. Both
   headers are client-supplied and neither is authorization — this decides a line
   of advisory copy.
+
+**"No cluster yet?" — the fresh-deployment case.** A deployment that has never
+been pointed at a cluster used to get a wall of red and nothing else. The page now
+renders [no-cluster-card.tsx](../webapp/src/components/setup/no-cluster-card.tsx)
+below the checks, linking to Garage's quickstart, configuration reference and
+production cookbook from [garage-docs.ts](../webapp/src/lib/garage-docs.ts). Four
+things about it are deliberate:
+
+- **The predicate is `needsClusterSetup()`, keyed on `garage-admin-api === 'fail'`
+  and nothing else.** `'warn'` on that check means the cluster *answered* and is
+  merely unhealthy — Garage is installed and talking, so "install Garage first"
+  would be a lie. `garage-layout: 'warn'` (reachable, no layout applied) is
+  excluded for the same reason plus a better one: that check already carries the
+  exact fix (`garage layout assign` / `apply`). Showing an installation
+  quickstart to someone with a running cluster is how an operator learns to
+  ignore the page — the `app-public-url` failure above, again. An absent check is
+  `false`: never assert "you have no cluster" from missing evidence. `/setup`
+  step 3 renders the same card, which is the direct extension of why that page's
+  auth is relaxed at all.
+- **The call sites render it, not `StatusChecks`.** That component returns a bare
+  `<ul>`; a sibling would force a fragment and silently change spacing at both
+  call sites, and the two want the card in different places — `/admin/status`
+  outside the checks `<Card>` entirely. It is re-exported *through*
+  `status-checks.tsx` so a page still needs one import, the same arrangement
+  `formatDiagnostics` already has.
+- **The redaction rule extends past the status page.** `/dashboard/cluster` is a
+  redacted projection for every signed-in user, and it rendered whatever it
+  caught verbatim — including the two bodies `garageErrorResponse()` writes
+  *for an administrator*, which name `GARAGE_ADMIN_URL` and `GARAGE_ADMIN_TOKEN`.
+  It gets [cluster-unavailable.tsx](../webapp/src/components/cluster/cluster-unavailable.tsx)
+  instead: root URL only, no env vars, no admin doc links, ask your
+  administrator. Two components rather than one with a `variant` prop, because a
+  shared component is how an admin doc link eventually gets rendered to a regular
+  user. The page discriminates on **HTTP status (503/502), not the error `code`**
+  — `ApiError` parses `code` off the body and drops it, and status fails *safe*:
+  an unrecognised cluster failure lands in the redacted branch, where code-based
+  matching would fall through to the raw message. The notice is cleared on the
+  success path, since the effect re-runs on `refreshKey`.
+- **garage-ware never installs Garage and never stores cluster secrets.** This is
+  copy and links. Anything that provisions, or that persists a credential for a
+  cluster, does not belong here. The card also does not repeat
+  `garage admin-token create --name garage-ware`: that lives in the failing
+  check's own hint, rendered directly above it, and two copies drift.
 
 `GET /next-api/health` is separate and unauthenticated: `{status, pocketbase}`,
 no Garage, no config detail, 503 when PocketBase is unreachable. It is what the
