@@ -1,7 +1,7 @@
 import 'server-only';
 import { z } from 'zod';
 import { GarageClient, cluster, repair } from '@/lib/garage';
-import { resolveNodeKey } from '@/lib/garage/node-resolve';
+import { NodeKeyParamSchema, resolveNodeKey } from '@/lib/garage/node-resolve';
 import type { NodeKey } from '@/lib/node-label';
 import { errorResponse, requireAdmin } from '@/lib/auth/server';
 import { writeTimelineActionRow } from '@/lib/cluster/timeline-write';
@@ -12,20 +12,10 @@ export const dynamic = 'force-dynamic';
 const Body = z.object({
   /**
    * A node key — 16 hex characters, what every payload in the app carries.
-   *
-   * The pattern is what rejects `*`: a wildcard here would fan the repair
-   * across every node in the cluster while the operator's confirmation dialog
-   * named exactly one. Hex also rejects `self`, which is whichever node answers
-   * the admin API and routinely not the one clicked — but the explicit refusal
-   * stays, because two guards on the same thing is not one too many, and
-   * `launchRepair` makes it three.
+   * `NodeKeyParamSchema` is why `*` and `self` cannot reach Garage from here;
+   * `launchRepair` refuses both a third time.
    */
-  nodeId: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .regex(/^[0-9a-f]{16}$/, 'nodeId must be a 16-character node key')
-    .refine((v) => v !== 'self', 'nodeId must name one node, not "self"'),
+  nodeId: NodeKeyParamSchema,
   action: z.enum(REPAIR_ACTION_IDS),
 });
 

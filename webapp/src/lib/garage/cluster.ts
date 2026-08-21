@@ -7,12 +7,15 @@ import {
   ClusterLayoutSchema,
   ClusterStatisticsSchema,
   ClusterStatusSchema,
+  NodeStatisticsMultiSchema,
   type ClusterHealth,
   type ClusterLayout,
   type ClusterLayoutHistory,
   type ClusterStatistics,
   type ClusterStatus,
+  type NodeStatistics,
 } from './schemas';
+import { toNodeOutcomes, type NodeOutcome } from './multi-node';
 
 export async function getHealth(client: GarageClient): Promise<ClusterHealth> {
   return client.request('/v2/GetClusterHealth', ClusterHealthSchema);
@@ -22,10 +25,45 @@ export async function getStatus(client: GarageClient): Promise<ClusterStatus> {
   return client.request('/v2/GetClusterStatus', ClusterStatusSchema);
 }
 
+/**
+ * Cluster-wide statistics as one prose blob.
+ *
+ * Currently unused — `getReplicationFactor` below hits the same endpoint with
+ * its own narrow schema. Kept because it is the honest wrapper for the
+ * operation, and because deleting it would leave `getNodeStatistics` below
+ * looking like the only member of a pair. See that function for the difference.
+ */
 export async function getStatistics(
   client: GarageClient
 ): Promise<ClusterStatistics> {
   return client.request('/v2/GetClusterStatistics', ClusterStatisticsSchema);
+}
+
+/**
+ * Per-node statistics — and **this is not `getStatistics` above**.
+ *
+ * `GetClusterStatistics` and `GetNodeStatistics` are the most confusable pair
+ * in this API: near-identical names, and the first answers as one blob while
+ * the second answers through the multi-node envelope, one entry per node. They
+ * sit adjacent so that sentence is impossible to miss.
+ *
+ * The field this app wants is `blockManagerStats.resyncQueueLen` — how many
+ * blocks a node still has to fetch. It is **not** a progress bar: it is shared
+ * by block repair, rebalance and ordinary replication catch-up, and it goes up
+ * before it goes down. Render the number, never a percentage or an ETA.
+ *
+ * `freeform` is parsed by nobody; see `NodeStatisticsSchema`.
+ */
+export async function getNodeStatistics(
+  client: GarageClient,
+  opts: { node?: string } = {}
+): Promise<NodeOutcome<NodeStatistics>[]> {
+  const env = await client.request(
+    '/v2/GetNodeStatistics',
+    NodeStatisticsMultiSchema,
+    { query: { node: opts.node ?? '*' } }
+  );
+  return toNodeOutcomes(env);
 }
 
 export async function getLayout(client: GarageClient): Promise<ClusterLayout> {

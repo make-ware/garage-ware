@@ -34,8 +34,15 @@ garage admin-token create --name garage-ware --scope \
   ListBuckets,GetBucketInfo,CreateBucket,UpdateBucket,DeleteBucket,\
   ListKeys,GetKeyInfo,CreateKey,UpdateKey,DeleteKey,\
   AllowBucketKey,DenyBucketKey,\
-  LaunchRepairOperation,ListWorkers
+  LaunchRepairOperation,ListWorkers,\
+  ListBlockErrors,RetryBlockResync
 ```
+
+**Upgrading from a release before the repairs console?** `ListBlockErrors` and
+`RetryBlockResync` are new to that list. A token issued without them keeps
+working: the Block errors card on `/admin/repairs` reports that the cluster
+refused the operation and names the missing scope, and nothing else on the page
+is affected. Re-issue the token to get the card.
 
 **Deliberately NOT granted: `ApplyClusterLayout`, `RevertClusterLayout`,
 `ClusterLayoutSkipDeadNodes`.**
@@ -52,6 +59,27 @@ anywhere in the app, not even behind a feature flag, and a test fails the build
 if they ever are. Garage's own
 [layout operations guide](https://garagehq.deuxfleurs.fr/documentation/operations/layout/)
 documents the commands you run.
+
+**Also deliberately NOT granted: `PurgeBlocks`, `GetBlockInfo`.**
+
+The **Admin → Repairs** console lists blocks a node failed to fetch from its
+peers and offers one button against them: retry the resync, which asks Garage to
+try fetching them again and is safe to repeat. `PurgeBlocks` sits one operation
+away in the same API group and does the opposite — it permanently deletes every
+object and in-progress multipart upload that references a missing block, from
+the buckets they appear in. That is a decision to accept data loss, not a
+repair, and it belongs to whoever can see the cluster.
+`garage block purge` is the command, run by you.
+`GetBlockInfo` is read-only and still not granted: it enumerates the buckets and
+object versions containing a block, which an admin maintenance page has no
+reason to read. Neither is wired anywhere in the app, and
+`repairs/block-ops-boundary.test.ts` fails the build if either ever is.
+garage-ware also runs **no metadata repairs** — the six repair types that touch
+metadata tables are mapped to no action in the app, so `LaunchRepairOperation`
+can only ever ask for a scrub, a block repair or a rebalance. The console's
+recovery guide says as much and points at
+[Garage's recovering-from-failures guide](https://garagehq.deuxfleurs.fr/documentation/operations/recovering/)
+for the rest.
 
 Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to Docker Hub as [`dastron/garage-ware`](https://hub.docker.com/r/dastron/garage-ware). It is public, so no registry login is needed:
 
