@@ -1,4 +1,5 @@
 import 'server-only';
+import { z } from 'zod';
 import type { ClusterLayout } from './schemas';
 import { HttpError } from '@/lib/auth/server';
 import {
@@ -34,6 +35,28 @@ import {
  * action rather than rendering, and `lib/garage/cached.ts` is built to serve a
  * stale layout straight through an outage.
  */
+
+/**
+ * The node key as it arrives from the browser: 16 hex characters, lower-cased
+ * and trimmed.
+ *
+ * **The pattern is what rejects `*`.** A wildcard reaching an on-node operation
+ * fans it across every node in the cluster while the operator's confirmation
+ * dialog named exactly one — the single most damaging mistake available in the
+ * repairs area, and one character away from the correct call. Hex also rejects
+ * `self`, which is whichever node answers the admin API and routinely not the
+ * one clicked; the explicit refusal stays anyway, because the wrappers guard it
+ * too and two guards on the same thing is not one too many.
+ *
+ * It lives here, beside the resolvers, because every handler that parses one of
+ * these goes on to call `resolveNodeKey` with it — the pair is the boundary.
+ */
+export const NodeKeyParamSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[0-9a-f]{16}$/, 'nodeId must be a 16-character node key')
+  .refine((v) => v !== 'self', 'nodeId must name one node, not "self"');
 
 interface LayoutRole {
   id: string;

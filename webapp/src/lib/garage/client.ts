@@ -21,6 +21,16 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'DELETE' | 'PATCH';
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined>;
+  /**
+   * Override the client-wide abort deadline for one call.
+   *
+   * Exists for a single endpoint: `ListBlockErrors` is unpaginated and
+   * unfiltered, so a node with a dead drive answers with every errored block it
+   * has — a large but finite body that the default 15s can cut in half. Nothing
+   * else should reach for this; a call that routinely needs longer than 15s is
+   * a call that wants a narrower question.
+   */
+  timeoutMs?: number;
 }
 
 export class GarageClient {
@@ -70,7 +80,10 @@ export class GarageClient {
   ): Promise<T> {
     const url = this.buildUrl(endpoint, options.query);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      options.timeoutMs ?? this.timeoutMs
+    );
 
     let response: Response;
     try {

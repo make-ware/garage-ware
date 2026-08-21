@@ -25,6 +25,18 @@ const tabs = [
   { href: '/admin/repairs/scrub', label: 'Scrub' },
   { href: '/admin/repairs/blocks', label: 'Blocks' },
   { href: '/admin/repairs/rebalance', label: 'Rebalance' },
+  /**
+   * The guide is not an operation, so it is set apart with `ml-auto` rather
+   * than queued after Rebalance as if it were a fifth thing to run. It earns a
+   * route rather than a section on the overview for this nav's own stated
+   * reason: an operator can paste a link to it into an incident channel, and it
+   * is the most paste-worthy page in the section.
+   *
+   * `pathname === href` is exact, so Overview correctly goes dark here with no
+   * change to the logic below. Five ghost buttons on a `border-b` is the limit
+   * for this nav; a sixth needs a redesign, not another entry.
+   */
+  { href: '/admin/repairs/guide', label: 'Guide', apart: true },
 ];
 
 export default function RepairsLayout({
@@ -45,8 +57,12 @@ export default function RepairsLayout({
         </p>
       </div>
       <nav className="mb-6 flex gap-1 border-b pb-3">
-        {tabs.map(({ href, label }) => (
-          <Link key={href} href={href}>
+        {tabs.map(({ href, label, apart }) => (
+          <Link
+            key={href}
+            href={href}
+            className={apart ? 'ml-auto' : undefined}
+          >
             <Button
               variant={pathname === href ? 'secondary' : 'ghost'}
               size="sm"

@@ -27,9 +27,10 @@ import {
 } from '@/components/ui/tooltip';
 import { NodeIdentity } from '@/components/cluster/node-identity';
 import { LaunchRepairButton } from '@/components/admin/launch-repair-button';
+import { LastScrub } from '@/components/admin/last-scrub';
 import { useRepairData, type RepairNodeRow } from '@/hooks/use-repair-data';
 import { SCRUB_ACTIONS } from '@/lib/repair/operations';
-import type { ScrubStatus } from '@/lib/repair/scrub-status';
+import { describeScrubFreshness } from '@/lib/repair/scrub-freshness';
 import { formatPbDateTime } from '@/lib/format';
 
 const STATE_TONE: Record<string, string> = {
@@ -39,54 +40,23 @@ const STATE_TONE: Record<string, string> = {
   throttled: 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
 };
 
-function relativeDays(iso: string): string {
-  const days = Math.floor((Date.now() - Date.parse(iso)) / 86_400_000);
-  if (!Number.isFinite(days)) return '';
-  if (days <= 0) return 'today';
-  if (days === 1) return 'yesterday';
-  return `${days} days ago`;
-}
-
-/** The scrub cell. Never renders "never scrubbed" for something it merely failed to parse. */
-function LastScrub({ scrub }: { scrub: ScrubStatus }) {
-  return (
-    <div>
-      {scrub.lastCompletedAt ? (
-        <>
-          <div>{formatPbDateTime(scrub.lastCompletedAt)}</div>
-          <div className="text-muted-foreground text-xs">
-            {relativeDays(scrub.lastCompletedAt)}
-          </div>
-        </>
-      ) : (
-        <span className="text-muted-foreground">
-          {/* A scrub in progress reports no completion line at all — that is
-              "running", not "never scrubbed", and the State column says which. */}
-          {scrub.state === 'busy' || scrub.state === 'throttled'
-            ? 'Scrub in progress'
-            : scrub.recognised
-              ? 'No date reported'
-              : 'Not reported'}
-        </span>
-      )}
-      {scrub.nextScheduledAt && (
-        <div className="text-muted-foreground text-xs">
-          next {formatPbDateTime(scrub.nextScheduledAt)}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ScrubRow({
   row,
+  now,
   onLaunched,
 }: {
   row: RepairNodeRow;
+  /** The reading's clock, from `fetchedAt`. This page never calls `Date.now()`
+      during a render — see `lib/repair/scrub-freshness.ts`. */
+  now: number;
   onLaunched: () => Promise<void>;
 }) {
   const w = row.workers;
   const scrub = w?.scrub ?? null;
+  const freshness = describeScrubFreshness(
+    { scrub, nodeError: w?.error ?? null },
+    now
+  );
 
   return (
     <>
@@ -100,10 +70,11 @@ function ScrubRow({
         <TableCell>
           {w?.error ? (
             <span className="text-destructive text-sm">{w.error}</span>
-          ) : scrub ? (
-            <LastScrub scrub={scrub} />
           ) : (
-            <span className="text-muted-foreground">—</span>
+            <LastScrub
+              freshness={freshness}
+              nextScheduledAt={scrub?.nextScheduledAt}
+            />
           )}
         </TableCell>
         <TableCell>
@@ -262,6 +233,13 @@ export default function ScrubRepairPage() {
   const { rows, loading, error, workersUnavailable, fetchedAt, refresh } =
     useRepairData();
   const [refreshing, setRefreshing] = useState(false);
+  // One clock for the page, and it is the **reading's**, not the render's:
+  // "3 days ago" means three days before Garage answered. `Date.now()` is not
+  // an option here anyway — `react-hooks/purity` refuses an impure call during
+  // render — and it is not needed: with no reading there is no scrub data
+  // either, so every freshness verdict is `node-error` or `no-worker` and none
+  // of them carries a date to age.
+  const now = Date.parse(fetchedAt ?? '') || 0;
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -334,6 +312,7 @@ export default function ScrubRepairPage() {
                 <ScrubRow
                   key={row.nodeId}
                   row={row}
+                  now={now}
                   onLaunched={handleRefresh}
                 />
               ))}

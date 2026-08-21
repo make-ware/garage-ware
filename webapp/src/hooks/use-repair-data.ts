@@ -20,11 +20,18 @@ import type {
  * withhold the controls exactly when they are wanted. Same trade
  * /dashboard/metrics makes, with the roles reversed.
  *
- * **No polling.** `ListWorkers?node=*` fans out to every peer, and a tab left
- * open would do that for ever; this app has no timer-driven Garage traffic
- * outside the scrape that runs in the PocketBase process. A manual refresh plus
- * an automatic one after a launch, with `fetchedAt` on screen so the operator
- * knows how old the reading is.
+ * **This hook does not poll, and must not start.** `ListWorkers?node=*` fans
+ * out to every peer and brings back every worker's full state including prose;
+ * a tab left open would do that for ever. A manual refresh plus an automatic
+ * one after a launch, with `fetchedAt` on screen so the operator knows how old
+ * the reading is.
+ *
+ * **One hook in this app does poll**, and naming the asymmetry is the point:
+ * `use-node-stats-poll.ts` calls `GetNodeStatistics` — three integers per node
+ * — only while a resync queue is non-empty or a worker is busy, only while the
+ * tab is visible, and it stops after three consecutive failures. A counter you
+ * watch, against a reading you take. When adding a Garage call, decide which of
+ * the two it is before deciding whether it may be on a timer.
  */
 export interface RepairNodeRow {
   nodeId: string;

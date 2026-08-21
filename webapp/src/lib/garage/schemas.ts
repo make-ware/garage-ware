@@ -329,9 +329,10 @@ export const ScrubCommandSchema = z.enum([
 export type ScrubCommand = z.infer<typeof ScrubCommandSchema>;
 
 /**
- * A **request** shape — the only one in this file, which otherwise holds
- * responses. It lives here anyway because it is a Garage wire shape and this is
- * where Garage wire shapes are.
+ * A **request** shape — one of the two in this file, which otherwise holds
+ * responses (the other is `RetryBlockResyncRequestSchema`, below). It lives
+ * here anyway because it is a Garage wire shape and this is where Garage wire
+ * shapes are.
  *
  * Untagged again: eight of the ten variants are bare strings and the ninth is
  * `{scrub: ScrubCommand}`. Getting this wrong sends Garage a body it rejects at
@@ -364,3 +365,108 @@ export const ListWorkersMultiSchema = multiResponseSchema(
  * will never look at is only a way to fail a call that actually succeeded.
  */
 export const LaunchRepairMultiSchema = multiResponseSchema(z.unknown());
+
+// ── Blocks & node statistics ───────────────────────────────────────────────
+//
+// `ListBlockErrors`, `RetryBlockResync` and `GetNodeStatistics` all return the
+// `{success, error}` envelope from ./multi-node.ts, like the worker endpoints
+// above. The first two are `Block`-tagged in the spec and are wrapped in
+// lib/garage/blocks.ts rather than repair.ts — retrying a resync is not a
+// repair type and must never become a `RepairAction`.
+
+/**
+ * One block a node failed to fetch from its peers.
+ *
+ * **All five fields required, no `.optional()` anywhere**, for the same reason
+ * `multiResponseSchema` insists on both its keys: the spec marks all five
+ * required, and a build that stopped sending `errorCount` must surface as a
+ * `GarageValidationError` rather than as a table of zeroes. A zero in this
+ * column reads "this block is fine", which is the opposite of what a missing
+ * field means.
+ *
+ * `blockHash` is a content hash, **not** a credential — see
+ * `app/next-api/garage/repairs/repairs-boundary.test.ts` for why it is allowed
+ * to be 64 hex characters where a node id is not.
+ */
+export const BlockErrorSchema = z.object({
+  blockHash: z.string(),
+  refcount: z.number().int().nonnegative(),
+  errorCount: z.number().int().nonnegative(),
+  lastTrySecsAgo: z.number().int().nonnegative(),
+  nextTryInSecs: z.number().int().nonnegative(),
+});
+export type BlockError = z.infer<typeof BlockErrorSchema>;
+
+export const ListBlockErrorsMultiSchema = multiResponseSchema(
+  z.array(BlockErrorSchema)
+);
+
+/**
+ * The **second** request shape in this file, and the spec's untagged `oneOf`
+ * rendered faithfully: either `{all}` or `{blockHashes}`, never both.
+ *
+ * `z.union`, not `z.discriminatedUnion` — the discriminant is *which key
+ * exists*, the same call `RepairTypeSchema` makes. `strictObject`, because
+ * `oneOf` means exactly one and an object carrying both keys must be rejected
+ * here rather than silently put on the wire. And `z.boolean()`, not
+ * `z.literal(true)`, because this schema describes **Garage's protocol**; this
+ * app's own policy — only ever `{all: true}` — lives one level up, in
+ * `retryBlockResync`'s parameter type and in the route's `z.literal(true)`.
+ * That is the `REPAIR_TYPE_FOR_ACTION` split repeated one layer down.
+ */
+export const RetryBlockResyncRequestSchema = z.union([
+  z.strictObject({ all: z.boolean() }),
+  z.strictObject({ blockHashes: z.array(z.string()).min(1) }),
+]);
+export type RetryBlockResyncRequest = z.infer<
+  typeof RetryBlockResyncRequestSchema
+>;
+
+export const RetryBlockResyncMultiSchema = multiResponseSchema(
+  z.object({ count: z.number().int().nonnegative() })
+);
+
+const NodeBlockManagerStatsSchema = z.object({
+  rcEntries: z.number().int().nonnegative(),
+  /** Blocks queued for resync. Rises before it falls; never a progress bar. */
+  resyncQueueLen: z.number().int().nonnegative(),
+  resyncErrors: z.number().int().nonnegative(),
+});
+
+/**
+ * Modelled rather than left as `z.unknown()`: six fields is eight lines, and a
+ * shape nothing validates is a shape nothing notices changing.
+ */
+const NodeTableStatsSchema = z.object({
+  tableName: z.string(),
+  items: z.number().int().nonnegative(),
+  merkleItems: z.number().int().nonnegative(),
+  merkleQueueLen: z.number().int().nonnegative(),
+  insertQueueLen: z.number().int().nonnegative(),
+  gcQueueLen: z.number().int().nonnegative(),
+});
+
+/**
+ * One node's statistics.
+ *
+ * **Do not parse `freeform`** — the spec says so in the operation's own
+ * description, and says why: it is kept for compatibility with older v2.x
+ * nodes and its format is not stable. `/next-api/garage/repairs/node-stats`
+ * drops it entirely rather than carrying it to the browser. That is the
+ * deliberate opposite of what the scrub page does with `WorkerInfoResp
+ * .freeform`, where prose is the *only* channel carrying the fact; here the
+ * structured fields exist.
+ *
+ * `blockManagerStats` is nullable in the spec, and null must stay null all the
+ * way to the screen: "not reported" and "the queue is empty" are opposite
+ * conclusions.
+ */
+export const NodeStatisticsSchema = z.object({
+  freeform: z.string(),
+  blockManagerStats: NodeBlockManagerStatsSchema.nullable().optional(),
+  tableStats: z.array(NodeTableStatsSchema).nullable().optional(),
+});
+export type NodeStatistics = z.infer<typeof NodeStatisticsSchema>;
+
+export const NodeStatisticsMultiSchema =
+  multiResponseSchema(NodeStatisticsSchema);

@@ -494,11 +494,24 @@ ended_at > occurred_at   a resolved condition; the pair bounds its duration
 
 #### Repairs
 
-`/admin/repairs` launches Garage's repair operations per node — a scrub (start,
-pause, resume, cancel), a block repair, or a rebalance — and shows what each
-node's scrub worker is doing. Three sub-routes under one layout, which is the
-app's first nested admin nav; `admin/layout.tsx`'s `pathname.startsWith(href)`
-already keeps the parent lit, so that file's logic is untouched.
+`/admin/repairs` is the operations console for a Garage cluster's maintenance:
+what state each node is in, what is moving, what failed, what was run — and, on
+three sub-routes, the launchers for the operations this app offers (a scrub with
+its four commands, a block repair, a rebalance). Four sub-routes under one
+layout plus a fifth **Guide** tab set apart with `ml-auto`, which is the app's
+first nested admin nav; `admin/layout.tsx`'s `pathname.startsWith(href)` already
+keeps the parent lit, so that file's logic is untouched. The layout's active
+check is `pathname === href`, exact, so Overview correctly goes dark on
+`/guide`.
+
+**The overview reads; the tabs act.** It shows worker state, a per-node table
+(zone, last scrub, live resync queue, workers), block errors with a per-node
+retry, the three operation cards, and the recent repair log — and it carries
+**no launch buttons at all**. That is the "a real index, not a redirect"
+argument carried one step further: these operations run for days and cannot be
+paused, and an operator who lands cold should pass through the page that
+explains what one costs before they can start it. The block-errors retry is the
+single exception, and it is cheap and idempotent.
 
 **Everything on-node goes through one envelope.** Twelve v2 operations take a
 required `node` query param (an id, `*`, or `self`) and answer
@@ -558,10 +571,171 @@ question, the same rule that keeps `/admin/status` off the cache. One fetch
 serves all three pages — the scrub page reads `scrub`, the other two read
 `busyCount`/`erroredCount`, which is how they can say "something is already
 running here" before an operator starts a second multi-day job. It returns no
-node identity; that stays with `/cluster/nodes`. **No polling** — `?node=*` fans
-out to every peer, and this app has no timer-driven Garage traffic outside the
-scrape in the PB process. Manual refresh, plus one after a launch, with
-`fetchedAt` on screen.
+node identity; that stays with `/cluster/nodes`. **This route is never polled
+and must not be** — `?node=*` fans out to every peer and brings back every
+worker's full state including prose. Manual refresh, plus one after a launch,
+with `fetchedAt` on screen.
+
+**There is exactly one browser timer in this app**, and the asymmetry is the
+rule rather than an exception to it. `hooks/use-node-stats-poll.ts` polls
+`GET /next-api/garage/repairs/node-stats`, which is `GetNodeStatistics` reduced
+to three integers per node — a counter you watch, against `ListWorkers`'s
+reading you take. It runs only while a resync queue is non-empty or a worker is
+busy, only while the tab is visible, as a **re-arming `setTimeout` chain** (a
+12-second fan-out under a 10-second interval would stack requests for ever), and
+it **stops after three consecutive failures** with "Live updates stopped after
+three failed reads." on screen. One unconditional read on mount — opening a page
+is not a timer — then nothing unless something is moving. The queue length is
+its own stop condition, which is why it is the load-bearing half of the trigger:
+worker *names* are not in the OpenAPI spec, and a real node may carry a
+permanently busy background worker, so `busyCount > 0` alone could be true for
+ever. When adding a Garage call, decide which of the two kinds it is before
+deciding whether it may be on a timer. The poll **never writes `NodeMetrics`**:
+the PB cron samples the same counter every 15 minutes and `/dashboard/metrics`
+charts it, so the overview says "live" and the chart says "sampled".
+
+**`GET /next-api/garage/repairs/node-stats` drops `freeform` and `tableStats`.**
+The spec says, in the operation's own description, not to parse `freeform` — it
+is kept for compatibility with older v2.x nodes and its format is not stable —
+and carrying it to the browser is how a second prose parser gets written. This
+is the deliberate **opposite** of what the workers route does with
+`WorkerInfoResp.freeform`, and the difference is the point: there, prose is the
+only channel carrying the last-scrub time; here the structured fields exist.
+`blockManagerStats: null` maps to three `null`s and **never to `0`** — "not
+reported" and "the queue is empty" are opposite conclusions — and
+`node-statistics.test.ts` is where a future `?? 0` fails.
+
+**The resync queue is not a progress bar.** It is shared by block repair,
+rebalance and ordinary replication catch-up, and it goes **up** before it goes
+down. It is rendered as a labelled count with a tooltip saying so, and never as
+a percentage, a bar or an ETA — the same discipline that keeps the planner's
+`estimated` split labelled.
+
+**Block errors, and the two truncations.** `GET /next-api/garage/repairs/block-errors`
+wraps `ListBlockErrors` per node, live, and never through `cached.ts`. The
+endpoint has **no pagination and no filter** — only `node` — so a node with a
+dead drive can answer with millions of entries; `listBlockErrors` raises the
+client's timeout for this one call, and the route caps rows at
+`MAX_BLOCK_ERRORS_PER_NODE` while carrying the untruncated `totalErrors`
+alongside, so the card renders **"Showing 25 of 41,233"**. A cap that only
+existed in an unrendered field would be the silent all-clear this repo keeps
+refusing. Ordering is **ours** — soonest retry, then most failures — because the
+spec guarantees none, and the card says so rather than letting a reader take the
+table for Garage's priority queue. The *second* truncation is unrelated: block
+hashes are cut to 16 characters for display. **A block hash is not a
+credential** — the full-node-id rule exists because an id's last 48 characters
+are the proof-of-access `/nodes/owners` accepts, and a hash unlocks nothing — so
+`repairs-boundary.test.ts` neutralises the emitted hashes by exact string match
+and then runs the same blunt `not.toMatch(/[0-9a-f]{64}/)` unchanged, rather
+than carving an exception into `node-id-boundary.test.ts` whose whole value is
+having none. A per-node failure is a row with `error` set and no items, **never
+an HTTP error**: one dead node must not blank the card, and must never read as
+zero errors.
+
+**Retry-resync is not a repair action, deliberately.** `RetryBlockResync` gets
+its copy from `BLOCK_OPERATIONS` in
+[operations.ts](../webapp/src/lib/repair/operations.ts) — a second record keyed
+by `BlockOperation`, disjoint from `REPAIR_ACTIONS` and pinned so by
+`operations.test.ts`. It is not merely compliance with the three-action rule:
+**there is no `RepairType` that means "retry block resync"**, and the nearest,
+`clearResyncQueue`, does the opposite, so folding it into
+`Record<RepairAction, RepairType>` would require inventing a mapping that does
+not exist. The consequence is the guarantee: `POST /next-api/garage/repairs`
+parses `z.enum(REPAIR_ACTION_IDS)` and therefore 400s on `'retry-resync'`. The
+retry lives at `POST /next-api/garage/repairs/block-errors`, whose **path is the
+operation** — it carries no `action` parameter at all, so there is no enum to
+smuggle anything into, and a body carrying `blockHashes` is a 400. It writes the
+usual `kind: 'repair'` / `source: 'action'` row with `new_value: 'retry-resync'`
+and one departure from the launch route: on success `detail` carries
+`"N blocks re-queued for resync"`, because that count is the only information
+the operation produces. Two consequences worth knowing: `/admin/events`'s
+`kind=repair` filter now mixes launches and retries (correct per the documented
+"which repair it was is in `new_value`" rule; if it goes noisy the fix is a
+`category` split, not a new kind), and `/dashboard/cluster`'s projection strips
+`detail`, so the public timeline shows the title without the count.
+
+**`PurgeBlocks` and `GetBlockInfo` are refused, structurally.** `PurgeBlocks`
+sits one operation away in the same `Block` tag and permanently deletes every
+object and multipart upload referencing a missing block — a decision to accept
+data loss, not a repair. `GetBlockInfo` is read-only and still refused: it
+enumerates the buckets and object versions containing a block, which an admin
+maintenance page has no reason to read. `repairs/block-ops-boundary.test.ts`
+fails the build if either name appears in non-comment source under `lib/garage/`
+or `app/next-api/`, and pins `RetryBlockResync` to exactly one caller — the same
+technique `staging-boundary.test.ts` uses for `ApplyClusterLayout`.
+
+**A missing token scope is otherwise indistinguishable from an outage.**
+`client.throwForStatus` maps 401/403 to `GarageAuthError`, and
+`garageErrorResponse` renders every one of those as a fixed 502 telling the
+operator to check `GARAGE_ADMIN_TOKEN` — which will be set correctly. Every
+install predating this release has a token without `ListBlockErrors` /
+`RetryBlockResync`, making that the **likeliest** day-one failure of this
+feature, so both routes catch `GarageAuthError` themselves and re-word it naming
+the operation and the scope. Local, not a widening of `ApiError` with a `code`,
+which is a separate change. The block-errors card keys its copy on the operation
+name appearing in the message, so a missing scope reads as advice rather than as
+a generic red bar. A `timeout` on `ListBlockErrors` is likewise re-worded — on
+that endpoint the likely cause is a backlog too large to read, not an
+unreachable cluster.
+
+**Scrub freshness has one implementation and its clock is a parameter.**
+`scrub-status.ts` is clockless by design and that promise is load-bearing, so
+the verdict lives in a sibling,
+[scrub-freshness.ts](../webapp/src/lib/repair/scrub-freshness.ts): comparing a
+parsed date against *now* is exactly what the parser promises not to do, and
+"45 days is overdue" is policy rather than parsing. `now` is passed in —
+`Date.parse(fetchedAt)`, computed once per page and threaded down — so the leaf
+component reads no clock (`react-hooks/purity` refuses one during render
+anyway) and the page says "3 days ago *as of the reading*". Six kinds, and the
+precedence between them is the point: `node-error` outranks everything, because
+silence is a diagnosis and not "never scrubbed"; then `no-worker`; then a parsed
+date; then `in-progress` (a running scrub reports no completion line at all);
+then `unrecognised`; then `no-date`. `STALE_SCRUB_DAYS = 45` is **this app's
+judgement, not a specification** — Garage scrubs "about once a month" and states
+no interval — so the threshold is a named export, rendered in the tooltip beside
+every verdict, and shown amber at most, never red. Only a *completed* reading
+can be stale; calling an absence overdue is the same mistake in the other
+direction.
+
+**The recovery guide is static, and says where the app stops.**
+`/admin/repairs/guide` walks
+[recovery-guide.ts](../webapp/src/lib/repair/recovery-guide.ts) — a pure
+decision tree with no JSX, no clock, no I/O and no `lib/garage` import — so
+nothing can be rendered that is not a string in that file. No endpoint, nothing
+fetched, nothing persisted: the `/admin/cluster/planner` and
+`/admin/setup/config-generator` pattern. **Two levels, not one**, because a root
+with four options is a menu and the question that separates "replace the drive"
+from "the metadata DB is corrupt" is whether Garage still starts. Two of the
+four leaves are marked `handledByApp: false` and hand over to the CLI —
+`meta-corrupted` (true by construction: `REPAIR_TYPE_FOR_ACTION` maps no action
+to `tables`/`versions`/`multipartUploads`/`blockRefs`/`blockRc`/`aliases`) and
+`quorum-lost` (below the replication factor no repair helps, and running one
+generates traffic a degraded cluster cannot serve). The `node-lost-new-id` leaf
+is the app's equivalent of `garage layout assign --replace`, which has no single
+API call: **stage a `remove` of the old key and an `assign` of the new one
+together**, then apply on a host. It reuses `STAGE_ONLY_NOTICE` and
+`APPLY_ONCE_WARNING` from `staging-copy.ts` verbatim, because the boundary
+sentence must be identical everywhere it is said. **Deliberately no URL state**:
+a deep link to a leaf would hand somebody "run a block repair" without the
+question that produced it, and the questions are the feature.
+`recovery-guide.test.ts` checks every `option.next` resolves, every outcome is
+reachable, the graph has no cycles, every internal href exists on disk, and no
+suggested `garage layout apply` omits `--version`.
+
+**The repair history is its own card, not `ClusterEventTimeline`.** That
+component takes `ClusterTimelineEvent`, the redacted projection served to every
+signed-in user, which by design drops `detail`, `new_value` and `actor_email` —
+exactly the three fields that make a repair history worth reading for an admin.
+Reusing it would mean showing none of that or widening the projection type, and
+the projection is the privacy boundary, not the collection rule. It is also the
+wrong shape (30-day calendar-week buckets over 20 rows) and the wrong badge
+(`eventBadgeLabel` renders `category` for `action` rows, so every row would read
+"Maintenance"). Every *primitive* is shared, though — `SEVERITY_TONE`,
+`SEVERITY_LABEL`, `eventStatus`, `<NodeIdentity>`, `formatPbDateTime` — so the
+card cannot disagree with the timeline about what `warning` looks like. Its
+empty state is **"No repairs have been launched from this app."**, not "no
+repairs": Garage's own automatic monthly scrub is not in `ClusterEvents` and
+never will be.
 
 **`POST /next-api/garage/repairs` writes Garage first and the timeline row
 second**, inverting the usual "PB first, Garage second, roll back" rule on
@@ -576,8 +750,16 @@ would tell the operator it hadn't, so they would click again and duplicate a
 cluster-wide block repair — the `StorageInvites` email precedent exactly.
 `logged: false` says so instead. A per-node error or a `null` outcome is a
 **502**, never a 200 with `ok: false`, which would rebuild Garage's own trap at
-our boundary. It makes **no layout call**: Garage's error map is the authority
-on whether the node exists.
+our boundary. It **does make a layout call**, which an earlier version of this
+handler deliberately did not: the browser names a 16-character node key and
+Garage's `?node=` takes a full id and nothing else, so the key is resolved
+through `resolveNodeKey` against a **live** layout before the call — 404 for an
+unknown node, 409 for an ambiguous key, and Garage's error map still the
+authority on everything else. (This paragraph said the opposite for several
+releases; it was corrected with the repairs console.) The block-errors POST
+copies the arrangement byte for byte, and both parse the key with the shared
+`NodeKeyParamSchema` from `node-resolve.ts`, whose hex pattern is what rejects
+`*` before any of the three refusals downstream get a chance.
 
 **Repair rows reach `/dashboard/cluster`** through the existing
 `toTimelineEvent` projection, which strips the actor and `detail`. That is

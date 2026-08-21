@@ -248,7 +248,16 @@ Full field lists and the reasoning for every `null` rule, `TextField`-not-relati
   [multi-node.ts](webapp/src/lib/garage/multi-node.ts); a node in neither map is `null` and means
   failure. `*` and `self` are refused. There is no last-scrub timestamp in the API, so
   [scrub-status.ts](webapp/src/lib/repair/scrub-status.ts) parses prose and `recognised: false` is its
-  own UI state.
+  own UI state; the *verdict* on that date lives in the clock-injected sibling
+  [scrub-freshness.ts](webapp/src/lib/repair/scrub-freshness.ts), never in a component.
+  **Retry-resync is deliberately not a `RepairAction`** — no `RepairType` means it, so it gets its own
+  `BLOCK_OPERATIONS` record and its own route whose *path* is the operation; `POST /next-api/garage/repairs`
+  must keep 400ing on it. `PurgeBlocks` / `GetBlockInfo` are refused structurally by
+  [block-ops-boundary.test.ts](webapp/src/app/next-api/garage/repairs/block-ops-boundary.test.ts).
+  **The app has exactly one browser timer**, [use-node-stats-poll.ts](webapp/src/hooks/use-node-stats-poll.ts):
+  `GetNodeStatistics` only, only while a resync queue is non-empty or a worker is busy, only while the tab
+  is visible, a re-arming `setTimeout` (never `setInterval`), stopping after three failures. `ListWorkers`
+  is never polled.
 - [Cluster layout planner](docs/ARCHITECTURE.md#cluster-layout-planner) — `/admin/cluster/planner`
   simulates a layout **entirely client-side**; it adds no endpoint and stages nothing, because
   Garage only previews *staged* changes and `revert` bumps the layout version. `exact` (partition

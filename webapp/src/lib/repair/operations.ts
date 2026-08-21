@@ -29,6 +29,12 @@
  * are the same four-value `ScrubCommand` enum, and an operator who can pause a
  * scrub but not resume it is stranded.
  */
+export interface RepairOperationCopy {
+  button: string;
+  launched: string;
+  failed: string;
+}
+
 export const REPAIR_ACTIONS = {
   'scrub-start': {
     button: 'Start scrub',
@@ -60,7 +66,7 @@ export const REPAIR_ACTIONS = {
     launched: 'Rebalance started',
     failed: 'Rebalance failed to start',
   },
-} as const;
+} as const satisfies Record<string, RepairOperationCopy>;
 
 export type RepairAction = keyof typeof REPAIR_ACTIONS;
 
@@ -76,3 +82,31 @@ export const SCRUB_ACTIONS = [
   'scrub-resume',
   'scrub-cancel',
 ] as const satisfies readonly RepairAction[];
+
+/**
+ * Operations on **blocks**, which are not repairs and must never be listed
+ * above.
+ *
+ * `REPAIR_ACTIONS` feeds `REPAIR_TYPE_FOR_ACTION` in `lib/garage/repair.ts`, a
+ * total `Record<RepairAction, RepairType>` over the three repair types this app
+ * exposes. There is no `RepairType` that means "retry block resync" — the
+ * nearest, `clearResyncQueue`, does the opposite — so folding this in would
+ * require inventing a mapping that does not exist. Two records, one shared copy
+ * shape, no merge.
+ *
+ * The consequence is the point: `POST /next-api/garage/repairs` takes
+ * `z.enum(REPAIR_ACTION_IDS)` and therefore 400s on `'retry-resync'`, because
+ * it is not a launchable repair. Retrying goes to
+ * `POST /next-api/garage/repairs/block-errors`, whose *path* is the operation
+ * and which carries no action parameter at all. `operations.test.ts` pins the
+ * two key sets disjoint.
+ */
+export const BLOCK_OPERATIONS = {
+  'retry-resync': {
+    button: 'Retry resync',
+    launched: 'Block resync retried',
+    failed: 'Block resync retry failed',
+  },
+} as const satisfies Record<string, RepairOperationCopy>;
+
+export type BlockOperation = keyof typeof BLOCK_OPERATIONS;
