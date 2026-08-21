@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.11.0](https://github.com/make-ware/garage-ware/compare/v1.10.0...v1.11.0) (2026-08-21)
+
+
+### Features
+
+* add admin-only GarageHQ config generator ([ccf1474](https://github.com/make-ware/garage-ware/commit/ccf1474dd8931ca898f1069d7aea8980edaf3f8d))
+* add GarageHQ guidance for missing/unavailable clusters ([2dc167f](https://github.com/make-ware/garage-ware/commit/2dc167f96aeb5621ffa0cf6702c576de418f686a))
+* add GarageHQ guidance for missing/unavailable clusters ([648c014](https://github.com/make-ware/garage-ware/commit/648c0149f266cd5d1b4e1bd9303699938ecbe126))
+* cluster layout staging (stage-only, manual apply) ([f202550](https://github.com/make-ware/garage-ware/commit/f2025506080a62b637c13253e9538c9e121529a7))
+* GarageHQ config generator (admin-only) ([c3843d0](https://github.com/make-ware/garage-ware/commit/c3843d033fc60808919aa30641c365aecc855133))
+* grow /admin/repairs into an operations console ([2060c58](https://github.com/make-ware/garage-ware/commit/2060c58f97fdf01b7193b7f01e7b9698d5fd1418))
+* repair operations console (block errors, guidance wizard, scrub polish, history) ([fb010af](https://github.com/make-ware/garage-ware/commit/fb010af190dcdcccd41f1abe1d818a6da7f411b9))
+* stage cluster layout changes from the admin console ([202731c](https://github.com/make-ware/garage-ware/commit/202731cc3ba82f940e61a7fa2b352fa04854eb9a))
+
+
+### Bug Fixes
+
+* cluster layout calculator (client-side simulation) ([#20](https://github.com/make-ware/garage-ware/issues/20)) ([ee31b02](https://github.com/make-ware/garage-ware/commit/ee31b0233611e6888d922ba51033a2dd33dae18a))
+* notification threshold defaulting to 0% instead of 95% ([649b6ec](https://github.com/make-ware/garage-ware/commit/649b6ec905b4388c6717285b710082ff4cc0146c))
+* notification threshold defaulting to 0% instead of 95% ([8fcea1a](https://github.com/make-ware/garage-ware/commit/8fcea1a757e4c2e1770e8ab5707c121a98254be5))
+* restore node page for feat off ([6813007](https://github.com/make-ware/garage-ware/commit/681300762e1c0df6a40420d9e83c377b9acbd9fc))
+
 ## [1.10.0](https://github.com/make-ware/garage-ware/compare/v1.9.0...v1.10.0) (2026-08-19)
 
 
